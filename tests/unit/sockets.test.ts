@@ -43,7 +43,7 @@ function asWebSocket(socket: FakeWebSocket): WebSocket {
 describe("toRelaySocket", () => {
   it("queues messages sent before the socket opens and flushes them in order", () => {
     const socket = new FakeWebSocket();
-    const relay = toRelaySocket(asWebSocket(socket));
+    const relay = toRelaySocket(asWebSocket(socket), { label: "test" });
 
     relay.send("session.update");
     relay.send("response.create");
@@ -59,7 +59,7 @@ describe("toRelaySocket", () => {
   it("sends straight through once the socket is open", () => {
     const socket = new FakeWebSocket();
     socket.readyState = OPEN;
-    const relay = toRelaySocket(asWebSocket(socket));
+    const relay = toRelaySocket(asWebSocket(socket), { label: "test" });
 
     relay.send("input_audio_buffer.append");
 
@@ -68,7 +68,7 @@ describe("toRelaySocket", () => {
 
   it("normalises binary frames to strings for the relay", () => {
     const socket = new FakeWebSocket();
-    const relay = toRelaySocket(asWebSocket(socket));
+    const relay = toRelaySocket(asWebSocket(socket), { label: "test" });
     const received: string[] = [];
     relay.on("message", (message) => received.push(message));
 
@@ -79,7 +79,7 @@ describe("toRelaySocket", () => {
 
   it("closes the underlying socket", () => {
     const socket = new FakeWebSocket();
-    const relay = toRelaySocket(asWebSocket(socket));
+    const relay = toRelaySocket(asWebSocket(socket), { label: "test" });
 
     relay.close();
 

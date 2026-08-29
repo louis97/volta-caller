@@ -40,11 +40,21 @@ describe("telephony adapters", () => {
   });
 
   it("configures PCMU and server VAD with interruption enabled for realtime sessions", () => {
+    // GA session shape. The flat Beta payload is rejected server-side with
+    // `beta_api_shape_disabled`, which on a live call looks like a mute agent.
     expect(createRealtimeSessionConfig()).toMatchObject({
-      input_audio_format: "audio/pcmu",
-      output_audio_format: "audio/pcmu",
-      turn_detection: { type: "server_vad", silence_duration_ms: 350 },
-      interrupt_response: true
+      type: "realtime",
+      audio: {
+        input: {
+          format: { type: "audio/pcmu" },
+          turn_detection: {
+            type: "server_vad",
+            silence_duration_ms: 350,
+            interrupt_response: true
+          }
+        },
+        output: { format: { type: "audio/pcmu" } }
+      }
     });
   });
 

@@ -8,13 +8,22 @@ export type RelaySocket = {
 };
 
 export type RealtimeSessionConfig = {
-  input_audio_format: "audio/pcmu";
-  output_audio_format: "audio/pcmu";
-  turn_detection: {
-    type: "server_vad";
-    silence_duration_ms: number;
+  type: "realtime";
+  audio: {
+    input: {
+      format: { type: "audio/pcmu" };
+      transcription: { model: string };
+      turn_detection: {
+        type: "server_vad";
+        silence_duration_ms: number;
+        interrupt_response: true;
+      };
+    };
+    output: {
+      format: { type: "audio/pcmu" };
+      voice: string;
+    };
   };
-  interrupt_response: true;
   instructions: string;
   tools: typeof agentToolDefinitions;
 };
@@ -27,12 +36,33 @@ export type MediaStreamRelayDependencies = {
 
 export type RealtimeSocketFactory = () => RelaySocket;
 
-export function createRealtimeSessionConfig(): RealtimeSessionConfig {
+/**
+ * GA session shape. The Realtime Beta API is switched off server-side: sending
+ * the old flat `input_audio_format` payload (or the `OpenAI-Beta` header) is
+ * rejected with `beta_api_shape_disabled` and the socket closes, which on a
+ * live call reads as "Volta never speaks".
+ *
+ * `audio/pcmu` on both ends matches what Twilio streams, so no transcoding
+ * happens anywhere in the path.
+ */
+export function createRealtimeSessionConfig(
+  voice = "marin"
+): RealtimeSessionConfig {
   return {
-    input_audio_format: "audio/pcmu",
-    output_audio_format: "audio/pcmu",
-    turn_detection: { type: "server_vad", silence_duration_ms: 350 },
-    interrupt_response: true,
+    type: "realtime",
+    audio: {
+      input: {
+        format: { type: "audio/pcmu" },
+        // Needed for the call brief and the audit transcript.
+        transcription: { model: "whisper-1" },
+        turn_detection: {
+          type: "server_vad",
+          silence_duration_ms: 350,
+          interrupt_response: true
+        }
+      },
+      output: { format: { type: "audio/pcmu" }, voice }
+    },
     instructions: VOLTA_SYSTEM_PROMPT,
     tools: agentToolDefinitions
   };

@@ -142,7 +142,8 @@ export function attachTelephonyWebSockets(server: Server): WebSocketServer {
   });
 
   wss.on("connection", (client) => {
-    openMediaStreamSession(toRelaySocket(client));
+    console.log("[twilio] media stream connected");
+    openMediaStreamSession(toRelaySocket(client, { label: "twilio" }));
   });
 
   return wss;
@@ -150,6 +151,7 @@ export function attachTelephonyWebSockets(server: Server): WebSocketServer {
 
 function openMediaStreamSession(twilioSocket: ClosableRelaySocket): void {
   if (!env.OPENAI_API_KEY) {
+    console.error("[session] OPENAI_API_KEY missing; dropping the call");
     twilioSocket.close();
     return;
   }
@@ -159,11 +161,30 @@ function openMediaStreamSession(twilioSocket: ClosableRelaySocket): void {
     model: env.OPENAI_REALTIME_MODEL
   });
 
+  // Realtime reports rejected session config as an `error` event rather than by
+  // closing, so a silent agent looks identical to a healthy one without this.
+  realtime.on("message", (raw) => {
+    try {
+      const event: unknown = JSON.parse(raw);
+      if (
+        typeof event === "object" &&
+        event !== null &&
+        (event as { type?: unknown }).type === "error"
+      ) {
+        console.error("[realtime] error event:", raw.slice(0, 500));
+      }
+    } catch {
+      // Non-JSON frames are not ours to interpret.
+    }
+  });
+
   attachMediaStreamRelay({
     twilio: twilioSocket,
     realtime,
-    executeToolCall: (request) =>
-      executeToolCall(request, { store, finalizeBooking })
+    executeToolCall: (request) => {
+      console.log("[tool]", request.name);
+      return executeToolCall(request, { store, finalizeBooking });
+    }
   });
 
   // Neither side owns the other: closing one must tear down the other, or the
