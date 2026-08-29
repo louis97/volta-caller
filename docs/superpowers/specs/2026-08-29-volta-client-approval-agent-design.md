@@ -95,7 +95,7 @@ Volta uses one shared voice runtime with three mode-specific prompt and tool con
 | --- | --- | --- | --- |
 | Negotiation | Collect and review one carrier's offer during discovery calls. | `check_mandate`, `register_quote`, `review_deal`, `trigger_escalation` | Selecting a carrier, booking, or modifying a mandate |
 | Confirmation | Confirm the client-selected carrier's original terms during the callback. | `check_mandate`, `confirm_selected_deal`, `trigger_escalation` | Renegotiation, substitute-carrier selection, or mandate changes |
-| Exception | Understand and assess an inbound operational incident. | `identify_caller`, `record_incident`, `assess_mandate_feasibility`, `update_operation_status`, `notify_dashboard`, `trigger_escalation` | Booking, quote selection, mandate changes, or renegotiation |
+| Exception | Understand and assess an inbound operational incident using its preloaded call context. | `record_incident`, `update_operation_status`, `notify_dashboard`, `trigger_escalation` | Booking, quote selection, mandate changes, renegotiation, or read tools |
 
 All prompts and spoken dialogue are English in this version.
 
@@ -115,27 +115,35 @@ Backend exception outcomes in this slice are:
 
 ## Exception Mode
 
-Exception mode makes real-time tool calls while the caller remains on the line. Transcripts are used for audit and post-call summaries; they are not the sole source of urgent operational decisions.
+When an inbound exception call begins, the backend creates an immutable `ExceptionCallContext` and supplies it to Volta before any dialogue. It contains the operation ID, complete mandate, lifecycle state, selected carrier and selected quote when present, carrier candidates and known truck details, plus previous call briefs and incidents. It is the read model for the entire exception call.
+
+Exception mode makes no read or assessment tool calls while the caller remains on the line. Volta uses the preloaded context to ask for missing facts, identify the caller, and assess feasibility. This avoids mid-call read latency and reduces dependency failures. Transcripts are used for audit and post-call summaries; they are not the sole source of urgent operational decisions.
+
+The only live exception-mode tools are durable write actions. Their backend handlers validate every payload against the immutable call context and the authoritative operation before mutating state:
+
+- `record_incident` includes the caller identity, carrier, truck, process stage, issue, reported delay, and revised ETA. Its handler verifies the operation and carrier/truck identity against the context.
+- `update_operation_status` requires a previously recorded incident. Its handler independently evaluates the revised ETA against the context mandate before allowing `incident_monitoring`.
+- `notify_dashboard` is accepted only after the same backend feasibility evaluation finds the mandate unachievable. It creates one dashboard notification for the incident.
+- `trigger_escalation` requests a human handoff. It is always available; it does not itself authorize an operation update or client notification.
+
+If caller or carrier/truck identity cannot be validated, Volta asks only minimal identifying questions and then invokes `trigger_escalation`. No operation mutation or dashboard notification occurs. The best-case scope assumes the mandate and relevant operation facts do not change during an active exception call; mandate versioning and refresh remain deferred.
 
 ```text
 Inbound exception call
-  -> identify_caller
-  -> verified operation?
-       no  -> trigger_escalation; do not mutate an operation
-       yes -> record_incident
-            -> assess_mandate_feasibility
-                 -> achievable
-                      -> update_operation_status
-                      -> create call brief and continue monitoring
-                 -> not achievable
-                      -> update_operation_status
-                      -> notify_dashboard
-                      -> trigger_escalation
+  -> backend loads ExceptionCallContext
+  -> Volta identifies caller and captures facts from the live dialogue
+  -> record_incident (backend validates identity)
+       -> invalid -> trigger_escalation; do not mutate an operation
+       -> valid   -> Volta assesses feasibility from the context and revised ETA
+                    -> achievable
+                         -> update_operation_status
+                         -> create call brief and continue monitoring
+                    -> not achievable
+                         -> notify_dashboard
+                         -> trigger_escalation
 ```
 
-`identify_caller` verifies the caller identity, carrier/truck details, and operation before any operational update. If verification is incomplete or ambiguous, Volta asks only minimal identifying questions and then escalates to a human without notifying a client or changing an operation.
-
-For a verified incident, Volta captures the process stage, issue description, affected truck, reported delay, revised ETA, and caller identity. `assess_mandate_feasibility` determines whether the original destination datetime and other mandate constraints remain achievable. If they do, Volta records the update and continues monitoring. If no solution remains inside the mandate, Volta updates the operation, creates a dashboard notification for Textiles Pacífico, and escalates. SMS/email exception notifications are deferred.
+For a validated incident, Volta captures the process stage, issue description, affected truck, reported delay, revised ETA, and caller identity. Volta assesses whether the original destination datetime and other mandate constraints remain achievable from the preloaded context; the backend repeats that evaluation when it processes the later write tool. If they do, Volta records the update and continues monitoring. If no solution remains inside the mandate, Volta creates a dashboard notification for Textiles Pacífico and escalates. SMS/email exception notifications are deferred.
 
 ## Adversarial Test Matrix
 
