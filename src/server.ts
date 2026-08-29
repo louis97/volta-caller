@@ -1,8 +1,14 @@
+import { createServer } from "node:http";
+
 import express, { type Request, type Response } from "express";
 import type { OperationEvent } from "@volta/contracts";
 
 import { env } from "./config/env";
 import { createMockScenario } from "./mocks/callScenario";
+import {
+  attachTelephonyWebSockets,
+  mountTelephonyRoutes
+} from "./telephony/routes";
 
 function writeEvent(response: Response, event: OperationEvent): void {
   response.write(`event: ${event.type}\n`);
@@ -48,11 +54,22 @@ export function createApp() {
     request.on("close", () => eventClients.delete(response));
   });
 
+  mountTelephonyRoutes(app);
+
   return app;
 }
 
-if (process.argv[1]?.endsWith("src/server.ts")) {
-  createApp().listen(env.PORT, () => {
-    console.log(`Volta API listening on port ${env.PORT}`);
+// tsx reports argv[1] as an absolute path, which uses backslashes on Windows;
+// comparing against a POSIX suffix there never matches and the API silently
+// never listens.
+const entrypoint = process.argv[1]?.replaceAll("\\", "/");
+
+if (entrypoint?.endsWith("src/server.ts")) {
+  // The media relay needs the raw HTTP server to handle WebSocket upgrades,
+  // which `app.listen()` does not expose.
+  const server = createServer(createApp());
+  attachTelephonyWebSockets(server);
+  server.listen(env.PORT, () => {
+    console.log(`Volta API listening on port ${env.PORT} (${env.VOLTA_MODE})`);
   });
 }

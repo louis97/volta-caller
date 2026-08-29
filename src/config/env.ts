@@ -6,14 +6,50 @@ const envSchema = z
     VOLTA_MODE: z.enum(["mock", "live"]).default("mock"),
     TWILIO_ACCOUNT_SID: z.string().min(1).optional(),
     TWILIO_AUTH_TOKEN: z.string().min(1).optional(),
-    OPENAI_API_KEY: z.string().min(1).optional()
+    TWILIO_FROM_NUMBER: z.string().min(1).optional(),
+    OPENAI_API_KEY: z.string().min(1).optional(),
+    OPENAI_REALTIME_MODEL: z.string().min(1).default("gpt-realtime"),
+    /** Public https origin exposed by ngrok, e.g. https://abc123.ngrok.app */
+    PUBLIC_BASE_URL: z.string().url().optional(),
+    /** Public wss origin exposed by ngrok, e.g. wss://abc123.ngrok.app */
+    PUBLIC_WS_URL: z.string().url().optional(),
+    SUPERVISOR_PHONE: z.string().min(1).optional(),
+    /**
+     * Hard ceiling per outbound call. A leg left open by a bug drains prepaid
+     * Twilio balance silently, so every call we place is time-boxed.
+     */
+    CALL_TIME_LIMIT_SECONDS: z.coerce.number().int().positive().default(90)
   })
   .superRefine((value, context) => {
-    if (Boolean(value.TWILIO_ACCOUNT_SID) !== Boolean(value.TWILIO_AUTH_TOKEN)) {
+    if (
+      Boolean(value.TWILIO_ACCOUNT_SID) !== Boolean(value.TWILIO_AUTH_TOKEN)
+    ) {
       context.addIssue({
         code: "custom",
-        message: "TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be provided together"
+        message:
+          "TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be provided together"
       });
+    }
+
+    if (value.VOLTA_MODE !== "live") return;
+
+    // Fail loudly at boot instead of mid-call: a missing var here surfaces as a
+    // dead WebSocket at 3am otherwise.
+    const requiredForLive = [
+      "TWILIO_ACCOUNT_SID",
+      "TWILIO_AUTH_TOKEN",
+      "TWILIO_FROM_NUMBER",
+      "OPENAI_API_KEY",
+      "PUBLIC_WS_URL"
+    ] as const;
+
+    for (const key of requiredForLive) {
+      if (!value[key]) {
+        context.addIssue({
+          code: "custom",
+          message: `${key} is required when VOLTA_MODE=live`
+        });
+      }
     }
   });
 

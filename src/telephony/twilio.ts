@@ -6,6 +6,17 @@ export type OutboundCallInput = {
   to: string;
   from: string;
   twimlUrl: string;
+  /**
+   * Hard ceiling for the call. Prepaid balance is drained silently by a leg a
+   * bug left open, so every outbound call carries a limit.
+   */
+  timeLimitSeconds?: number;
+  /**
+   * Dual-channel keeps agent and counterparty on separate tracks, which is what
+   * makes the audit player readable. Recording is required for commitments to
+   * link to an audio timestamp.
+   */
+  record?: boolean;
 };
 
 export type TransferInput = {
@@ -24,6 +35,9 @@ export type TwilioCallClient = {
       to: string;
       from: string;
       url: string;
+      timeLimit?: number;
+      record?: boolean;
+      recordingChannels?: "mono" | "dual";
     }): Promise<{ sid: string }>;
     (callId: string): { update(input: { twiml: string }): Promise<unknown> };
   };
@@ -47,7 +61,13 @@ export function createTwilioGateway({
       const call = await client.calls.create({
         to: input.to,
         from: input.from,
-        url: input.twimlUrl
+        url: input.twimlUrl,
+        ...(input.timeLimitSeconds === undefined
+          ? {}
+          : { timeLimit: input.timeLimitSeconds }),
+        ...(input.record === true
+          ? { record: true, recordingChannels: "dual" as const }
+          : {})
       });
       return {
         id: call.sid,
