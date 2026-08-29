@@ -9,6 +9,7 @@ import type {
 
 export type OperationStore = {
   getOperation(): Operation;
+  replaceOperation(operation: Operation): void;
   registerQuote(quote: Quote): void;
   recordCallBrief(callBrief: CallBrief): void;
   finalizeCommitment(commitment: Commitment): void;
@@ -30,6 +31,14 @@ export function createOperationStore(
 
   return {
     getOperation: () => clone(operation),
+    replaceOperation: (nextOperation) => {
+      operation = clone(nextOperation);
+      publish({
+        type: "mandate.created",
+        operationId: operation.id,
+        mandate: operation.mandate
+      });
+    },
     registerQuote: (quote) => {
       const storedQuote = clone(quote);
       operation = {

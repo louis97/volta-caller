@@ -4,8 +4,14 @@ import { describe, expect, it } from "vitest";
 import { evaluateMandate } from "../../src/core/mandate";
 
 const mandate: Mandate = {
-  maxPriceMxn: 9000,
-  pickupTime: "2026-09-03T10:00:00-06:00",
+  budgetCapMxn: 9000,
+  pickupAddress: "Terminal de Contenedores, Manzanillo, Colima",
+  pickupDatetime: "2026-09-03T10:00:00-06:00",
+  destinationPlace: "Textiles Pacífico, Guadalajara, Jalisco",
+  destinationDatetime: "2026-09-03T18:00:00-06:00",
+  typeOfContent: "Textiles",
+  weightKg: 18400,
+  measures: "120 × 100 × 110 cm",
   escalationPhone: "+52-33-0000-0000"
 };
 

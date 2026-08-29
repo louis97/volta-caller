@@ -27,6 +27,65 @@ async function request(app: ReturnType<typeof createApp>, path: string, init?: R
 }
 
 describe("mock demo API", () => {
+  it("stores a complete dashboard mandate in the API-owned operation state", async () => {
+    const app = createApp();
+    const mandate = {
+      budget_cap: 8700,
+      destination_datetime: "2026-09-03T18:00:00-06:00",
+      destination_place: "Textiles Pacífico, Guadalajara, Jalisco",
+      type_of_content: "Textiles",
+      weight: 18400,
+      measures: "120 × 100 × 110 cm",
+      pickup_address: "Terminal de Contenedores, Manzanillo, Colima",
+      pickup_datetime: "2026-09-03T10:00:00-06:00"
+    };
+
+    const createResponse = await request(app, "/api/mandates", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(mandate)
+    });
+
+    expect(createResponse.status).toBe(201);
+    await expect(createResponse.json()).resolves.toMatchObject({
+      id: "operation-mandate-1",
+      origin: mandate.pickup_address,
+      destination: mandate.destination_place,
+      mandate: {
+        budgetCapMxn: mandate.budget_cap,
+        destinationDatetime: mandate.destination_datetime,
+        destinationPlace: mandate.destination_place,
+        typeOfContent: mandate.type_of_content,
+        weightKg: mandate.weight,
+        measures: mandate.measures,
+        pickupAddress: mandate.pickup_address,
+        pickupDatetime: mandate.pickup_datetime
+      }
+    });
+
+    await expect(getOperation(app)).resolves.toMatchObject({
+      id: "operation-mandate-1",
+      mandate: { budgetCapMxn: mandate.budget_cap }
+    });
+  });
+
+  it("rejects an incomplete mandate without mutating the authoritative operation", async () => {
+    const app = createApp();
+    const before = await getOperation(app);
+
+    const response = await request(app, "/api/mandates", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ budget_cap: 8700 })
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "invalid_mandate"
+    });
+    await expect(getOperation(app)).resolves.toEqual(before);
+  });
+
   it("replaces each demo run with deterministic carrier outcomes and audit state", async () => {
     const app = createApp();
 

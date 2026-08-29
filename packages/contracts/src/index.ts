@@ -1,6 +1,32 @@
+/**
+ * Exact payload accepted from the dashboard when a dispatcher creates a mandate.
+ * The API owns the conversion to the canonical `Mandate` model below.
+ */
+export type CreateMandateRequest = {
+  budget_cap: number;
+  destination_datetime: string;
+  destination_place: string;
+  type_of_content: string;
+  weight: number;
+  measures: string;
+  pickup_address: string;
+  pickup_datetime: string;
+};
+
+/**
+ * Canonical operational mandate. This is the only mandate representation that
+ * agent tools, state transitions, and read models may consume.
+ */
 export type Mandate = {
-  maxPriceMxn: number;
-  pickupTime: string;
+  budgetCapMxn: number;
+  destinationDatetime: string;
+  destinationPlace: string;
+  typeOfContent: string;
+  weightKg: number;
+  measures: string;
+  pickupAddress: string;
+  pickupDatetime: string;
+  /** System routing detail; it is not supplied by the dashboard manifest. */
   escalationPhone: string;
 };
 
@@ -88,6 +114,7 @@ export type Operation = {
 };
 
 export type OperationEvent =
+  | { type: "mandate.created"; operationId: string; mandate: Mandate }
   | { type: "quote.registered"; operationId: string; quote: Quote }
   | {
       type: "commitment.finalized";

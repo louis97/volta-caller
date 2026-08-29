@@ -102,12 +102,12 @@ export async function executeToolCall(
       const operation = dependencies.store.getOperation();
       const mandateDecision = evaluateMandate(operation.mandate, {
         price: parsed.data.current_price_offered,
-        pickupTime: operation.mandate.pickupTime
+        pickupTime: operation.mandate.pickupDatetime
       });
       dependencies.store.requestEscalation(
         createEscalation(dependencies.store, parsed.data.reason, {
           ...parsed.data,
-          attemptedPickupTime: operation.mandate.pickupTime
+          attemptedPickupTime: operation.mandate.pickupDatetime
         }, dependencies.now ?? (() => new Date().toISOString()))
       );
       return {

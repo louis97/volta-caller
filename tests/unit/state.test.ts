@@ -6,7 +6,11 @@ import type {
 } from "@volta/contracts";
 import { describe, expect, it } from "vitest";
 
-import { seedOperation, THURSDAY_PICKUP } from "../../src/core/seed";
+import {
+  createOperationFromMandate,
+  seedOperation,
+  THURSDAY_PICKUP
+} from "../../src/core/seed";
 import { createOperationStore } from "../../src/core/state";
 
 const quote: Quote = {
@@ -99,17 +103,47 @@ describe("createOperationStore", () => {
     expect(received).toEqual([]);
   });
 
+  it("replaces the active operation only through the store and publishes its mandate", () => {
+    const store = createOperationStore(seedOperation());
+    const received: OperationEvent[] = [];
+    store.subscribe((event) => received.push(event));
+    const nextOperation = createOperationFromMandate(
+      {
+        budget_cap: 8700,
+        destination_datetime: "2026-09-03T18:00:00-06:00",
+        destination_place: "Guadalajara, Jalisco",
+        type_of_content: "Textiles",
+        weight: 18400,
+        measures: "120 × 100 × 110 cm",
+        pickup_address: "Manzanillo, Colima",
+        pickup_datetime: THURSDAY_PICKUP
+      },
+      "operation-mandate-1"
+    );
+
+    store.replaceOperation(nextOperation);
+
+    expect(store.getOperation()).toEqual(nextOperation);
+    expect(received).toEqual([
+      {
+        type: "mandate.created",
+        operationId: "operation-mandate-1",
+        mandate: nextOperation.mandate
+      }
+    ]);
+  });
+
   it("returns snapshots that cannot mutate the store", () => {
     const store = createOperationStore(seedOperation());
     const snapshot = store.getOperation();
 
     snapshot.quotes.push(quote);
-    snapshot.mandate.maxPriceMxn = 1;
+    snapshot.mandate.budgetCapMxn = 1;
     snapshot.candidates[0].name = "Changed outside the store";
 
     const storedOperation = store.getOperation();
     expect(storedOperation.quotes).toEqual([]);
-    expect(storedOperation.mandate.maxPriceMxn).toBe(9000);
+    expect(storedOperation.mandate.budgetCapMxn).toBe(9000);
     expect(storedOperation.candidates[0].name).toBe(
       "Transportes Costa Pacífico"
     );
