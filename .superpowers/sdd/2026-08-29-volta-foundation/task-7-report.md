@@ -52,3 +52,37 @@ git diff --check   passed
 
 - `04c6950` — contains the Task 7 API, scenario, and integration-test additions in the shared main snapshot.
 - `5fa598f` — lint-safe subscription cleanup in `createMockScenario`.
+
+## Round 1 Review Follow-up
+
+### Root Cause and RED Evidence
+
+The 9,200 MXN `commit_deal` route correctly escalated, but `createEscalation` used `new Date().toISOString()` inside the interpreter. The mock scenario supplied fixed times to the quote, brief, and commitment-finalizer paths, but not to that interpreter path. Two completed `POST /api/demo/run` operations therefore differed only in `escalations[0].requestedAt`.
+
+The expanded integration regression test failed before the fix with:
+
+```text
+expected operation response to deeply equal the first run
+requestedAt: "2026-08-29T20:26:54.947Z"
+receivedAt:  "2026-08-29T20:26:54.955Z"
+```
+
+### Green and Full Evidence
+
+`ToolDependencies` now accepts an optional `now` function with the previous real-time value as its runtime default. The mock scenario injects its deterministic run timestamp through every interpreter tool call.
+
+The revised integration test now proves:
+
+- `GET /health` returns the active mock-mode status;
+- `GET /api/events` is an SSE stream with typed quote, escalation, and commitment event records;
+- two demo runs produce identical operation payloads and replace, rather than append to, state;
+- the third carrier is retained as an `unavailable` call brief;
+- 9,200 MXN is retained as an over-cap quote/escalation while the only final commitment remains 8,500 MXN.
+
+Commands after the fix:
+
+```text
+npm test -- tests/integration/mock-demo.test.ts   Test Files 1 passed (1), Tests 1 passed (1)
+npm run typecheck                                 passed
+npm run lint                                      passed
+```

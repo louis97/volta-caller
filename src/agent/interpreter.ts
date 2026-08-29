@@ -20,6 +20,7 @@ export type ToolCallRequest = {
 export type ToolDependencies = {
   store: OperationStore;
   finalizeBooking: (intent: CommitDealInput) => Promise<void> | void;
+  now?: () => string;
 };
 
 export type ToolCallResult =
@@ -75,7 +76,12 @@ export async function executeToolCall(
       if (decision.status !== "APPROVED") {
         if (decision.status === "REQUIRES_ESCALATION") {
           dependencies.store.requestEscalation(
-            createEscalation(dependencies.store, decision.reason, parsed.data)
+            createEscalation(
+              dependencies.store,
+              decision.reason,
+              parsed.data,
+              dependencies.now ?? (() => new Date().toISOString())
+            )
           );
           return { outcome: "escalated", reason: decision.reason };
         }
@@ -102,7 +108,7 @@ export async function executeToolCall(
         createEscalation(dependencies.store, parsed.data.reason, {
           ...parsed.data,
           attemptedPickupTime: operation.mandate.pickupTime
-        })
+        }, dependencies.now ?? (() => new Date().toISOString()))
       );
       return {
         outcome: "escalated",
@@ -133,7 +139,8 @@ function createEscalation(
     callId?: string;
     finalPrice?: number;
     pickupTime?: string;
-  }
+  },
+  now: () => string
 ): Escalation {
   const operation = store.getOperation();
   return {
@@ -147,7 +154,7 @@ function createEscalation(
       terms.finalPrice,
     attemptedPickupTime: terms.attemptedPickupTime ?? terms.pickupTime,
     status: "requested",
-    requestedAt: new Date().toISOString()
+    requestedAt: now()
   };
 }
 

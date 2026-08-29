@@ -30,6 +30,11 @@ export function createMockScenario(onEvent?: Parameters<OperationStore["subscrib
     recipient: operation.mandate.escalationPhone,
     now: () => RECAP_AT
   });
+  const toolDependencies = {
+    store,
+    finalizeBooking,
+    now: () => RUN_AT
+  };
 
   return {
     store,
@@ -48,7 +53,7 @@ export function createMockScenario(onEvent?: Parameters<OperationStore["subscrib
             createdAt: RUN_AT
           }
         },
-        { store, finalizeBooking }
+        toolDependencies
       );
 
       await executeToolCall(
@@ -65,7 +70,7 @@ export function createMockScenario(onEvent?: Parameters<OperationStore["subscrib
             createdAt: RUN_AT
           }
         },
-        { store, finalizeBooking }
+        toolDependencies
       );
       await executeToolCall(
         {
@@ -77,7 +82,7 @@ export function createMockScenario(onEvent?: Parameters<OperationStore["subscrib
             timestampMs: 31_000
           }
         },
-        { store, finalizeBooking }
+        toolDependencies
       );
 
       store.recordCallBrief(
@@ -105,7 +110,7 @@ export function createMockScenario(onEvent?: Parameters<OperationStore["subscrib
             plate: "ABC-123"
           }
         },
-        { store, finalizeBooking }
+        toolDependencies
       );
     }
   };
