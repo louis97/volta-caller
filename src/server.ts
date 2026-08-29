@@ -22,6 +22,10 @@ const approvalDecisionSchema = z.object({
   decidedBy: z.string().trim().min(1).max(120)
 });
 
+const approvalUndoSchema = z.object({
+  undoneBy: z.string().trim().min(1).max(120)
+});
+
 const copilotRequestSchema = z.object({
   question: z.string().trim().min(1).max(2000),
   history: z
@@ -82,7 +86,7 @@ export function createApp({
     });
   });
 
-  app.post("/api/approvals/:approvalId/decision", async (request, response) => {
+  app.post("/api/approvals/:approvalId/decision", (request, response) => {
     const parsed = approvalDecisionSchema.safeParse(request.body);
     if (!parsed.success) {
       response.status(400).json({
@@ -101,9 +105,6 @@ export function createApp({
         ...parsed.data,
         decidedAt: new Date().toISOString()
       });
-      if (approval.status === "approved" && env.VOLTA_MODE === "mock") {
-        await scenario.closeApprovedDeal();
-      }
       response.status(200).json({
         approval,
         operation: scenario.store.getOperation()

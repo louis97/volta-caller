@@ -163,6 +163,45 @@ describe("mock demo API", () => {
       }
     );
     expect(decision.status).toBe(200);
+    const authorized = await getOperation(app);
+    expect(authorized.commitment).toBeUndefined();
+    expect(authorized.closingAuthorization).toMatchObject({
+      carrierId: "carrier-ruta-occidente",
+      finalPriceMxn: 8500
+    });
+
+    const undo = await request(app, `/api/approvals/${approvalId}/undo`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ undoneBy: "Bryan Riano" })
+    });
+    expect(undo.status).toBe(200);
+    const reopened = await getOperation(app);
+    expect(reopened).toMatchObject({ status: "awaiting_approval" });
+    expect(reopened.closingAuthorization).toBeUndefined();
+    expect(reopened.approvals[0]).toMatchObject({ status: "pending" });
+    expect(reopened.approvals[0].decisionHistory).toMatchObject([
+      { action: "approve", undoneBy: "Bryan Riano" }
+    ]);
+
+    const reapproval = await request(
+      app,
+      `/api/approvals/${approvalId}/decision`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "approve",
+          selectedQuoteId: "quote-ruta-occidente-001",
+          decidedBy: "Bryan Riano"
+        })
+      }
+    );
+    expect(reapproval.status).toBe(200);
+    const closeCall = await request(app, "/api/demo/close-approved-deal", {
+      method: "POST"
+    });
+    expect(closeCall.status).toBe(202);
     const committed = await getOperation(app);
     expect(committed.commitment).toMatchObject({
       carrierId: "carrier-ruta-occidente",

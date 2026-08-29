@@ -68,6 +68,14 @@ export type ApprovalRequest = {
   decidedBy?: string;
   createdAt: string;
   decidedAt?: string;
+  decisionHistory?: Array<{
+    action: "approve" | "decline";
+    selectedQuoteId?: string;
+    decidedBy: string;
+    decidedAt: string;
+    undoneBy?: string;
+    undoneAt?: string;
+  }>;
 };
 
 export type ClosingAuthorization = {
@@ -164,6 +172,11 @@ export type OperationEvent =
     }
   | {
       type: "approval.resolved";
+      operationId: string;
+      approval: ApprovalRequest;
+    }
+  | {
+      type: "approval.reopened";
       operationId: string;
       approval: ApprovalRequest;
     }

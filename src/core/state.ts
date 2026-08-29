@@ -33,6 +33,11 @@ export type OperationStore = {
     decidedBy: string;
     decidedAt: string;
   }): ApprovalRequest;
+  undoApproval(input: {
+    approvalId: string;
+    undoneBy: string;
+    undoneAt: string;
+  }): ApprovalRequest;
   recordCallBrief(callBrief: CallBrief): void;
   finalizeCommitment(commitment: Commitment): void;
   requestEscalation(escalation: Escalation): void;
@@ -189,7 +194,17 @@ export function createOperationStore(
         selectedQuoteId:
           input.action === "approve" ? input.selectedQuoteId : undefined,
         decidedBy: input.decidedBy,
-        decidedAt: input.decidedAt
+        decidedAt: input.decidedAt,
+        decisionHistory: [
+          ...(current.decisionHistory ?? []),
+          {
+            action: input.action,
+            selectedQuoteId:
+              input.action === "approve" ? input.selectedQuoteId : undefined,
+            decidedBy: input.decidedBy,
+            decidedAt: input.decidedAt
+          }
+        ]
       };
       const approvals = [...operation.approvals];
       approvals[approvalIndex] = resolved;
@@ -228,6 +243,50 @@ export function createOperationStore(
         approval: resolved
       });
       return clone(resolved);
+    },
+    undoApproval: (input) => {
+      const approvalIndex = operation.approvals.findIndex(
+        (approval) => approval.id === input.approvalId
+      );
+      if (approvalIndex === -1) throw new Error("approval_not_found");
+
+      const current = operation.approvals[approvalIndex];
+      if (current.status === "pending")
+        throw new Error("approval_already_pending");
+      if (operation.commitment)
+        throw new Error("approval_commitment_finalized");
+
+      const decisionHistory = [...(current.decisionHistory ?? [])];
+      const latestDecision = decisionHistory.at(-1);
+      if (latestDecision) {
+        decisionHistory[decisionHistory.length - 1] = {
+          ...latestDecision,
+          undoneBy: input.undoneBy,
+          undoneAt: input.undoneAt
+        };
+      }
+      const reopened: ApprovalRequest = {
+        ...current,
+        status: "pending",
+        selectedQuoteId: undefined,
+        decidedBy: undefined,
+        decidedAt: undefined,
+        decisionHistory
+      };
+      const approvals = [...operation.approvals];
+      approvals[approvalIndex] = reopened;
+      operation = {
+        ...operation,
+        status: "awaiting_approval",
+        approvals,
+        closingAuthorization: undefined
+      };
+      publish({
+        type: "approval.reopened",
+        operationId: operation.id,
+        approval: reopened
+      });
+      return clone(reopened);
     },
     recordCallBrief: (callBrief) => {
       const storedCallBrief = clone(callBrief);
