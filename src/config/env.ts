@@ -16,9 +16,20 @@ const envSchema = z
     SUPERVISOR_PHONE: z.string().min(1).optional(),
     /**
      * Hard ceiling per outbound call. A leg left open by a bug drains prepaid
-     * Twilio balance silently, so every call we place is time-boxed.
+     * balance silently, so paid accounts should keep this on. Trial accounts
+     * reject the parameter, so 0 omits it entirely.
      */
-    CALL_TIME_LIMIT_SECONDS: z.coerce.number().int().positive().default(90)
+    CALL_TIME_LIMIT_SECONDS: z.coerce.number().int().nonnegative().default(0),
+    /**
+     * Dual-channel recording is what lets a commitment link to the moment it
+     * was agreed. Trial accounts cannot use it: Twilio rejects the whole
+     * request with "trial accounts have limited parameter access".
+     * Turn this on after upgrading.
+     */
+    TWILIO_RECORD_CALLS: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true")
   })
   .superRefine((value, context) => {
     if (

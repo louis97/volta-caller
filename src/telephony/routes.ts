@@ -91,12 +91,10 @@ export function mountTelephonyRoutes(app: Express): void {
     const to = readTo(request);
 
     if (to === undefined) {
-      response
-        .status(400)
-        .json({
-          error: "missing_to",
-          hint: 'pass ?to=+57... or {"to":"+57..."}'
-        });
+      response.status(400).json({
+        error: "missing_to",
+        hint: 'pass ?to=+57... or {"to":"+57..."}'
+      });
       return;
     }
 
@@ -107,13 +105,23 @@ export function mountTelephonyRoutes(app: Express): void {
         to,
         from: env.TWILIO_FROM_NUMBER ?? "",
         twimlUrl: `${(env.PUBLIC_BASE_URL ?? "").replace(/\/$/, "")}/twiml/outbound`,
-        timeLimitSeconds: env.CALL_TIME_LIMIT_SECONDS,
-        record: true
+        ...(env.CALL_TIME_LIMIT_SECONDS > 0
+          ? { timeLimitSeconds: env.CALL_TIME_LIMIT_SECONDS }
+          : {}),
+        record: env.TWILIO_RECORD_CALLS
       });
       response.status(201).json(session);
     } catch (error) {
-      response.status(500).json({
-        error: error instanceof Error ? error.message : "call_failed"
+      // Surface Twilio's own code: its messages alone rarely name the culprit.
+      const detail = error as {
+        message?: string;
+        code?: number;
+        status?: number;
+      };
+      response.status(502).json({
+        error: detail.message ?? "call_failed",
+        twilioCode: detail.code,
+        twilioStatus: detail.status
       });
     }
   });
