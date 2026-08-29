@@ -64,15 +64,39 @@ export function mountTelephonyRoutes(app: Express): void {
     }
   );
 
-  app.post("/api/calls/test", express.json(), async (request, response) => {
-    const body: unknown = request.body;
-    const to =
-      typeof body === "object" && body !== null && "to" in body
-        ? (body as { to?: unknown }).to
-        : undefined;
+  // Accepts the destination as a query param as well as a JSON body: quoting a
+  // JSON payload through PowerShell mangles the escaped quotes, and losing a
+  // gate test to shell quoting is not a debt worth carrying.
+  const readTo = (request: express.Request): string | undefined => {
+    const fromQuery = request.query.to;
+    if (typeof fromQuery === "string" && fromQuery.length > 0) return fromQuery;
 
-    if (typeof to !== "string" || to.length === 0) {
-      response.status(400).json({ error: "missing_to" });
+    const body: unknown = request.body;
+    if (typeof body === "object" && body !== null && "to" in body) {
+      const candidate = (body as { to?: unknown }).to;
+      if (typeof candidate === "string" && candidate.length > 0)
+        return candidate;
+    }
+    return undefined;
+  };
+
+  // A body mangled by shell quoting should fall through to the query param
+  // rather than surfacing as an HTML 500 page mid-gate.
+  const parseJson = express.json({ strict: false });
+  const jsonBody: express.RequestHandler = (request, response, next) => {
+    parseJson(request, response, () => next());
+  };
+
+  app.post("/api/calls/test", jsonBody, async (request, response) => {
+    const to = readTo(request);
+
+    if (to === undefined) {
+      response
+        .status(400)
+        .json({
+          error: "missing_to",
+          hint: 'pass ?to=+57... or {"to":"+57..."}'
+        });
       return;
     }
 
@@ -88,11 +112,9 @@ export function mountTelephonyRoutes(app: Express): void {
       });
       response.status(201).json(session);
     } catch (error) {
-      response
-        .status(500)
-        .json({
-          error: error instanceof Error ? error.message : "call_failed"
-        });
+      response.status(500).json({
+        error: error instanceof Error ? error.message : "call_failed"
+      });
     }
   });
 }
