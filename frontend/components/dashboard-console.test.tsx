@@ -201,6 +201,74 @@ describe("DashboardConsole", () => {
       expect.objectContaining({ method: "POST" })
     );
   });
+
+  it("reopens the quote round when the dispatcher undoes an uncommitted decision", async () => {
+    const operation = quoteRoundOperation();
+    const fetchMock = vi.fn().mockImplementation(async (input: string) => {
+      if (input === "/api/operation") {
+        return { ok: true, json: async () => structuredClone(operation) };
+      }
+      if (input.includes("/decision")) {
+        operation.approvals[0] = {
+          ...operation.approvals[0],
+          status: "approved",
+          selectedQuoteId: "quote-ruta-occidente-001",
+          decidedBy: "Bryan Riano"
+        };
+        operation.status = "negotiating";
+        operation.closingAuthorization = {
+          approvalId: operation.approvals[0].id,
+          quoteId: "quote-ruta-occidente-001",
+          carrierId: "carrier-ruta-occidente",
+          finalPriceMxn: 8500,
+          pickupTime: THURSDAY_PICKUP,
+          authorizedBy: "Bryan Riano",
+          authorizedAt: "2026-09-01T15:02:00.000Z"
+        };
+        return {
+          ok: true,
+          json: async () => ({ operation: structuredClone(operation) })
+        };
+      }
+      if (input.includes("/undo")) {
+        operation.approvals[0] = {
+          ...operation.approvals[0],
+          status: "pending",
+          selectedQuoteId: undefined,
+          decidedBy: undefined
+        };
+        operation.status = "awaiting_approval";
+        operation.closingAuthorization = undefined;
+        return {
+          ok: true,
+          json: async () => ({ operation: structuredClone(operation) })
+        };
+      }
+      throw new Error(`Unexpected request: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<DashboardConsole />);
+
+    openNavigationItem("Approvals");
+    await screen.findByText("3 carrier quotes are ready to compare");
+    fireEvent.click(screen.getByRole("radio", { name: /Ruta Occidente/ }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Authorize closing call" })
+    );
+
+    expect(
+      await screen.findByText(/Closing call authorized/)
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Undo decision" }));
+
+    expect(
+      await screen.findByText("3 carrier quotes are ready to compare")
+    ).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/approvals/approval-quote-round-001/undo",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
 });
 
 function quoteRoundOperation(): Operation {

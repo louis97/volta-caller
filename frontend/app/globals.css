@@ -1333,6 +1333,11 @@ main {
 .decision-complete .button {
   margin-top: 15px;
 }
+.decision-complete .decision-complete-actions {
+  width: min(100%, 540px);
+  margin-top: 8px;
+  justify-content: center;
+}
 .copilot-launcher {
   position: fixed;
   right: 26px;

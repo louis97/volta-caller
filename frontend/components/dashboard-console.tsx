@@ -791,6 +791,7 @@ function ApprovalsView() {
     const sync = () => void refresh();
     events.addEventListener("approval.requested", sync);
     events.addEventListener("approval.resolved", sync);
+    events.addEventListener("approval.reopened", sync);
     events.addEventListener("commitment.finalized", sync);
     return () => events.close();
   }, []);
@@ -801,6 +802,11 @@ function ApprovalsView() {
   const quotes =
     operation && approval ? selectedQuotes(operation, approval) : [];
   const isSelectionApproval = approval?.type === "carrier_selection";
+  const closingApproval = operation?.closingAuthorization
+    ? operation.approvals.find(
+        (item) => item.id === operation.closingAuthorization?.approvalId
+      )
+    : undefined;
 
   async function submitDecision(action: "approve" | "decline") {
     if (!approval || !operation) return;
@@ -830,6 +836,48 @@ function ApprovalsView() {
       setOperation(payload.operation);
     } catch {
       setDecisionError("Volta could not record this decision. Try again.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function undoDecision() {
+    if (!closingApproval) return;
+    setDecisionError(null);
+    setIsSubmitting(true);
+    try {
+      const response = await fetch(
+        `/api/approvals/${closingApproval.id}/undo`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ undoneBy: "Bryan Riano" })
+        }
+      );
+      if (!response.ok) throw new Error("undo_rejected");
+      const payload = (await response.json()) as { operation: Operation };
+      setSelectedQuoteId(null);
+      setOperation(payload.operation);
+    } catch {
+      setDecisionError(
+        "Volta could not undo this decision. A confirmed booking cannot be reversed here."
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function runMockClosingCall() {
+    setDecisionError(null);
+    setIsSubmitting(true);
+    try {
+      const response = await fetch("/api/demo/close-approved-deal", {
+        method: "POST"
+      });
+      if (!response.ok) throw new Error("mock_close_failed");
+      setOperation((await response.json()) as Operation);
+    } catch {
+      setDecisionError("Volta could not start the demo closing call.");
     } finally {
       setIsSubmitting(false);
     }
@@ -880,14 +928,64 @@ function ApprovalsView() {
           </a>
         </section>
       )}
-      {loadState === "ready" && !approval && !operation?.commitment && (
+      {loadState === "ready" && !approval && closingApproval && operation && (
         <section className="panel decision-complete">
           <span className="success-ring">✓</span>
-          <p className="section-label">No decisions waiting</p>
-          <h2>Volta will alert you after the quote round closes.</h2>
-          <p>Keep this panel open to receive the next request in real time.</p>
+          <p className="section-label">Closing call authorized</p>
+          <h2>
+            Volta may now call{" "}
+            {operation.candidates.find(
+              (carrier) =>
+                carrier.id === operation.closingAuthorization?.carrierId
+            )?.name ?? "the selected carrier"}
+            .
+          </h2>
+          <p>
+            The carrier can only be booked at{" "}
+            {formatMxn(operation.closingAuthorization!.finalPriceMxn)} for{" "}
+            {formatPickup(operation.closingAuthorization!.pickupTime)}. You can
+            undo this authorization until the booking is confirmed.
+          </p>
+          {decisionError && (
+            <p className="form-error approval-error" role="alert">
+              {decisionError}
+            </p>
+          )}
+          <div className="approval-actions decision-complete-actions">
+            <m.button
+              className="button button--secondary"
+              disabled={isSubmitting}
+              onClick={() => void undoDecision()}
+              whileFocus={{ outlineOffset: 3 }}
+              whileTap={{ scale: 0.98 }}
+            >
+              Undo decision
+            </m.button>
+            <m.button
+              className="button button--primary"
+              disabled={isSubmitting}
+              onClick={() => void runMockClosingCall()}
+              whileFocus={{ outlineOffset: 3 }}
+              whileTap={{ scale: 0.98 }}
+            >
+              {isSubmitting ? "Starting call…" : "Run demo closing call"}
+            </m.button>
+          </div>
         </section>
       )}
+      {loadState === "ready" &&
+        !approval &&
+        !operation?.commitment &&
+        !closingApproval && (
+          <section className="panel decision-complete">
+            <span className="success-ring">✓</span>
+            <p className="section-label">No decisions waiting</p>
+            <h2>Volta will alert you after the quote round closes.</h2>
+            <p>
+              Keep this panel open to receive the next request in real time.
+            </p>
+          </section>
+        )}
       {loadState === "ready" && operation && approval && (
         <section className="approval-layout">
           <article className="panel approval-main">

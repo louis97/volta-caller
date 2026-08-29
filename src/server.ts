@@ -24,6 +24,10 @@ const approvalDecisionSchema = z.object({
   decidedBy: z.string().trim().min(1).max(120)
 });
 
+const approvalUndoSchema = z.object({
+  undoneBy: z.string().trim().min(1).max(120)
+});
+
 const copilotRequestSchema = z.object({
   question: z.string().trim().min(1).max(2000),
   history: z
@@ -83,7 +87,7 @@ export function createApp() {
     });
   });
 
-  app.post("/api/approvals/:approvalId/decision", async (request, response) => {
+  app.post("/api/approvals/:approvalId/decision", (request, response) => {
     const parsed = approvalDecisionSchema.safeParse(request.body);
     if (!parsed.success) {
       response.status(400).json({
@@ -102,9 +106,6 @@ export function createApp() {
         ...parsed.data,
         decidedAt: new Date().toISOString()
       });
-      if (approval.status === "approved" && env.VOLTA_MODE === "mock") {
-        await scenario.closeApprovedDeal();
-      }
       response.status(200).json({
         approval,
         operation: scenario.store.getOperation()
@@ -115,6 +116,44 @@ export function createApp() {
       const status = reason === "approval_not_found" ? 404 : 409;
       response.status(status).json({ error: reason });
     }
+  });
+
+  app.post("/api/approvals/:approvalId/undo", (request, response) => {
+    const parsed = approvalUndoSchema.safeParse(request.body);
+    if (!parsed.success) {
+      response.status(400).json({ error: "invalid_approval_undo" });
+      return;
+    }
+
+    try {
+      const approval = scenario.store.undoApproval({
+        approvalId: request.params.approvalId,
+        ...parsed.data,
+        undoneAt: new Date().toISOString()
+      });
+      response.status(200).json({
+        approval,
+        operation: scenario.store.getOperation()
+      });
+    } catch (error) {
+      const reason =
+        error instanceof Error ? error.message : "approval_undo_invalid";
+      const status = reason === "approval_not_found" ? 404 : 409;
+      response.status(status).json({ error: reason });
+    }
+  });
+
+  app.post("/api/demo/close-approved-deal", async (_request, response) => {
+    if (env.VOLTA_MODE !== "mock") {
+      response.status(409).json({ error: "demo_requires_mock_mode" });
+      return;
+    }
+    const committed = await scenario.closeApprovedDeal();
+    if (!committed) {
+      response.status(409).json({ error: "closing_authorization_required" });
+      return;
+    }
+    response.status(202).json(scenario.store.getOperation());
   });
 
   app.post("/api/mandates", (request, response) => {
