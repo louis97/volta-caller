@@ -90,6 +90,11 @@ export function attachMediaStreamRelay({
       streamSid =
         stringValue(objectValue(event.start)?.streamSid) ??
         stringValue(event.streamSid);
+
+      // Volta places the call, so Volta opens the conversation. Server VAD only
+      // produces a response after it hears speech, so without this the agent
+      // waits in silence for a carrier who is waiting for it to say something.
+      realtime.send(JSON.stringify({ type: "response.create" }));
       return;
     }
     if (event.event !== "media") return;

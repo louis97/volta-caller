@@ -73,6 +73,11 @@ describe("telephony adapters", () => {
     });
 
     twilio.receive({
+      event: "start",
+      streamSid: "MZ123",
+      start: { streamSid: "MZ123", callSid: "CA123" }
+    });
+    twilio.receive({
       event: "media",
       streamSid: "MZ123",
       media: { payload: "twilio-pcmu" }
@@ -95,6 +100,9 @@ describe("telephony adapters", () => {
 
     expect(realtime.sent.map((message) => JSON.parse(message))).toEqual(
       expect.arrayContaining([
+        // Volta greets on stream start; server VAD would otherwise leave both
+        // sides waiting for the other to speak.
+        { type: "response.create" },
         { type: "input_audio_buffer.append", audio: "twilio-pcmu" },
         {
           type: "conversation.item.create",
