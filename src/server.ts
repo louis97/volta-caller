@@ -1,22 +1,20 @@
 import express, { type Request, type Response } from "express";
 import type { OperationEvent } from "@volta/contracts";
+import { pathToFileURL } from "node:url";
 import OpenAI from "openai";
 import { z } from "zod";
 
 import { env } from "./config/env";
-import { createOperationFromMandate } from "./core/seed";
+import {
+  createMandate,
+  getMandate,
+  InvalidMandateError,
+  listMandates
+} from "./core/mandates/service";
+import { createMemoryMandatesRepository } from "./core/mandates/memory-repository";
+import { createSupabaseMandatesRepositoryFromConfig } from "./core/mandates/supabase-repository";
+import type { MandatesRepository } from "./core/mandates/types";
 import { createMockScenario } from "./mocks/callScenario";
-
-const createMandateRequestSchema = z.object({
-  budget_cap: z.number().finite().nonnegative(),
-  destination_datetime: z.string().datetime({ offset: true }),
-  destination_place: z.string().trim().min(1).max(240),
-  type_of_content: z.string().trim().min(1).max(120),
-  weight: z.number().finite().positive(),
-  measures: z.string().trim().min(1).max(120),
-  pickup_address: z.string().trim().min(1).max(240),
-  pickup_datetime: z.string().datetime({ offset: true })
-});
 
 const approvalDecisionSchema = z.object({
   action: z.enum(["approve", "decline"]),
@@ -42,10 +40,11 @@ function writeEvent(response: Response, event: OperationEvent): void {
   response.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
-export function createApp() {
+export function createApp({
+  mandatesRepository = createDefaultMandatesRepository()
+}: { mandatesRepository?: MandatesRepository } = {}) {
   const app = express();
   let scenario = createMockScenario();
-  let mandateSequence = 1;
   const eventClients = new Set<Response>();
 
   app.use(express.json());
@@ -117,25 +116,45 @@ export function createApp() {
     }
   });
 
-  app.post("/api/mandates", (request, response) => {
-    const parsed = createMandateRequestSchema.safeParse(request.body);
-    if (!parsed.success) {
-      response.status(400).json({
-        error: "invalid_mandate",
-        issues: parsed.error.issues.map((issue) => ({
-          path: issue.path.join("."),
-          message: issue.message
-        }))
-      });
-      return;
+  app.post("/api/mandates", async (request, response) => {
+    try {
+      response.status(201).json(await createMandate(mandatesRepository, request.body));
+    } catch (error) {
+      if (error instanceof InvalidMandateError) {
+        response.status(400).json({ error: error.code });
+        return;
+      }
+      console.error("Mandate creation failed", error);
+      response.status(500).json({ error: "mandate_persistence_failed" });
     }
+  });
 
-    const operation = createOperationFromMandate(
-      parsed.data,
-      `operation-mandate-${mandateSequence++}`
-    );
-    scenario.store.replaceOperation(operation);
-    response.status(201).json(scenario.store.getOperation());
+  app.get("/api/mandates", async (_request, response) => {
+    try {
+      response.status(200).json(await listMandates(mandatesRepository));
+    } catch (error) {
+      console.error("Mandate listing failed", error);
+      response.status(500).json({ error: "mandate_persistence_failed" });
+    }
+  });
+
+  app.get("/api/mandates/:id", async (request, response) => {
+    try {
+      const id = request.params.id;
+      if (typeof id !== "string") {
+        response.status(404).json({ error: "mandate_not_found" });
+        return;
+      }
+      const mandate = await getMandate(mandatesRepository, id);
+      if (!mandate) {
+        response.status(404).json({ error: "mandate_not_found" });
+        return;
+      }
+      response.status(200).json(mandate);
+    } catch (error) {
+      console.error("Mandate lookup failed", error);
+      response.status(500).json({ error: "mandate_persistence_failed" });
+    }
   });
 
   app.post("/api/copilot", async (request, response) => {
@@ -202,6 +221,21 @@ export function createApp() {
   return app;
 }
 
+function createDefaultMandatesRepository(): MandatesRepository {
+  if (env.VOLTA_MODE !== "live") return createMemoryMandatesRepository();
+  const supabaseKey =
+    env.SUPABASE_SERVICE_ROLE_KEY ?? env.SUPABASE_PUBLISHABLE_KEY;
+  if (!env.SUPABASE_URL || !supabaseKey) {
+    throw new Error(
+      "SUPABASE_URL and either SUPABASE_PUBLISHABLE_KEY or SUPABASE_SERVICE_ROLE_KEY are required in live mode"
+    );
+  }
+  return createSupabaseMandatesRepositoryFromConfig(
+    env.SUPABASE_URL,
+    supabaseKey
+  );
+}
+
 function buildCopilotInstructions(operation: unknown): string {
   return [
     "You are Volta Copilot, the dispatcher's operational assistant.",
@@ -227,7 +261,11 @@ function buildCopilotInput(
   return [...transcript, "Dispatcher: " + question].join("\n");
 }
 
-if (process.argv[1]?.endsWith("src/server.ts")) {
+export function isMainModule(moduleUrl: string, entrypoint?: string): boolean {
+  return Boolean(entrypoint && moduleUrl === pathToFileURL(entrypoint).href);
+}
+
+if (isMainModule(import.meta.url, process.argv[1])) {
   createApp().listen(env.PORT, () => {
     console.log(`Volta API listening on port ${env.PORT}`);
   });

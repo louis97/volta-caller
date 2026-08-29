@@ -31,8 +31,9 @@ async function request(
 }
 
 describe("mock demo API", () => {
-  it("stores a complete dashboard mandate in the API-owned operation state", async () => {
+  it("persists a complete dashboard mandate without changing the operation state", async () => {
     const app = createApp();
+    const before = await getOperation(app);
     const mandate = {
       budget_cap: 8700,
       destination_datetime: "2026-09-03T18:00:00-06:00",
@@ -52,25 +53,13 @@ describe("mock demo API", () => {
 
     expect(createResponse.status).toBe(201);
     await expect(createResponse.json()).resolves.toMatchObject({
-      id: "operation-mandate-1",
-      origin: mandate.pickup_address,
-      destination: mandate.destination_place,
-      mandate: {
-        budgetCapMxn: mandate.budget_cap,
-        destinationDatetime: mandate.destination_datetime,
-        destinationPlace: mandate.destination_place,
-        typeOfContent: mandate.type_of_content,
-        weightKg: mandate.weight,
-        measures: mandate.measures,
-        pickupAddress: mandate.pickup_address,
-        pickupDatetime: mandate.pickup_datetime
-      }
+      id: expect.any(String),
+      ...mandate,
+      created_at: expect.any(String),
+      updated_at: expect.any(String)
     });
 
-    await expect(getOperation(app)).resolves.toMatchObject({
-      id: "operation-mandate-1",
-      mandate: { budgetCapMxn: mandate.budget_cap }
-    });
+    await expect(getOperation(app)).resolves.toEqual(before);
   });
 
   it("rejects an incomplete mandate without mutating the authoritative operation", async () => {
