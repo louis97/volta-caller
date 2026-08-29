@@ -64,6 +64,17 @@ export function mountTelephonyRoutes(app: Express): void {
     }
   );
 
+  // Diagnostic only: a TwiML with no media stream. If a call reaches this and
+  // speaks, the account and the public URL are fine and the stream itself is
+  // what the account refuses.
+  app.post("/twiml/say", twiml, (_request, response) => {
+    response
+      .type("text/xml")
+      .send(
+        '<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Mia" language="es-MX">Prueba de Volta. Si escuchas esto, el camino de voz funciona.</Say><Pause length="2"/></Response>'
+      );
+  });
+
   // Accepts the destination as a query param as well as a JSON body: quoting a
   // JSON payload through PowerShell mangles the escaped quotes, and losing a
   // gate test to shell quoting is not a debt worth carrying.
@@ -98,13 +109,17 @@ export function mountTelephonyRoutes(app: Express): void {
       return;
     }
 
+    // ?twiml=say places the call against the diagnostic TwiML instead.
+    const twimlPath =
+      request.query.twiml === "say" ? "/twiml/say" : "/twiml/outbound";
+
     try {
       const gateway = createTwilioGateway({ client: getTwilioClient() });
       const session = await gateway.createOutboundCall({
         operationId: store.getOperation().id,
         to,
         from: env.TWILIO_FROM_NUMBER ?? "",
-        twimlUrl: `${(env.PUBLIC_BASE_URL ?? "").replace(/\/$/, "")}/twiml/outbound`,
+        twimlUrl: `${(env.PUBLIC_BASE_URL ?? "").replace(/\/$/, "")}${twimlPath}`,
         ...(env.CALL_TIME_LIMIT_SECONDS > 0
           ? { timeLimitSeconds: env.CALL_TIME_LIMIT_SECONDS }
           : {}),
