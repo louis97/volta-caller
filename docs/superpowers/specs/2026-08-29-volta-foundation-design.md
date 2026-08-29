@@ -63,10 +63,13 @@ by the API:
 ```
 
 Both datetime fields require ISO 8601 offsets; the interface must provide an offset-preserving
-adapter before it posts its `datetime-local` values. The API returns the canonical operation as the
-read model and publishes `mandate.created`. Until durable storage is introduced, this authority is
-an in-memory operation store; a process restart clears it, but the browser is never an alternative
-source of truth.
+adapter before it posts its `datetime-local` values. The dashboard posts the shared
+`CreateMandateRequest` contract to its relative `/api/mandates` route; Next.js rewrites that route
+to `VOLTA_API_URL` (localhost:3001 by default), so the browser never embeds an API host. It waits
+for the HTTP 201 canonical operation before it confirms creation and displays an explicit save
+error otherwise. The API returns the canonical operation as the read model and publishes
+`mandate.created`. Until durable storage is introduced, this authority is an in-memory operation
+store; a process restart clears it, but the browser is never an alternative source of truth.
 
 ## Runtime Flow
 

@@ -1,5 +1,6 @@
 "use client";
 
+import type { CreateMandateRequest } from "@volta/contracts";
 import { useState } from "react";
 import {
   ApprovalIcon,
@@ -13,6 +14,14 @@ import {
 } from "./icons";
 
 type View = "operations" | "new-mandate" | "call-floor" | "approvals";
+
+type MandateSaveState =
+  | { status: "idle" }
+  | { status: "saving" }
+  | { status: "saved"; operationId: string }
+  | { status: "error"; message: string };
+
+const MANDATE_TIMEZONE_OFFSET = "-06:00";
 
 const navItems: Array<{
   id: View;
@@ -317,7 +326,38 @@ function OperationsView({ navigate }: { navigate: (view: View) => void }) {
 }
 
 function NewMandateView({ onCreated }: { onCreated: () => void }) {
-  const [saved, setSaved] = useState(false);
+  const [saveState, setSaveState] = useState<MandateSaveState>({
+    status: "idle"
+  });
+
+  async function submitMandate(form: HTMLFormElement) {
+    const data = new FormData(form);
+    const mandate: CreateMandateRequest = {
+      budget_cap: Number(data.get("budget_cap")),
+      destination_datetime: toOffsetDatetime(data.get("destination_datetime")),
+      destination_place: String(data.get("destination_place")),
+      type_of_content: String(data.get("type_of_content")),
+      weight: Number(data.get("weight")),
+      measures: String(data.get("measures")),
+      pickup_address: String(data.get("pickup_address")),
+      pickup_datetime: toOffsetDatetime(data.get("pickup_datetime"))
+    };
+    const response = await fetch("/api/mandates", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(mandate)
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        "Volta could not save this mandate. Check the details and try again."
+      );
+    }
+
+    const operation = (await response.json()) as { id: string };
+    setSaveState({ status: "saved", operationId: operation.id });
+  }
+
   return (
     <>
       <Topbar
@@ -327,9 +367,20 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
       />
       <form
         className="mandate-layout"
-        onSubmit={(event) => {
+        onSubmit={async (event) => {
           event.preventDefault();
-          setSaved(true);
+          setSaveState({ status: "saving" });
+          try {
+            await submitMandate(event.currentTarget);
+          } catch (error) {
+            setSaveState({
+              status: "error",
+              message:
+                error instanceof Error
+                  ? error.message
+                  : "Volta could not save this mandate."
+            });
+          }
         }}
       >
         <section className="panel form-panel">
@@ -477,16 +528,28 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
             Textiles · 18,400 kg · 120 × 100 × 110 cm. Volta may negotiate any
             rate at or below the ceiling; either datetime remains binding.
           </p>
-          {saved ? (
+          {saveState.status === "saved" ? (
             <div className="saved-message">
-              <i /> Mandate VLT-2042 created
+              <i /> Mandate {saveState.operationId} created
             </div>
           ) : (
-            <button className="button button--primary full" type="submit">
-              Launch mandate <ArrowIcon />
+            <button
+              className="button button--primary full"
+              type="submit"
+              disabled={saveState.status === "saving"}
+            >
+              {saveState.status === "saving"
+                ? "Saving mandate…"
+                : "Launch mandate"}
+              <ArrowIcon />
             </button>
           )}
-          {saved && (
+          {saveState.status === "error" && (
+            <p className="form-error" role="alert">
+              {saveState.message}
+            </p>
+          )}
+          {saveState.status === "saved" && (
             <button
               className="button button--secondary full"
               type="button"
@@ -499,6 +562,14 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
       </form>
     </>
   );
+}
+
+function toOffsetDatetime(value: FormDataEntryValue | null): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error("A mandate datetime is required.");
+  }
+
+  return `${value}:00${MANDATE_TIMEZONE_OFFSET}`;
 }
 
 const liveCalls = [

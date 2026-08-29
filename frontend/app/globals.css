@@ -894,6 +894,16 @@ main {
   border-radius: 50%;
   background: var(--ok);
 }
+.form-error {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  color: var(--danger);
+  background: var(--danger-tint);
+  border: 1px solid #efc4bf;
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 1.45;
+}
 .mandate-summary .button + .button {
   margin-top: 9px;
 }

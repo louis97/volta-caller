@@ -1,5 +1,16 @@
 import type { NextConfig } from "next";
 
-const nextConfig: NextConfig = {};
+const apiUrl = process.env.VOLTA_API_URL ?? "http://localhost:3001";
+
+const nextConfig: NextConfig = {
+  async rewrites() {
+    return [
+      {
+        source: "/api/:path*",
+        destination: `${apiUrl}/api/:path*`
+      }
+    ];
+  }
+};
 
 export default nextConfig;

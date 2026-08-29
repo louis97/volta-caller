@@ -408,7 +408,10 @@ export const env = z.object({
 `destination_place`, `type_of_content`, `weight`, `measures`, `pickup_address`, and
 `pickup_datetime`. It validates the complete payload before replacing the active in-memory
 operation, returns HTTP 201 with the canonical read model, and emits `mandate.created`. Invalid
-payloads return HTTP 400 and must leave the authoritative operation unchanged.
+payloads return HTTP 400 and must leave the authoritative operation unchanged. The dashboard
+submits the shared request contract to `/api/mandates`; its Next.js rewrite targets
+`VOLTA_API_URL`, defaulting to `http://localhost:3001` for local work. The UI only confirms a
+mandate after the HTTP 201 response.
 
 - [ ] **Step 4: Verify the complete backend suite**
 
