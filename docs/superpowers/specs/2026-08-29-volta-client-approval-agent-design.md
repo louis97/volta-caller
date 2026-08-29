@@ -9,6 +9,8 @@ Volta negotiates transportation options but does not choose or book a carrier du
 
 This design covers the AI and business-logic workstream: the English system prompt, tool contracts, mandate enforcement, approval state, and adversarial tests. It deliberately implements the best-case workflow first: the mandate remains unchanged, carriers honor original terms, and no quote refresh or renegotiation occurs after client selection.
 
+The frontend team owns the reviewed-quote selection interface. This workstream owns the agentic backend: discovery negotiation, quote and candidate updates, the selected-carrier callback, commitment validation, and exception handling.
+
 ## Mandate Source of Truth
 
 The dashboard is the source of truth for a mandate. It provides:
@@ -42,10 +44,26 @@ Rules:
 
 1. Volta registers quotes only while the operation is `negotiating`.
 2. After all three carrier calls complete, the operation enters `awaiting_client_selection` and the API publishes dashboard-ready candidates.
-3. A dashboard selection must reference an existing reviewed candidate and is valid only before the mandate's `destinationDateTime`.
-4. The selection authorizes one confirmation callback for the selected quote's exact price, pickup datetime, destination datetime, and cargo constraints.
-5. A commitment requires successful confirmation of those exact terms plus a sent written recap and audio timestamp record.
-6. If selection is expired, capacity is unavailable, or callback terms differ, the operation enters the named failure state. Volta does not negotiate, modify the mandate, or book a different offer in this slice.
+3. The frontend submits a selection with `POST /operations/:id/select-quote`. The backend validates and persists it; the frontend never initiates a carrier call.
+4. A dashboard selection must reference an existing reviewed candidate and is valid only before the mandate's `destinationDateTime`.
+5. A valid selection returns `202 Accepted` and authorizes the backend to initiate one confirmation callback for the selected quote's exact price, pickup datetime, destination datetime, and cargo constraints.
+6. A commitment requires successful confirmation of those exact terms plus a sent written recap and audio timestamp record.
+7. If selection is expired, capacity is unavailable, or callback terms differ, the operation enters the named failure state. Volta does not negotiate, modify the mandate, or book a different offer in this slice.
+
+## Frontend Handoff and Backend Orchestration
+
+The frontend sends only the selected quote identifier:
+
+```http
+POST /operations/:id/select-quote
+Content-Type: application/json
+
+{ "quoteId": "quote_123" }
+```
+
+The backend returns `202 Accepted` after validating quote ownership and selection expiry, persists `carrier_selected`, and starts the confirmation callback. It does not require a listener, broker, polling loop, or second client action.
+
+The confirmation coordinator passes the selected quote's immutable terms to Volta. It is the only component allowed to invoke `confirm_selected_deal`. The frontend reads subsequent operation state but has no telephony authority.
 
 ## Tool Contracts
 
@@ -74,6 +92,14 @@ During the post-selection callback, Volta repeats the client's selected original
 Every tool input is schema-validated. `register_quote` and `review_deal` preserve out-of-mandate quotes with their mandate decision for audit; they do not authorize a booking. `confirm_selected_deal` validates mandate compliance, operation state, selected candidate identity, selection expiry, and exact-term equality before finalization.
 
 Each candidate and confirmation carries its call ID. A final commitment requires an audio timestamp and successful written recap. Failed callback confirmation or recap creates a structured call brief and never creates a final commitment.
+
+Backend exception outcomes in this slice are:
+
+- Invalid quote selection: reject the endpoint request; do not call a carrier.
+- Expired selection: return `409`, set `selection_expired`, and do not call a carrier.
+- Provider unavailable or changes any selected term: set `confirmation_failed`, create a call brief, and do not renegotiate.
+- Pressure to bypass the mandate: use `trigger_escalation` for a human handoff.
+- Telephony or technical callback failure: set `confirmation_failed`; automatic retry is deferred.
 
 ## Adversarial Test Matrix
 
