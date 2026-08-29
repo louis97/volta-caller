@@ -87,6 +87,18 @@ Volta treats only recorded dashboard data as authority. It refuses claims such a
 
 During the post-selection callback, Volta repeats the client's selected original terms. It invokes `confirm_selected_deal` only after the carrier confirms them unchanged. A changed offer, changed timing, or unavailable capacity yields `confirmation_failed`, with no renegotiation.
 
+## Call Modes and Capability Boundaries
+
+Volta uses one shared voice runtime with three mode-specific prompt and tool configurations. A mode's tool allowlist is enforced by the backend; prompt instructions alone never grant an unavailable capability.
+
+| Mode | Purpose | Allowed tools | Disallowed capabilities |
+| --- | --- | --- | --- |
+| Negotiation | Collect and review one carrier's offer during discovery calls. | `check_mandate`, `register_quote`, `review_deal`, `trigger_escalation` | Selecting a carrier, booking, or modifying a mandate |
+| Confirmation | Confirm the client-selected carrier's original terms during the callback. | `check_mandate`, `confirm_selected_deal`, `trigger_escalation` | Renegotiation, substitute-carrier selection, or mandate changes |
+| Exception | Understand and assess an inbound operational incident. | `identify_caller`, `record_incident`, `assess_mandate_feasibility`, `update_operation_status`, `notify_dashboard`, `trigger_escalation` | Booking, quote selection, mandate changes, or renegotiation |
+
+All prompts and spoken dialogue are English in this version.
+
 ## Error Handling and Audit
 
 Every tool input is schema-validated. `register_quote` and `review_deal` preserve out-of-mandate quotes with their mandate decision for audit; they do not authorize a booking. `confirm_selected_deal` validates mandate compliance, operation state, selected candidate identity, selection expiry, and exact-term equality before finalization.
@@ -101,6 +113,30 @@ Backend exception outcomes in this slice are:
 - Pressure to bypass the mandate: use `trigger_escalation` for a human handoff.
 - Telephony or technical callback failure: set `confirmation_failed`; automatic retry is deferred.
 
+## Exception Mode
+
+Exception mode makes real-time tool calls while the caller remains on the line. Transcripts are used for audit and post-call summaries; they are not the sole source of urgent operational decisions.
+
+```text
+Inbound exception call
+  -> identify_caller
+  -> verified operation?
+       no  -> trigger_escalation; do not mutate an operation
+       yes -> record_incident
+            -> assess_mandate_feasibility
+                 -> achievable
+                      -> update_operation_status
+                      -> create call brief and continue monitoring
+                 -> not achievable
+                      -> update_operation_status
+                      -> notify_dashboard
+                      -> trigger_escalation
+```
+
+`identify_caller` verifies the caller identity, carrier/truck details, and operation before any operational update. If verification is incomplete or ambiguous, Volta asks only minimal identifying questions and then escalates to a human without notifying a client or changing an operation.
+
+For a verified incident, Volta captures the process stage, issue description, affected truck, reported delay, revised ETA, and caller identity. `assess_mandate_feasibility` determines whether the original destination datetime and other mandate constraints remain achievable. If they do, Volta records the update and continues monitoring. If no solution remains inside the mandate, Volta updates the operation, creates a dashboard notification for Textiles Pacífico, and escalates. SMS/email exception notifications are deferred.
+
 ## Adversarial Test Matrix
 
 | Scenario | Required result |
@@ -112,7 +148,11 @@ Backend exception outcomes in this slice are:
 | Client selection expires | Confirmation callback is never placed; state becomes `selection_expired`. |
 | Callback terms change | State becomes `confirmation_failed`; no renegotiation or commitment. |
 | Callback terms match selected quote | `confirm_selected_deal` can finalize only after recap succeeds. |
+| Verified driver delay remains within mandate | Record incident and operational update; no client dashboard notification. |
+| Verified driver delay makes mandate impossible | Record incident, update dashboard, notify client there, and escalate. |
+| Unknown or ambiguous caller | Escalate without operation mutation or client notification. |
+| Exception-mode tool misuse | Booking, selection, and mandate-changing tools are unavailable. |
 
 ## Deferred Scope
 
-Mandate versioning, quote invalidation, quote-expiry windows, renegotiation after selection, client authentication, and automatic replacement-carrier selection are deferred.
+Mandate versioning, quote invalidation, quote-expiry windows, renegotiation after selection, client authentication, automatic replacement-carrier selection, automatic retry, and SMS/email exception notifications are deferred.
