@@ -47,6 +47,39 @@ export type Quote = {
   createdAt: string;
 };
 
+/**
+ * A dispatcher-owned authorization for Volta to place the second, closing
+ * call. Quotes are market intelligence; this record is the only authority to
+ * turn one of them into a booking attempt.
+ */
+export type ApprovalRequest = {
+  id: string;
+  operationId: string;
+  type: "carrier_selection" | "revised_terms";
+  status: "pending" | "approved" | "declined";
+  quoteIds: string[];
+  recommendedQuoteId?: string;
+  selectedQuoteId?: string;
+  proposedTerms?: {
+    carrierId: string;
+    finalPriceMxn: number;
+    pickupTime: string;
+  };
+  decidedBy?: string;
+  createdAt: string;
+  decidedAt?: string;
+};
+
+export type ClosingAuthorization = {
+  approvalId: string;
+  quoteId: string;
+  carrierId: string;
+  finalPriceMxn: number;
+  pickupTime: string;
+  authorizedBy: string;
+  authorizedAt: string;
+};
+
 export type CallSession = {
   id: string;
   operationId: string;
@@ -103,10 +136,18 @@ export type Operation = {
   shipper: string;
   origin: string;
   destination: string;
-  status: "open" | "negotiating" | "committed" | "escalated" | "failed";
+  status:
+    | "open"
+    | "negotiating"
+    | "awaiting_approval"
+    | "committed"
+    | "escalated"
+    | "failed";
   mandate: Mandate;
   candidates: CarrierCandidate[];
   quotes: Quote[];
+  approvals: ApprovalRequest[];
+  closingAuthorization?: ClosingAuthorization;
   selectedCarrierId?: string;
   commitment?: Commitment;
   callBriefs: CallBrief[];
@@ -116,6 +157,16 @@ export type Operation = {
 export type OperationEvent =
   | { type: "mandate.created"; operationId: string; mandate: Mandate }
   | { type: "quote.registered"; operationId: string; quote: Quote }
+  | {
+      type: "approval.requested";
+      operationId: string;
+      approval: ApprovalRequest;
+    }
+  | {
+      type: "approval.resolved";
+      operationId: string;
+      approval: ApprovalRequest;
+    }
   | {
       type: "commitment.finalized";
       operationId: string;

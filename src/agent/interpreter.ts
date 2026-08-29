@@ -1,4 +1,4 @@
-import type { Escalation, Quote } from "@volta/contracts";
+import type { ApprovalRequest, Escalation, Quote } from "@volta/contracts";
 import type { z } from "zod";
 
 import { evaluateMandate, type MandateDecision } from "../core/mandate";
@@ -7,6 +7,7 @@ import {
   checkMandateSchema,
   commitDealSchema,
   registerQuoteSchema,
+  requestQuoteApprovalSchema,
   triggerEscalationSchema
 } from "./tools";
 
@@ -26,6 +27,7 @@ export type ToolDependencies = {
 export type ToolCallResult =
   | { outcome: "approved" }
   | { outcome: "registered"; mandateDecision: MandateDecision }
+  | { outcome: "approval_requested"; approval: ApprovalRequest }
   | { outcome: "booking_requested" }
   | {
       outcome: "escalated";
@@ -34,7 +36,11 @@ export type ToolCallResult =
     }
   | {
       outcome: "rejected";
-      reason: "invalid_arguments" | "invalid_tool" | "invalid_price";
+      reason:
+        | "invalid_arguments"
+        | "invalid_tool"
+        | "invalid_price"
+        | "approval_required";
     }
   | { outcome: "booking_failed" };
 
@@ -62,6 +68,28 @@ export async function executeToolCall(
       dependencies.store.registerQuote(parsed.data as Quote);
       return { outcome: "registered", mandateDecision };
     }
+    case "request_quote_approval": {
+      const parsed = requestQuoteApprovalSchema.safeParse(request.arguments);
+      if (!parsed.success) return invalidArguments();
+
+      const operation = dependencies.store.getOperation();
+      const recommendation =
+        parsed.data.recommendedQuoteId ??
+        operation.quotes
+          .filter((quote) => parsed.data.quoteIds.includes(quote.id))
+          .sort((left, right) => left.priceMxn - right.priceMxn)[0]?.id;
+      try {
+        const approval = dependencies.store.requestCarrierSelectionApproval({
+          id: `approval-${operation.id}-${operation.approvals.length + 1}`,
+          quoteIds: parsed.data.quoteIds,
+          recommendedQuoteId: recommendation,
+          createdAt: (dependencies.now ?? (() => new Date().toISOString()))()
+        });
+        return { outcome: "approval_requested", approval };
+      } catch {
+        return { outcome: "rejected", reason: "invalid_arguments" };
+      }
+    }
     case "commit_deal": {
       const parsed = commitDealSchema.safeParse(request.arguments);
       if (!parsed.success) return invalidArguments();
@@ -88,6 +116,29 @@ export async function executeToolCall(
         return { outcome: "rejected", reason: decision.reason };
       }
 
+      const operation = dependencies.store.getOperation();
+      const authorization = operation.closingAuthorization;
+      if (!authorization) {
+        return { outcome: "rejected", reason: "approval_required" };
+      }
+      if (
+        authorization.carrierId !== parsed.data.carrierId ||
+        authorization.finalPriceMxn !== parsed.data.finalPrice ||
+        authorization.pickupTime !== parsed.data.pickupTime
+      ) {
+        dependencies.store.requestRevisedTermsApproval({
+          id: `approval-${operation.id}-${operation.approvals.length + 1}`,
+          sourceQuoteId: authorization.quoteId,
+          proposedTerms: {
+            carrierId: parsed.data.carrierId,
+            finalPriceMxn: parsed.data.finalPrice,
+            pickupTime: parsed.data.pickupTime
+          },
+          createdAt: (dependencies.now ?? (() => new Date().toISOString()))()
+        });
+        return { outcome: "escalated", reason: "approved_terms_changed" };
+      }
+
       try {
         await dependencies.finalizeBooking(parsed.data);
         return { outcome: "booking_requested" };
@@ -105,10 +156,15 @@ export async function executeToolCall(
         pickupTime: operation.mandate.pickupDatetime
       });
       dependencies.store.requestEscalation(
-        createEscalation(dependencies.store, parsed.data.reason, {
-          ...parsed.data,
-          attemptedPickupTime: operation.mandate.pickupDatetime
-        }, dependencies.now ?? (() => new Date().toISOString()))
+        createEscalation(
+          dependencies.store,
+          parsed.data.reason,
+          {
+            ...parsed.data,
+            attemptedPickupTime: operation.mandate.pickupDatetime
+          },
+          dependencies.now ?? (() => new Date().toISOString())
+        )
       );
       return {
         outcome: "escalated",

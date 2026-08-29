@@ -77,6 +77,28 @@ describe("executeToolCall", () => {
   it("passes only mandate-approved booking intent to the injected finalizer", async () => {
     const store = createOperationStore(seedOperation());
     const finalized: unknown[] = [];
+    store.registerQuote({
+      id: "quote-costa-pacifico-approved",
+      carrierId: approvedTerms.carrierId,
+      carrierName: "Transportes Costa Pacífico",
+      priceMxn: approvedTerms.finalPrice,
+      etaMinutes: 90,
+      pickupTime: approvedTerms.pickupTime,
+      callId: "quote-call-001",
+      createdAt: "2026-09-01T15:00:00.000Z"
+    });
+    store.requestCarrierSelectionApproval({
+      id: "approval-001",
+      quoteIds: ["quote-costa-pacifico-approved"],
+      createdAt: "2026-09-01T15:01:00.000Z"
+    });
+    store.resolveApproval({
+      approvalId: "approval-001",
+      action: "approve",
+      selectedQuoteId: "quote-costa-pacifico-approved",
+      decidedBy: "Dispatcher",
+      decidedAt: "2026-09-01T15:02:00.000Z"
+    });
 
     const result = await executeToolCall(
       { name: "commit_deal", arguments: approvedTerms },
@@ -91,6 +113,20 @@ describe("executeToolCall", () => {
     expect(result).toEqual({ outcome: "booking_requested" });
     expect(finalized).toEqual([approvedTerms]);
     expect(store.getOperation().commitment).toBeUndefined();
+  });
+
+  it("requires a human closing authorization even for mandate-compliant terms", async () => {
+    const store = createOperationStore(seedOperation());
+
+    const result = await executeToolCall(
+      { name: "commit_deal", arguments: approvedTerms },
+      { store, finalizeBooking: async () => {} }
+    );
+
+    expect(result).toEqual({
+      outcome: "rejected",
+      reason: "approval_required"
+    });
   });
 
   it("registers a validated quote in the operation store", async () => {

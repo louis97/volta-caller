@@ -1,7 +1,23 @@
 "use client";
 
-import type { CreateMandateRequest } from "@volta/contracts";
-import { useState } from "react";
+import type {
+  ApprovalRequest,
+  CreateMandateRequest,
+  Operation,
+  Quote
+} from "@volta/contracts";
+import {
+  AnimatePresence,
+  LazyMotion,
+  MotionConfig,
+  animate,
+  domMax,
+  useMotionValue,
+  useReducedMotion,
+  useSpring
+} from "motion/react";
+import * as m from "motion/react-m";
+import { useEffect, useRef, useState } from "react";
 import {
   ApprovalIcon,
   ArrowIcon,
@@ -20,6 +36,12 @@ type MandateSaveState =
   | { status: "saving" }
   | { status: "saved"; operationId: string }
   | { status: "error"; message: string };
+
+type CopilotMessage = {
+  id: string;
+  content: string;
+  role: "assistant" | "user";
+};
 
 const MANDATE_TIMEZONE_OFFSET = "-06:00";
 
@@ -53,6 +75,34 @@ const bars = [
   12, 17
 ];
 
+function WaveformBar({ height, index }: { height: number; index: number }) {
+  const shouldReduceMotion = useReducedMotion();
+  const amplitude = useMotionValue(0.42);
+  const scaleY = useSpring(amplitude, {
+    damping: 18,
+    stiffness: 320
+  });
+
+  useEffect(() => {
+    if (shouldReduceMotion) {
+      amplitude.set(1);
+      return;
+    }
+
+    const controls = animate(amplitude, [0.34, 1, 0.52, 0.84], {
+      delay: index * 0.028,
+      duration: 0.72 + (index % 4) * 0.08,
+      ease: "easeInOut",
+      repeat: Infinity,
+      repeatType: "mirror"
+    });
+
+    return () => controls.stop();
+  }, [amplitude, index, shouldReduceMotion]);
+
+  return <m.i aria-hidden="true" style={{ height, scaleY }} />;
+}
+
 function Waveform({ blue = false }: { blue?: boolean }) {
   return (
     <span
@@ -60,7 +110,7 @@ function Waveform({ blue = false }: { blue?: boolean }) {
       aria-label="Live audio"
     >
       {bars.map((height, index) => (
-        <i key={index} style={{ height, animationDelay: `${index * 45}ms` }} />
+        <WaveformBar height={height} index={index} key={index} />
       ))}
     </span>
   );
@@ -76,10 +126,10 @@ function Status({
   live?: boolean;
 }) {
   return (
-    <span className={`status status--${tone}`}>
+    <m.span layout="position" className={`status status--${tone}`}>
       {live && <i className="live-dot" />}
       {children}
-    </span>
+    </m.span>
   );
 }
 
@@ -133,12 +183,14 @@ function OperationsView({ navigate }: { navigate: (view: View) => void }) {
         title="Operations"
         description="Monitor every mandate, call, and commitment from one dispatch desk."
         action={
-          <button
+          <m.button
             className="button button--primary"
             onClick={() => navigate("new-mandate")}
+            whileFocus={{ outlineOffset: 3 }}
+            whileTap={{ scale: 0.98 }}
           >
             <PlusIcon /> New mandate
-          </button>
+          </m.button>
         }
       />
 
@@ -273,12 +325,14 @@ function OperationsView({ navigate }: { navigate: (view: View) => void }) {
                 <dd>Thu · 10:00 AM</dd>
               </div>
             </dl>
-            <button
+            <m.button
               className="button button--primary full"
               onClick={() => navigate("approvals")}
+              whileFocus={{ outlineOffset: 3 }}
+              whileTap={{ scale: 0.98 }}
             >
               Review approval <ArrowIcon />
-            </button>
+            </m.button>
           </section>
 
           <section className="panel activity-card">
@@ -533,16 +587,18 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
               <i /> Mandate {saveState.operationId} created
             </div>
           ) : (
-            <button
+            <m.button
               className="button button--primary full"
               type="submit"
               disabled={saveState.status === "saving"}
+              whileFocus={{ outlineOffset: 3 }}
+              whileTap={{ scale: 0.98 }}
             >
               {saveState.status === "saving"
                 ? "Saving mandate…"
                 : "Launch mandate"}
               <ArrowIcon />
-            </button>
+            </m.button>
           )}
           {saveState.status === "error" && (
             <p className="form-error" role="alert">
@@ -550,13 +606,15 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
             </p>
           )}
           {saveState.status === "saved" && (
-            <button
+            <m.button
               className="button button--secondary full"
               type="button"
               onClick={onCreated}
+              whileFocus={{ outlineOffset: 3 }}
+              whileTap={{ scale: 0.98 }}
             >
               Open operation
-            </button>
+            </m.button>
           )}
         </aside>
       </form>
@@ -679,130 +737,309 @@ function CallFloorView() {
   );
 }
 
-function ApprovalsView() {
-  const [decision, setDecision] = useState<"approved" | "declined" | null>(
-    null
+type ApprovalLoadState = "loading" | "ready" | "error";
+
+function formatMxn(value: number) {
+  return new Intl.NumberFormat("en-MX", {
+    style: "currency",
+    currency: "MXN",
+    maximumFractionDigits: 0
+  }).format(value);
+}
+
+function formatPickup(value: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "America/Mexico_City"
+  }).format(new Date(value));
+}
+
+function selectedQuotes(
+  operation: Operation,
+  approval: ApprovalRequest
+): Quote[] {
+  return operation.quotes.filter((quote) =>
+    approval.quoteIds.includes(quote.id)
   );
+}
+
+function ApprovalsView() {
+  const [operation, setOperation] = useState<Operation | null>(null);
+  const [loadState, setLoadState] = useState<ApprovalLoadState>("loading");
+  const [selectedQuoteId, setSelectedQuoteId] = useState<string | null>(null);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  async function refresh() {
+    try {
+      const response = await fetch("/api/operation");
+      if (!response.ok) throw new Error("operation_unavailable");
+      setOperation((await response.json()) as Operation);
+      setLoadState("ready");
+    } catch {
+      setLoadState("error");
+    }
+  }
+
+  useEffect(() => {
+    void refresh();
+
+    if (typeof EventSource === "undefined") return;
+    const events = new EventSource("/api/events");
+    const sync = () => void refresh();
+    events.addEventListener("approval.requested", sync);
+    events.addEventListener("approval.resolved", sync);
+    events.addEventListener("commitment.finalized", sync);
+    return () => events.close();
+  }, []);
+
+  const approval = operation?.approvals.find(
+    (item) => item.status === "pending"
+  );
+  const quotes =
+    operation && approval ? selectedQuotes(operation, approval) : [];
+  const isSelectionApproval = approval?.type === "carrier_selection";
+
+  async function submitDecision(action: "approve" | "decline") {
+    if (!approval || !operation) return;
+    if (action === "approve" && isSelectionApproval && !selectedQuoteId) {
+      setDecisionError(
+        "Select one carrier before authorizing the closing call."
+      );
+      return;
+    }
+
+    setDecisionError(null);
+    setIsSubmitting(true);
+    try {
+      const response = await fetch(`/api/approvals/${approval.id}/decision`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action,
+          selectedQuoteId: isSelectionApproval
+            ? (selectedQuoteId ?? undefined)
+            : undefined,
+          decidedBy: "Bryan Riano"
+        })
+      });
+      if (!response.ok) throw new Error("decision_rejected");
+      const payload = (await response.json()) as { operation: Operation };
+      setOperation(payload.operation);
+    } catch {
+      setDecisionError("Volta could not record this decision. Try again.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
   return (
     <>
       <Topbar
         title="Approvals"
         eyebrow="Human decisions"
-        description="Review the exceptions Volta cannot resolve inside its binding mandate."
+        description="Choose who Volta may call back to close the deal. Quotes never become bookings without you."
       />
-      {decision ? (
+      {loadState === "loading" && (
         <section className="panel decision-complete">
-          <span
-            className={
-              decision === "approved" ? "success-ring" : "decline-ring"
-            }
-          >
-            {decision === "approved" ? "✓" : "×"}
-          </span>
-          <p className="section-label">Decision recorded</p>
-          <h2>
-            {decision === "approved"
-              ? "Pickup exception approved"
-              : "Pickup exception declined"}
-          </h2>
-          <p>
-            The call log now states that a human made this decision at 2:36 PM.
-          </p>
+          <p className="section-label">Loading live queue</p>
+          <h2>Checking Volta’s active rounds…</h2>
+        </section>
+      )}
+      {loadState === "error" && (
+        <section className="panel decision-complete">
+          <span className="decline-ring">!</span>
+          <p className="section-label">Connection unavailable</p>
+          <h2>Approvals are served by the dispatch API.</h2>
           <button
             className="button button--secondary"
-            onClick={() => setDecision(null)}
+            onClick={() => void refresh()}
           >
-            Review again
+            Retry connection
           </button>
         </section>
-      ) : (
+      )}
+      {loadState === "ready" && !approval && operation?.commitment && (
+        <section className="panel decision-complete">
+          <span className="success-ring">✓</span>
+          <p className="section-label">Closing call completed</p>
+          <h2>
+            {operation.commitment.finalPriceMxn && "Carrier booking confirmed"}
+          </h2>
+          <p>
+            {formatMxn(operation.commitment.finalPriceMxn)} was recapped by SMS
+            and linked to its recorded agreement.
+          </p>
+          <a
+            className="button button--secondary"
+            href={operation.commitment.audioTimestampUrl}
+          >
+            Open audio evidence
+          </a>
+        </section>
+      )}
+      {loadState === "ready" && !approval && !operation?.commitment && (
+        <section className="panel decision-complete">
+          <span className="success-ring">✓</span>
+          <p className="section-label">No decisions waiting</p>
+          <h2>Volta will alert you after the quote round closes.</h2>
+          <p>Keep this panel open to receive the next request in real time.</p>
+        </section>
+      )}
+      {loadState === "ready" && operation && approval && (
         <section className="approval-layout">
           <article className="panel approval-main">
             <div className="approval-alert">
               <span>!</span>
               <div>
                 <p className="section-label">Human decision required</p>
-                <h2>Carrier requests a later pickup</h2>
+                <h2>
+                  {isSelectionApproval
+                    ? `${quotes.length} carrier quotes are ready to compare`
+                    : "Carrier changed the approved terms"}
+                </h2>
               </div>
-              <Status tone="amber">Waiting 03:42</Status>
+              <Status tone="amber">Waiting</Status>
             </div>
             <p className="approval-lead">
-              Transportes Costa Pacífico meets the price limit, but can only
-              arrive at 12:30 PM — 2 hours 30 minutes after the authorized
-              window.
+              {isSelectionApproval
+                ? "Volta has completed the first calls. Choose the one carrier it may call back to confirm the quoted terms; this is not a booking yet."
+                : "The carrier did not repeat the terms you authorized. Volta is waiting for a new instruction before it can continue."}
             </p>
             <div className="comparison-grid">
               <div>
-                <span>Clause triggered</span>
-                <b>Pickup window</b>
-                <p>Authorized: Thu · 10:00 AM</p>
+                <span>Binding pickup</span>
+                <b>{formatPickup(operation.mandate.pickupDatetime)}</b>
+                <p>Must be confirmed on the closing call.</p>
               </div>
               <div className="recommended">
-                <span>Agent recommends</span>
-                <b>Approve the exception</b>
-                <p>Rate is MXN 250 below the ceiling.</p>
+                <span>Volta recommends</span>
+                <b>
+                  {quotes.find(
+                    (quote) => quote.id === approval.recommendedQuoteId
+                  )?.carrierName ?? "Review revised terms"}
+                </b>
+                <p>
+                  The recommendation is advisory; your selection is required.
+                </p>
               </div>
             </div>
-            <section className="quote-block">
-              <div>
-                <span>Carrier</span>
-                <b>Transportes Costa Pacífico</b>
-              </div>
-              <div>
-                <span>Quote</span>
-                <b className="mono">MXN 8,750</b>
-              </div>
-              <div>
-                <span>Requested pickup</span>
-                <b className="mono">Thu · 12:30 PM</b>
-              </div>
-            </section>
+            {isSelectionApproval ? (
+              <fieldset className="quote-selection" aria-label="Carrier quotes">
+                <legend>Choose a carrier for the closing call</legend>
+                {quotes.map((quote) => (
+                  <label
+                    className={
+                      selectedQuoteId === quote.id
+                        ? "quote-option selected"
+                        : "quote-option"
+                    }
+                    key={quote.id}
+                  >
+                    <input
+                      checked={selectedQuoteId === quote.id}
+                      name="carrier-quote"
+                      onChange={() => setSelectedQuoteId(quote.id)}
+                      type="radio"
+                      value={quote.id}
+                    />
+                    <span className="quote-carrier">
+                      <b>{quote.carrierName}</b>
+                      {quote.id === approval.recommendedQuoteId && (
+                        <small>VOLTA PICK</small>
+                      )}
+                    </span>
+                    <strong>{formatMxn(quote.priceMxn)}</strong>
+                    <span>{formatPickup(quote.pickupTime)}</span>
+                    <span>{quote.etaMinutes} min ETA</span>
+                  </label>
+                ))}
+              </fieldset>
+            ) : (
+              <section className="quote-block">
+                <div>
+                  <span>Carrier</span>
+                  <b>{quotes[0]?.carrierName}</b>
+                </div>
+                <div>
+                  <span>Previous quote</span>
+                  <b>{quotes[0] && formatMxn(quotes[0].priceMxn)}</b>
+                </div>
+                <div>
+                  <span>New terms</span>
+                  <b>
+                    {approval.proposedTerms &&
+                      formatMxn(approval.proposedTerms.finalPriceMxn)}
+                  </b>
+                </div>
+              </section>
+            )}
             <div className="whisper">
               <span>VOLTA</span>
               <p>
-                They can hold MXN 8,750 if we confirm the revised pickup time
-                now. Should I accept?
+                {isSelectionApproval
+                  ? "I have the market. Tell me who may receive the closing call, and I will only confirm the exact terms you authorize."
+                  : "The terms changed on the call. I will not continue without your new approval."}
               </p>
             </div>
+            {decisionError && (
+              <p className="form-error approval-error" role="alert">
+                {decisionError}
+              </p>
+            )}
             <div className="approval-actions">
-              <button
+              <m.button
                 className="button button--primary"
-                onClick={() => setDecision("approved")}
+                disabled={isSubmitting}
+                onClick={() => void submitDecision("approve")}
+                whileFocus={{ outlineOffset: 3 }}
+                whileTap={{ scale: 0.98 }}
               >
-                Approve exception
-              </button>
-              <button
+                {isSubmitting
+                  ? "Calling carrier…"
+                  : isSelectionApproval
+                    ? "Authorize closing call"
+                    : "Authorize revised terms"}
+              </m.button>
+              <m.button
                 className="button button--destructive"
-                onClick={() => setDecision("declined")}
+                disabled={isSubmitting}
+                onClick={() => void submitDecision("decline")}
+                whileFocus={{ outlineOffset: 3 }}
+                whileTap={{ scale: 0.98 }}
               >
-                Keep original mandate
-              </button>
+                Decline
+              </m.button>
             </div>
           </article>
           <aside className="panel mandate-card">
             <p className="section-label">Binding mandate</p>
-            <h2>VLT-2041</h2>
+            <h2>{operation.id}</h2>
             <dl>
               <div>
                 <dt>Budget cap</dt>
-                <dd>MXN 9,000</dd>
+                <dd>{formatMxn(operation.mandate.budgetCapMxn)}</dd>
               </div>
               <div>
                 <dt>Pickup</dt>
-                <dd>Thu · 10:00 AM</dd>
+                <dd>{formatPickup(operation.mandate.pickupDatetime)}</dd>
               </div>
               <div>
                 <dt>Route</dt>
-                <dd>Manzanillo → Guadalajara</dd>
+                <dd>
+                  {operation.origin} → {operation.destination}
+                </dd>
               </div>
               <div>
                 <dt>Container</dt>
-                <dd>MSCU-TP-001</dd>
+                <dd>{operation.containerId}</dd>
               </div>
             </dl>
             <p className="audit-note">
-              Your decision will be attached to the call transcript and
-              operation audit.
+              Your authorization is attached to the operation audit. Volta must
+              repeat the same terms on the closing call before it can commit.
             </p>
           </aside>
         </section>
@@ -811,54 +1048,272 @@ function ApprovalsView() {
   );
 }
 
+function DispatchCopilot() {
+  const [isOpen, setIsOpen] = useState(false);
+  const [question, setQuestion] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const [messages, setMessages] = useState<CopilotMessage[]>([
+    {
+      id: "copilot-welcome",
+      role: "assistant",
+      content:
+        "I can explain the mandate, call progress, quotes, exceptions, and the next safe action."
+    }
+  ]);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (isOpen) inputRef.current?.focus();
+  }, [isOpen]);
+
+  async function askCopilot(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmedQuestion = question.trim();
+    if (!trimmedQuestion || isSending) return;
+
+    const history = messages;
+    const userMessage: CopilotMessage = {
+      id: "user-" + Date.now(),
+      role: "user",
+      content: trimmedQuestion
+    };
+    setMessages((current) => [...current, userMessage]);
+    setQuestion("");
+    setIsSending(true);
+
+    try {
+      const response = await fetch("/api/copilot", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          question: trimmedQuestion,
+          history: history.slice(-8).map(({ role, content }) => ({
+            role,
+            content
+          }))
+        })
+      });
+      const payload = (await response.json()) as {
+        answer?: unknown;
+        message?: unknown;
+      };
+      const answer =
+        typeof payload.answer === "string"
+          ? payload.answer
+          : typeof payload.message === "string"
+            ? payload.message
+            : "Volta Copilot could not answer right now. Try again shortly.";
+
+      setMessages((current) => [
+        ...current,
+        {
+          id: "assistant-" + Date.now(),
+          role: "assistant",
+          content: answer
+        }
+      ]);
+    } catch {
+      setMessages((current) => [
+        ...current,
+        {
+          id: "assistant-" + Date.now(),
+          role: "assistant",
+          content:
+            "I could not reach the dispatch API. Keep the mandate unchanged and try again."
+        }
+      ]);
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  return (
+    <>
+      <m.button
+        aria-controls="dispatch-copilot"
+        aria-expanded={isOpen}
+        aria-label="Ask Volta"
+        className="copilot-launcher"
+        onClick={() => setIsOpen(true)}
+        whileTap={{ scale: 0.98 }}
+      >
+        <span className="copilot-launcher-mark">V/</span>
+        Ask Volta
+      </m.button>
+      <AnimatePresence>
+        {isOpen && (
+          <>
+            <m.button
+              aria-label="Close Volta Copilot"
+              className="copilot-backdrop"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsOpen(false)}
+            />
+            <m.aside
+              aria-label="Volta Copilot"
+              className="copilot-panel"
+              exit={{ opacity: 0, x: 24 }}
+              id="dispatch-copilot"
+              initial={{ opacity: 0, x: 32 }}
+              animate={{ opacity: 1, x: 0 }}
+            >
+              <header className="copilot-header">
+                <div>
+                  <p className="section-label">Process copilot</p>
+                  <h2>Ask Volta</h2>
+                </div>
+                <button
+                  aria-label="Close Volta Copilot"
+                  className="copilot-close"
+                  onClick={() => setIsOpen(false)}
+                  type="button"
+                >
+                  ×
+                </button>
+              </header>
+              <p className="copilot-context">
+                Grounded in the API-owned operation, never authorized to change
+                a mandate or make a booking.
+              </p>
+              <div className="copilot-prompts" aria-label="Suggested questions">
+                {[
+                  "What is the current risk?",
+                  "What can Volta negotiate?",
+                  "What needs my approval?"
+                ].map((prompt) => (
+                  <button
+                    key={prompt}
+                    onClick={() => setQuestion(prompt)}
+                    type="button"
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+              <section className="copilot-thread" aria-live="polite">
+                <AnimatePresence initial={false}>
+                  {messages.map((message) => (
+                    <m.article
+                      animate={{ opacity: 1, y: 0 }}
+                      className={
+                        "copilot-message copilot-message--" + message.role
+                      }
+                      exit={{ opacity: 0, y: -4 }}
+                      initial={{ opacity: 0, y: 8 }}
+                      key={message.id}
+                    >
+                      <b>{message.role === "assistant" ? "VOLTA" : "YOU"}</b>
+                      <p>{message.content}</p>
+                    </m.article>
+                  ))}
+                </AnimatePresence>
+                {isSending && (
+                  <div className="copilot-thinking">
+                    <i />
+                    Volta is reviewing the operation
+                  </div>
+                )}
+              </section>
+              <form className="copilot-composer" onSubmit={askCopilot}>
+                <label htmlFor="copilot-question">
+                  Ask about this dispatch
+                </label>
+                <textarea
+                  id="copilot-question"
+                  onChange={(event) => setQuestion(event.target.value)}
+                  placeholder="What changed in this operation?"
+                  ref={inputRef}
+                  rows={3}
+                  value={question}
+                />
+                <m.button
+                  className="button button--primary"
+                  disabled={!question.trim() || isSending}
+                  type="submit"
+                  whileTap={{ scale: 0.98 }}
+                >
+                  {isSending ? "Reviewing…" : "Ask Volta"}
+                  <ArrowIcon />
+                </m.button>
+              </form>
+            </m.aside>
+          </>
+        )}
+      </AnimatePresence>
+    </>
+  );
+}
+
 export function DashboardConsole() {
   const [view, setView] = useState<View>("operations");
   return (
-    <div className="app-shell">
-      <aside className="nav-rail">
-        <div className="brand">
-          <span>V</span>
-          <div>
-            <b>Volta</b>
-            <small>DISPATCH BLUE V1.0</small>
-          </div>
-        </div>
-        <nav aria-label="Primary navigation">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.id}
-                className={view === item.id ? "active" : ""}
-                aria-current={view === item.id ? "page" : undefined}
-                onClick={() => setView(item.id)}
+    <LazyMotion features={domMax} strict>
+      <MotionConfig
+        reducedMotion="user"
+        transition={{ duration: 0.18, ease: "easeOut" }}
+      >
+        <div className="app-shell">
+          <aside className="nav-rail">
+            <div className="brand">
+              <span>V</span>
+              <div>
+                <b>Volta</b>
+                <small>DISPATCH BLUE V1.0</small>
+              </div>
+            </div>
+            <nav aria-label="Primary navigation">
+              {navItems.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <m.button
+                    key={item.id}
+                    className={view === item.id ? "active" : ""}
+                    aria-current={view === item.id ? "page" : undefined}
+                    onClick={() => setView(item.id)}
+                    whileFocus={{ outlineOffset: 3 }}
+                    whileTap={{ scale: 0.98 }}
+                  >
+                    <Icon />
+                    <span>{item.label}</span>
+                    {item.count && (
+                      <b className={`nav-count ${item.tone}`}>{item.count}</b>
+                    )}
+                  </m.button>
+                );
+              })}
+            </nav>
+            <div className="rail-footer">
+              <span className="operator-avatar">BR</span>
+              <div>
+                <b>Bryan Riano</b>
+                <small>Dispatcher</small>
+              </div>
+              <button aria-label="Open operator menu">•••</button>
+            </div>
+          </aside>
+          <main>
+            <AnimatePresence initial={false} mode="wait">
+              <m.div
+                animate={{ opacity: 1, y: 0 }}
+                className="view-stage"
+                exit={{ opacity: 0, y: -4 }}
+                initial={{ opacity: 0, y: 8 }}
+                key={view}
               >
-                <Icon />
-                <span>{item.label}</span>
-                {item.count && (
-                  <b className={`nav-count ${item.tone}`}>{item.count}</b>
+                {view === "operations" && <OperationsView navigate={setView} />}
+                {view === "new-mandate" && (
+                  <NewMandateView onCreated={() => setView("operations")} />
                 )}
-              </button>
-            );
-          })}
-        </nav>
-        <div className="rail-footer">
-          <span className="operator-avatar">BR</span>
-          <div>
-            <b>Bryan Riano</b>
-            <small>Dispatcher</small>
-          </div>
-          <button aria-label="Open operator menu">•••</button>
+                {view === "call-floor" && <CallFloorView />}
+                {view === "approvals" && <ApprovalsView />}
+              </m.div>
+            </AnimatePresence>
+          </main>
+          <DispatchCopilot />
         </div>
-      </aside>
-      <main>
-        {view === "operations" && <OperationsView navigate={setView} />}
-        {view === "new-mandate" && (
-          <NewMandateView onCreated={() => setView("operations")} />
-        )}
-        {view === "call-floor" && <CallFloorView />}
-        {view === "approvals" && <ApprovalsView />}
-      </main>
-    </div>
+      </MotionConfig>
+    </LazyMotion>
   );
 }

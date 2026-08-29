@@ -17,7 +17,11 @@ afterEach(async () => {
   );
 });
 
-async function request(app: ReturnType<typeof createApp>, path: string, init?: RequestInit) {
+async function request(
+  app: ReturnType<typeof createApp>,
+  path: string,
+  init?: RequestInit
+) {
   const server = app.listen(0);
   servers.push(server);
   await once(server, "listening");
@@ -86,62 +90,133 @@ describe("mock demo API", () => {
     await expect(getOperation(app)).resolves.toEqual(before);
   });
 
-  it("replaces each demo run with deterministic carrier outcomes and audit state", async () => {
+  it("validates copilot questions before attempting a model request", async () => {
+    const app = createApp();
+
+    const response = await request(app, "/api/copilot", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ question: " " })
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "invalid_copilot_question"
+    });
+  });
+
+  it("creates a HITL quote round, then books only after the API records a selection", async () => {
     const app = createApp();
 
     const health = await request(app, "/health");
     expect(health.status).toBe(200);
-    await expect(health.json()).resolves.toEqual({ status: "ok", mode: "mock" });
+    await expect(health.json()).resolves.toEqual({
+      status: "ok",
+      mode: "mock"
+    });
 
     const eventsResponse = await request(app, "/api/events");
-    expect(eventsResponse.headers.get("content-type")).toContain("text/event-stream");
-    const events = readUntilCommitment(eventsResponse);
+    expect(eventsResponse.headers.get("content-type")).toContain(
+      "text/event-stream"
+    );
+    const events = readUntilEvent(eventsResponse, "approval.requested");
 
-    await expect(request(app, "/api/demo/run", { method: "POST" })).resolves.toMatchObject({ status: 202 });
-    const firstOperation = await getOperation(app);
+    await expect(
+      request(app, "/api/demo/run", { method: "POST" })
+    ).resolves.toMatchObject({ status: 202 });
     const eventOutput = await events;
+    const quoteRound = await getOperation(app);
 
     expect(eventOutput).toContain("event: quote.registered");
     expect(eventOutput).toContain('data: {"type":"quote.registered"');
-    expect(eventOutput).toContain("event: escalation.requested");
-    expect(eventOutput).toContain("event: commitment.finalized");
-    expect(firstOperation.quotes).toHaveLength(2);
-    expect(firstOperation.quotes).toEqual(
+    expect(eventOutput).toContain("event: approval.requested");
+    expect(quoteRound.status).toBe("awaiting_approval");
+    expect(quoteRound.quotes).toHaveLength(3);
+    expect(quoteRound.quotes).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({ priceMxn: 8750 }),
         expect.objectContaining({ priceMxn: 8500 }),
-        expect.objectContaining({ priceMxn: 9200 })
+        expect.objectContaining({ priceMxn: 8640 })
       ])
     );
-    expect(firstOperation.callBriefs).toEqual(
-      expect.arrayContaining([expect.objectContaining({ outcome: "unavailable" })])
+    expect(quoteRound.commitment).toBeUndefined();
+    expect(quoteRound.approvals).toMatchObject([
+      {
+        type: "carrier_selection",
+        status: "pending",
+        recommendedQuoteId: "quote-ruta-occidente-001"
+      }
+    ]);
+
+    const approvalId = quoteRound.approvals[0].id;
+    const approvalQueue = await request(app, "/api/approvals");
+    expect(approvalQueue.status).toBe(200);
+    await expect(approvalQueue.json()).resolves.toMatchObject([
+      { id: approvalId, status: "pending" }
+    ]);
+    const approvalDetail = await request(app, `/api/approvals/${approvalId}`);
+    expect(approvalDetail.status).toBe(200);
+    await expect(approvalDetail.json()).resolves.toMatchObject({
+      approval: { id: approvalId, status: "pending" },
+      operation: { id: quoteRound.id }
+    });
+    const decision = await request(
+      app,
+      `/api/approvals/${approvalId}/decision`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "approve",
+          selectedQuoteId: "quote-ruta-occidente-001",
+          decidedBy: "Bryan Riano"
+        })
+      }
     );
-    expect(firstOperation.escalations).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ attemptedPriceMxn: 9200, reason: "price_cap_exceeded" })
-      ])
-    );
-    expect(firstOperation.commitment).toMatchObject({ finalPriceMxn: 8500, recapStatus: "sent" });
+    expect(decision.status).toBe(200);
+    const committed = await getOperation(app);
+    expect(committed.commitment).toMatchObject({
+      carrierId: "carrier-ruta-occidente",
+      finalPriceMxn: 8500,
+      recapStatus: "sent"
+    });
+    expect(committed.approvals[0]).toMatchObject({
+      status: "approved",
+      selectedQuoteId: "quote-ruta-occidente-001",
+      decidedBy: "Bryan Riano"
+    });
 
     await request(app, "/api/demo/run", { method: "POST" });
-    await expect(getOperation(app)).resolves.toEqual(firstOperation);
+    const resetRound = await getOperation(app);
+    expect(resetRound).toMatchObject({
+      status: "awaiting_approval",
+      quotes: quoteRound.quotes
+    });
+    expect(resetRound.commitment).toBeUndefined();
   });
 });
 
-async function getOperation(app: ReturnType<typeof createApp>): Promise<Operation> {
+async function getOperation(
+  app: ReturnType<typeof createApp>
+): Promise<Operation> {
   const response = await request(app, "/api/operation");
   expect(response.status).toBe(200);
   return response.json() as Promise<Operation>;
 }
 
-async function readUntilCommitment(response: Response): Promise<string> {
+async function readUntilEvent(
+  response: Response,
+  eventName: string
+): Promise<string> {
   const reader = response.body?.getReader();
   if (!reader) throw new Error("SSE response body was unavailable");
 
   const decoder = new TextDecoder();
   let output = "";
-  while (!output.includes("event: commitment.finalized")) {
+  while (!output.includes(`event: ${eventName}`)) {
     const { done, value } = await reader.read();
-    if (done) throw new Error("SSE stream closed before the commitment event");
+    if (done)
+      throw new Error(`SSE stream closed before the ${eventName} event`);
     output += decoder.decode(value, { stream: true });
   }
   await reader.cancel();

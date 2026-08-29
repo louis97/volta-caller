@@ -39,6 +39,7 @@ export function seedOperation(): Operation {
       }
     ],
     quotes: [],
+    approvals: [],
     callBriefs: [],
     escalations: []
   };
@@ -68,6 +69,7 @@ export function createOperationFromMandate(
     },
     candidates: [],
     quotes: [],
+    approvals: [],
     callBriefs: [],
     escalations: []
   };

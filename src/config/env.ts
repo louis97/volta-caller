@@ -6,7 +6,8 @@ const envSchema = z
     VOLTA_MODE: z.enum(["mock", "live"]).default("mock"),
     TWILIO_ACCOUNT_SID: z.string().min(1).optional(),
     TWILIO_AUTH_TOKEN: z.string().min(1).optional(),
-    OPENAI_API_KEY: z.string().min(1).optional()
+    OPENAI_API_KEY: z.string().min(1).optional(),
+    VOLTA_COPILOT_MODEL: z.string().min(1).default("gpt-5")
   })
   .superRefine((value, context) => {
     if (Boolean(value.TWILIO_ACCOUNT_SID) !== Boolean(value.TWILIO_AUTH_TOKEN)) {

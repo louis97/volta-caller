@@ -7,8 +7,10 @@ import {
   screen,
   within
 } from "@testing-library/react";
+import type { Operation } from "@volta/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { seedOperation, THURSDAY_PICKUP } from "../../src/core/seed";
 import { DashboardConsole } from "./dashboard-console";
 
 afterEach(cleanup);
@@ -23,7 +25,7 @@ function openNavigationItem(name: string) {
 }
 
 describe("DashboardConsole", () => {
-  it("navigates between the four dispatch views", () => {
+  it("navigates between the four dispatch views", async () => {
     render(<DashboardConsole />);
 
     expect(
@@ -32,12 +34,26 @@ describe("DashboardConsole", () => {
 
     openNavigationItem("Call floor");
     expect(
-      screen.getByRole("heading", { name: "Call floor", level: 1 })
+      await screen.findByRole("heading", { name: "Call floor", level: 1 })
     ).toBeInTheDocument();
 
     openNavigationItem("Approvals");
     expect(
-      screen.getByRole("heading", { name: "Approvals", level: 1 })
+      await screen.findByRole("heading", { name: "Approvals", level: 1 })
+    ).toBeInTheDocument();
+  });
+
+  it("opens the contextual copilot from every dispatch view", async () => {
+    render(<DashboardConsole />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Ask Volta" }));
+    const copilot = await screen.findByRole("complementary", {
+      name: "Volta Copilot"
+    });
+    expect(
+      within(copilot).getByText(
+        "I can explain the mandate, call progress, quotes, exceptions, and the next safe action."
+      )
     ).toBeInTheDocument();
   });
 
@@ -50,6 +66,7 @@ describe("DashboardConsole", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     openNavigationItem("New mandate");
+    await screen.findByRole("button", { name: "Launch mandate" });
 
     const expectedManifestFields = [
       "budget_cap",
@@ -94,7 +111,7 @@ describe("DashboardConsole", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open operation" }));
     expect(
-      screen.getByRole("heading", { name: "Operations", level: 1 })
+      await screen.findByRole("heading", { name: "Operations", level: 1 })
     ).toBeInTheDocument();
   });
 
@@ -106,7 +123,9 @@ describe("DashboardConsole", () => {
     );
 
     openNavigationItem("New mandate");
-    fireEvent.click(screen.getByRole("button", { name: "Launch mandate" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Launch mandate" })
+    );
 
     expect(
       await screen.findByText(/Volta could not save this mandate/)
@@ -116,13 +135,119 @@ describe("DashboardConsole", () => {
     ).toBeInTheDocument();
   });
 
-  it("records a human approval decision", () => {
+  it("shows the API connection state for live approvals", async () => {
     render(<DashboardConsole />);
 
     openNavigationItem("Approvals");
-    fireEvent.click(screen.getByRole("button", { name: "Approve exception" }));
+    expect(
+      await screen.findByRole("heading", {
+        name: "Approvals are served by the dispatch API."
+      })
+    ).toBeInTheDocument();
+  });
 
-    expect(screen.getByText("Pickup exception approved")).toBeInTheDocument();
-    expect(screen.getByText(/a human made this decision/)).toBeInTheDocument();
+  it("requires a carrier selection before authorizing the closing call", async () => {
+    const operation = quoteRoundOperation();
+    const fetchMock = vi.fn().mockImplementation(async (input: string) => {
+      if (input === "/api/operation") {
+        return { ok: true, json: async () => structuredClone(operation) };
+      }
+      if (input.includes("/decision")) {
+        operation.approvals[0] = {
+          ...operation.approvals[0],
+          status: "approved",
+          selectedQuoteId: "quote-ruta-occidente-001",
+          decidedBy: "Bryan Riano"
+        };
+        operation.commitment = {
+          id: "commitment-001",
+          carrierId: "carrier-ruta-occidente",
+          callId: "close-call-001",
+          finalPriceMxn: 8500,
+          pickupTime: THURSDAY_PICKUP,
+          audioTimestampUrl: "/audio/recordings/close-call-001#t=42.5",
+          recapStatus: "sent",
+          recapMessageId: "sms-001",
+          finalizedAt: "2026-09-01T15:05:00.000Z"
+        };
+        return {
+          ok: true,
+          json: async () => ({ operation: structuredClone(operation) })
+        };
+      }
+      throw new Error(`Unexpected request: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<DashboardConsole />);
+
+    openNavigationItem("Approvals");
+    await screen.findByText("3 carrier quotes are ready to compare");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Authorize closing call" })
+    );
+    expect(await screen.findByText(/Select one carrier/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("radio", { name: /Ruta Occidente/ }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Authorize closing call" })
+    );
+
+    expect(
+      await screen.findByText("Carrier booking confirmed")
+    ).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/approvals/approval-quote-round-001/decision",
+      expect.objectContaining({ method: "POST" })
+    );
   });
 });
+
+function quoteRoundOperation(): Operation {
+  const operation = seedOperation();
+  operation.status = "awaiting_approval";
+  operation.quotes = [
+    {
+      id: "quote-costa-pacifico-001",
+      carrierId: "carrier-costa-pacifico",
+      carrierName: "Transportes Costa Pacífico",
+      priceMxn: 8750,
+      etaMinutes: 90,
+      pickupTime: THURSDAY_PICKUP,
+      callId: "call-costa",
+      createdAt: "2026-09-01T15:00:00.000Z"
+    },
+    {
+      id: "quote-ruta-occidente-001",
+      carrierId: "carrier-ruta-occidente",
+      carrierName: "Ruta Occidente",
+      priceMxn: 8500,
+      etaMinutes: 75,
+      pickupTime: THURSDAY_PICKUP,
+      callId: "call-ruta",
+      createdAt: "2026-09-01T15:00:00.000Z"
+    },
+    {
+      id: "quote-logistica-manzanillo-001",
+      carrierId: "carrier-logistica-manzanillo",
+      carrierName: "Logística Manzanillo",
+      priceMxn: 8640,
+      etaMinutes: 80,
+      pickupTime: THURSDAY_PICKUP,
+      callId: "call-logistica",
+      createdAt: "2026-09-01T15:00:00.000Z"
+    }
+  ];
+  operation.approvals = [
+    {
+      id: "approval-quote-round-001",
+      operationId: operation.id,
+      type: "carrier_selection",
+      status: "pending",
+      quoteIds: operation.quotes.map((quote) => quote.id),
+      recommendedQuoteId: "quote-ruta-occidente-001",
+      createdAt: "2026-09-01T15:01:00.000Z"
+    }
+  ];
+  return operation;
+}

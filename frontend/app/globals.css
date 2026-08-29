@@ -516,8 +516,8 @@ main {
   max-height: 30px;
   background: currentColor;
   border-radius: 1px;
-  animation: volta-wave 1.45s ease-in-out infinite alternate;
   transform-origin: center;
+  will-change: transform;
 }
 .waveform--blue {
   color: var(--primary);
@@ -1153,6 +1153,90 @@ main {
 .quote-block b {
   font-size: 12px;
 }
+.quote-selection {
+  margin: 14px 23px;
+  padding: 0;
+  border: 0;
+}
+.quote-selection legend {
+  margin-bottom: 9px;
+  color: var(--muted);
+  font:
+    600 10px/1 "JetBrains Mono",
+    monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.quote-option {
+  min-height: 62px;
+  padding: 12px 14px;
+  display: grid;
+  grid-template-columns:
+    18px minmax(150px, 1.5fr) minmax(85px, 0.7fr) minmax(90px, 0.8fr)
+    minmax(80px, 0.65fr);
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--divider);
+  border-bottom: 0;
+  background: #fff;
+  color: #42516a;
+  cursor: pointer;
+  font-size: 11px;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+.quote-option:first-of-type {
+  border-radius: 5px 5px 0 0;
+}
+.quote-option:last-of-type {
+  border-bottom: 1px solid var(--divider);
+  border-radius: 0 0 5px 5px;
+}
+.quote-option:hover {
+  background: #f7faff;
+}
+.quote-option.selected {
+  position: relative;
+  z-index: 1;
+  border-color: #7aa7e8;
+  background: var(--primary-tint);
+  box-shadow: 0 0 0 1px #7aa7e8;
+}
+.quote-option input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--primary);
+}
+.quote-option .quote-carrier {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+}
+.quote-option .quote-carrier b {
+  font-size: 12px;
+}
+.quote-option small {
+  padding: 3px 5px;
+  border-radius: 2px;
+  background: #dbe9fe;
+  color: var(--primary);
+  font:
+    700 8px/1 "JetBrains Mono",
+    monospace;
+  letter-spacing: 0.04em;
+}
+.quote-option > strong {
+  color: var(--ink);
+  font:
+    650 12px/1.3 "JetBrains Mono",
+    monospace;
+}
+.approval-error {
+  margin: 0 23px 16px;
+}
 .whisper {
   margin: 14px 23px 21px;
   padding: 14px;
@@ -1249,6 +1333,206 @@ main {
 .decision-complete .button {
   margin-top: 15px;
 }
+.copilot-launcher {
+  position: fixed;
+  right: 26px;
+  bottom: 24px;
+  z-index: 20;
+  min-height: 44px;
+  padding: 8px 14px 8px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid #12365f;
+  border-radius: 5px;
+  color: #fff;
+  background: var(--nav);
+  font-weight: 600;
+}
+.copilot-launcher:hover {
+  background: #12365f;
+}
+.copilot-launcher-mark {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: var(--primary);
+  border-radius: 3px;
+  font:
+    600 11px/1 "JetBrains Mono",
+    monospace;
+}
+.copilot-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 29;
+  border: 0;
+  background: rgba(11, 37, 69, 0.22);
+  cursor: default;
+}
+.copilot-panel {
+  position: fixed;
+  inset: 0 0 0 auto;
+  z-index: 30;
+  width: min(408px, 100vw);
+  display: flex;
+  flex-direction: column;
+  color: var(--ink);
+  background: #fbfcfe;
+  border-left: 1px solid #b9c8da;
+}
+.copilot-header {
+  min-height: 92px;
+  padding: 20px 20px 18px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  color: #fff;
+  background: var(--nav);
+  border-bottom: 3px solid var(--primary);
+}
+.copilot-header .section-label {
+  margin-bottom: 6px;
+  color: #9bb8df;
+}
+.copilot-header h2 {
+  margin: 0;
+  font-size: 21px;
+  letter-spacing: -0.03em;
+}
+.copilot-close {
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.27);
+  border-radius: 3px;
+  color: #fff;
+  background: transparent;
+  font-size: 23px;
+  line-height: 1;
+}
+.copilot-context {
+  margin: 0;
+  padding: 14px 20px;
+  color: #55657a;
+  background: #f1f5fa;
+  border-bottom: 1px solid #dbe4ef;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.copilot-prompts {
+  padding: 13px 20px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  border-bottom: 1px solid var(--divider);
+}
+.copilot-prompts button {
+  padding: 6px 8px;
+  border: 1px solid #c9d8ea;
+  border-radius: 3px;
+  color: #24517e;
+  background: #fff;
+  font-size: 10px;
+  font-weight: 600;
+}
+.copilot-prompts button:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.copilot-thread {
+  flex: 1;
+  min-height: 0;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+.copilot-message {
+  width: fit-content;
+  max-width: 94%;
+  padding: 11px 12px;
+  border: 1px solid #d8e0ea;
+  border-radius: 4px;
+  background: #fff;
+}
+.copilot-message--user {
+  align-self: flex-end;
+  border-color: #b9d3f4;
+  background: var(--primary-tint);
+}
+.copilot-message b {
+  color: #64758b;
+  font:
+    600 9px/1 "JetBrains Mono",
+    monospace;
+  letter-spacing: 0.08em;
+}
+.copilot-message--user b {
+  color: var(--primary);
+}
+.copilot-message p {
+  margin: 7px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.copilot-thinking {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font:
+    600 10px/1.3 "JetBrains Mono",
+    monospace;
+}
+.copilot-thinking i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--primary);
+  animation: volta-pulse 1.3s ease-in-out infinite;
+}
+.copilot-composer {
+  padding: 16px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  border-top: 1px solid #cfd9e5;
+  background: #fff;
+}
+.copilot-composer label {
+  color: #4c5e74;
+  font:
+    600 10px/1.2 "JetBrains Mono",
+    monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.copilot-composer textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 74px;
+  padding: 10px 11px;
+  border: 1px solid #c5d2e0;
+  border-radius: 4px;
+  color: var(--ink);
+  font: inherit;
+  line-height: 1.4;
+}
+.copilot-composer textarea:focus {
+  border-color: var(--primary);
+  outline: 2px solid rgba(22, 101, 216, 0.16);
+  outline-offset: 1px;
+}
+.copilot-composer .button {
+  align-self: flex-end;
+}
+.copilot-composer .button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
 
 @keyframes volta-pulse {
   0%,
@@ -1261,23 +1545,9 @@ main {
     transform: scale(1.12);
   }
 }
-@keyframes volta-wave {
-  from {
-    transform: scaleY(0.35);
-    opacity: 0.65;
-  }
-  to {
-    transform: scaleY(1);
-    opacity: 1;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
+  .live-dot {
+    animation: none;
   }
 }
 @media (max-width: 1050px) {
@@ -1310,6 +1580,13 @@ main {
   }
 }
 @media (max-width: 760px) {
+  .copilot-launcher {
+    right: 16px;
+    bottom: 16px;
+  }
+  .copilot-panel {
+    width: 100vw;
+  }
   .nav-rail {
     position: static;
     width: 100%;
@@ -1404,6 +1681,12 @@ main {
   }
   .approval-actions {
     flex-direction: column;
+  }
+  .quote-option {
+    grid-template-columns: 18px 1fr auto;
+  }
+  .quote-option > span:not(.quote-carrier) {
+    display: none;
   }
   .transcript-line {
     grid-template-columns: 1fr;
