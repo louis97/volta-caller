@@ -15,7 +15,7 @@ export type MockScenario = {
 
 export function createMockScenario(onEvent?: Parameters<OperationStore["subscribe"]>[0]): MockScenario {
   const store = createOperationStore(seedOperation());
-  onEvent && store.subscribe(onEvent);
+  if (onEvent) store.subscribe(onEvent);
   const operation = store.getOperation();
   const approvedCarrier = operation.candidates[0];
   const overCapCarrier = operation.candidates[1];
