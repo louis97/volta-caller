@@ -214,32 +214,24 @@ export class DeterministicAgentAnswerer implements AgentAnswerer {
       });
     }
     if (
-      /(selecciona|resuelve|autoriza|prepara la selecci[oó]n)/i.test(
+      /(selecciona|resuelve|autoriza|prepara la selecci[oó]n|cerrar|cierra|confirmar|confirma|ejecutar|ejecuta|call back|closing call)/i.test(
         request.question
       )
     ) {
-      const approval = request.currentOperation.approvals.find(
-        (item) => item.type === "carrier_selection" && item.status === "pending"
+      const approvedDeals = request.currentOperation.reviewedDeals.filter(
+        (deal) => deal.mandateDecision === "APPROVED"
       );
-      const selectedQuoteId =
-        approval?.recommendedQuoteId ??
-        request.currentOperation.quotes
-          .filter((quote) => approval?.quoteIds.includes(quote.id))
-          .sort((left, right) => left.priceMxn - right.priceMxn)[0]?.id;
-      if (approval && selectedQuoteId) {
+      const bestQuoteId = request.currentOperation.quotes
+        .filter((quote) =>
+          approvedDeals.some((deal) => deal.quoteId === quote.id)
+        )
+        .sort((left, right) => left.priceMxn - right.priceMxn)[0]?.id;
+      if (bestQuoteId) {
         await execute("propose_carrier_selection", {
-          approvalId: approval.id,
-          selectedQuoteId,
+          selectedQuoteId: bestQuoteId,
           rationale: "Mejor opción disponible en la ronda registrada."
         });
       }
-    }
-    if (
-      /(cerrar|cierra|confirmar|confirma|ejecutar|ejecuta|call back|closing call)/i.test(
-        request.question
-      )
-    ) {
-      await execute("propose_close_approved_deal", {});
     }
 
     const selected = uniqueEvidence(evidence).slice(0, 4);
@@ -269,9 +261,7 @@ export type OperationalAgentDependencies = {
     input: CreateMandateRequest,
     context: OrganizationContext
   ): Promise<boolean>;
-  executeCloseApprovedDeal(): Promise<boolean>;
   resolveCarrierSelection(input: {
-    approvalId: string;
     selectedQuoteId: string;
     decidedBy: string;
     decidedAt: string;
@@ -284,7 +274,6 @@ export function createOperationalAgent({
   answerer,
   getCurrentOperation,
   executeCreateMandate,
-  executeCloseApprovedDeal,
   resolveCarrierSelection,
   now = () => new Date().toISOString()
 }: OperationalAgentDependencies) {
@@ -443,14 +432,11 @@ export function createOperationalAgent({
         const executed =
           approved.type === "create_mandate"
             ? await executeCreateMandate(approved.payload, context)
-            : approved.type === "close_approved_deal"
-              ? await executeCloseApprovedDeal()
-              : await resolveCarrierSelection({
-                  approvalId: approved.payload.approvalId,
-                  selectedQuoteId: approved.payload.selectedQuoteId,
-                  decidedBy: context.userId,
-                  decidedAt
-                });
+            : await resolveCarrierSelection({
+                selectedQuoteId: approved.payload.selectedQuoteId,
+                decidedBy: context.userId,
+                decidedAt
+              });
         const result: ProposedAction = {
           ...approved,
           status: executed ? "executed" : "failed",

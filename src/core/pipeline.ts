@@ -27,7 +27,6 @@ export function derivePipelineStage(operation: Operation): PipelineStage {
   ) {
     return "failed";
   }
-  if (operation.closingAuthorization) return "closing";
   if (operation.quotes.length > 0) return "quoting";
   if (operation.callSessions.length > 0) return "calling";
   return "open";

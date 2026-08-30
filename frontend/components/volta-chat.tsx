@@ -586,9 +586,7 @@ export function VoltaChat({ onOperationChange }: VoltaChatProps) {
                         <h3>
                           {action.type === "resolve_carrier_selection"
                             ? "Carrier selection"
-                            : action.type === "create_mandate"
-                              ? "Create mandate"
-                              : "Approved closing call"}
+                            : "Create mandate"}
                         </h3>
                         <p>{action.summary}</p>
                         {action.status === "pending" ? (
@@ -735,8 +733,8 @@ function isOperationReadModel(value: unknown): value is OperationReadModel {
     typeof value.id === "string" &&
     "callSessions" in value &&
     Array.isArray(value.callSessions) &&
-    "approvals" in value &&
-    Array.isArray(value.approvals)
+    "quotes" in value &&
+    Array.isArray(value.quotes)
   );
 }
 

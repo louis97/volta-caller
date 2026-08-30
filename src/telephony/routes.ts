@@ -5,9 +5,12 @@ import twilio from "twilio";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { executeToolCall } from "../agent/interpreter";
-import { buildCallInstructions } from "../agent/prompt";
+import { buildCallInstructions, buildConfirmationCallInstructions } from "../agent/prompt";
+import { createCommitmentFinalizer, whatsappRecapGateway } from "../audit/commitment";
 import { env } from "../config/env";
+import type { ConfirmationCoordinator } from "../core/confirmation";
 import type { OperationStore } from "../core/state";
+import type { KapsoMessenger } from "../whatsapp/kapso";
 import { auctionFromOperation, type Auction } from "./auction";
 import { closeBridge, getBridge, openBridge } from "./hub";
 import {
@@ -102,6 +105,14 @@ export type TelephonyDependencies = {
     carrier?: { id: string; name: string };
   };
   onCallCompleted?: (callId: string, operationId: string) => void;
+  /**
+   * When a call sid belongs to a client-selected quote's confirmation
+   * callback, this switches the live agent to the confirmation script
+   * instead of the default negotiation one.
+   */
+  confirmationCoordinator?: ConfirmationCoordinator;
+  /** Sends the booking recap once a confirmation call closes the deal. */
+  whatsappMessenger?: KapsoMessenger;
 };
 
 export type ResolvedTelephonyCallContext = {
@@ -1066,10 +1077,23 @@ function openMediaStreamSession(
         console.error("[transcript] persist failed:", error);
       }
     },
-    instructionsFor: (call) =>
-      buildCallInstructions(store.getOperation(), call.carrierName),
+    instructionsFor: (call) => {
+      const confirmationContext = dependencies.confirmationCoordinator?.getCallContext(
+        call.callSid
+      );
+      return confirmationContext
+        ? buildConfirmationCallInstructions({
+            operation: store.getOperation(),
+            quote: confirmationContext.quote,
+            carrierName: call.carrierName
+          })
+        : buildCallInstructions(store.getOperation(), call.carrierName);
+    },
     executeToolCall: async (request) => {
       const current = runtime;
+      const confirmationContext = current
+        ? dependencies.confirmationCoordinator?.getCallContext(current.callSid)
+        : undefined;
 
       // The agent asking for a person opens a countdown rather than parking
       // the call: someone accepts from the console, or Volta says it will call
@@ -1105,8 +1129,33 @@ function openMediaStreamSession(
             }
           : undefined,
         // Built per call so the recap and the audio anchor belong to this leg.
-        mode: "negotiation" as const,
-        finalizeConfirmation: async () => {}
+        mode: confirmationContext ? ("confirmation" as const) : ("negotiation" as const),
+        finalizeConfirmation:
+          confirmationContext && current
+            ? (() => {
+                const finalize = createCommitmentFinalizer({
+                  store,
+                  // Only reached when recapRecipient is set, which itself
+                  // only happens for a WhatsApp-approved selection — so the
+                  // real messenger is present whenever this actually sends.
+                  sms: dependencies.whatsappMessenger
+                    ? whatsappRecapGateway(dependencies.whatsappMessenger)
+                    : {
+                        send: async (message) => ({
+                          id: "no-messenger",
+                          ...message,
+                          status: "failed" as const
+                        })
+                      },
+                  callId: current.callSid,
+                  recipient: confirmationContext.recapRecipient
+                });
+                return (intent: { timestampMs?: number } & Omit<
+                  Parameters<typeof finalize>[0],
+                  "timestampMs"
+                >) => finalize({ ...intent, timestampMs: intent.timestampMs ?? 0 });
+              })()
+            : async () => {}
       });
     }
   });
