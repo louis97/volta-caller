@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type {
+  AgentActivity,
   AgentConversation,
   AgentMessage,
   EvidenceCitation,
@@ -7,9 +8,14 @@ import type {
   ProposedAction
 } from "@volta/contracts";
 import OpenAI from "openai";
-import { zodTextFormat } from "openai/helpers/zod";
+import { zodResponsesFunction, zodTextFormat } from "openai/helpers/zod";
+import type {
+  ResponseInput,
+  ResponseInputItem
+} from "openai/resources/responses/responses";
 import { z } from "zod";
 
+import { createCentralBrainTools, type CentralBrainTool } from "./centralBrain";
 import {
   type AgentRepository,
   type OrganizationContext,
@@ -21,12 +27,17 @@ const groundedAnswerSchema = z.object({
   citationIds: z.array(z.string()).max(12)
 });
 
-export type GroundedAnswer = z.infer<typeof groundedAnswerSchema>;
+export type GroundedAnswer = z.infer<typeof groundedAnswerSchema> & {
+  evidence: EvidenceCitation[];
+  proposedActions: ProposedAction[];
+};
 
 export type AnswerRequest = {
   question: string;
-  evidence: EvidenceCitation[];
   history: AgentMessage[];
+  currentOperation: Operation;
+  tools: CentralBrainTool[];
+  onActivity?: (activity: AgentActivity) => void;
 };
 
 export type AgentAnswerer = {
@@ -43,52 +54,164 @@ export class OpenAIAgentAnswerer implements AgentAnswerer {
     this.client = new OpenAI({ apiKey });
   }
 
-  async answer(request: AnswerRequest) {
-    const response = await this.client.responses.parse({
-      model: this.model,
-      store: false,
-      instructions: [
-        "Eres Volta, el asistente operacional de una empresa de logística.",
-        "Responde en el idioma de la pregunta y usa exclusivamente la evidencia suministrada.",
-        "No inventes ubicación, estado, llamadas, negociaciones ni acciones.",
-        "Cuando un dato no exista, dilo de forma directa.",
-        "Cada afirmación factual debe respaldarse con los IDs de evidencia exactos.",
-        "No afirmes que ejecutaste acciones; las acciones requieren aprobación humana por separado.",
-        "Sé concreto y útil para un dispatcher."
-      ].join("\n"),
-      input: JSON.stringify({
-        question: request.question,
-        recentHistory: request.history.slice(-8).map(({ role, content }) => ({
-          role,
-          content
-        })),
-        evidence: request.evidence.map((item) => ({
-          id: item.id,
-          title: item.title,
-          excerpt: item.excerpt,
-          occurredAt: item.occurredAt
-        }))
-      }),
-      text: { format: zodTextFormat(groundedAnswerSchema, "grounded_answer") }
-    });
-    if (!response.output_parsed) throw new Error("agent_answer_unparseable");
-    return response.output_parsed;
+  async answer(request: AnswerRequest): Promise<GroundedAnswer> {
+    const definitions = request.tools.map((tool) =>
+      zodResponsesFunction({
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters
+      })
+    );
+    let input: ResponseInput = request.history.slice(-8).map((message) => ({
+      role: message.role,
+      content: message.content
+    }));
+    const evidence: EvidenceCitation[] = [];
+    const proposedActions: ProposedAction[] = [];
+    let toolCalls = 0;
+    let allowTools = true;
+
+    for (let round = 0; round < 8; round += 1) {
+      const response = await this.client.responses.parse({
+        model: this.model,
+        store: false,
+        include: ["reasoning.encrypted_content"],
+        instructions: [
+          "Eres Volta, el central brain operacional de una empresa de logística.",
+          "Responde en el idioma de la pregunta y usa exclusivamente hechos devueltos por las tools.",
+          "Antes de responder una pregunta factual, llama una o más tools de lectura.",
+          "No inventes ubicación, estado, llamadas, negociaciones ni acciones.",
+          "Cuando un dato no exista, dilo de forma directa.",
+          "Cada afirmación factual debe respaldarse con los IDs de evidencia exactos.",
+          "Las tools propose_* solo preparan acciones; nunca digas que una acción fue ejecutada.",
+          "Sé concreto y útil para un dispatcher."
+        ].join("\n"),
+        input,
+        parallel_tool_calls: false,
+        tool_choice: allowTools ? "auto" : "none",
+        tools: allowTools ? definitions : [],
+        text: { format: zodTextFormat(groundedAnswerSchema, "grounded_answer") }
+      });
+      const calls = response.output.filter(
+        (item) => item.type === "function_call"
+      );
+      if (calls.length === 0) {
+        if (!response.output_parsed)
+          throw new Error("agent_answer_unparseable");
+        return {
+          ...response.output_parsed,
+          evidence: uniqueEvidence(evidence),
+          proposedActions: uniqueActions(proposedActions)
+        };
+      }
+
+      const outputs: ResponseInputItem[] = [];
+      for (const call of calls) {
+        const tool = request.tools.find((item) => item.name === call.name);
+        if (!tool || toolCalls >= 6) {
+          outputs.push({
+            type: "function_call_output",
+            call_id: call.call_id,
+            output: JSON.stringify({ error: "tool_budget_exhausted" })
+          });
+          allowTools = false;
+          continue;
+        }
+        toolCalls += 1;
+        request.onActivity?.(tool.activity);
+        const argumentsValue = call.parsed_arguments;
+        const result = await tool.execute(argumentsValue);
+        evidence.push(...result.citations);
+        if (result.proposedAction) proposedActions.push(result.proposedAction);
+        outputs.push({
+          type: "function_call_output",
+          call_id: call.call_id,
+          output: JSON.stringify(result.output)
+        });
+      }
+      if (toolCalls >= 6) allowTools = false;
+      input = [
+        ...input,
+        ...(response.output as ResponseInputItem[]),
+        ...outputs
+      ];
+    }
+    throw new Error("agent_tool_loop_exhausted");
   }
 }
 
 export class DeterministicAgentAnswerer implements AgentAnswerer {
   async answer(request: AnswerRequest): Promise<GroundedAnswer> {
-    if (request.evidence.length === 0) {
-      return {
-        answer:
-          "No encontré información autoritativa para responder esa pregunta.",
-        citationIds: []
-      };
+    const evidence: EvidenceCitation[] = [];
+    const proposedActions: ProposedAction[] = [];
+    const execute = async (
+      name: CentralBrainTool["name"],
+      argumentsValue: unknown
+    ) => {
+      const tool = request.tools.find((item) => item.name === name);
+      if (!tool) return undefined;
+      request.onActivity?.(tool.activity);
+      const result = await tool.execute(argumentsValue);
+      evidence.push(...result.citations);
+      if (result.proposedAction) proposedActions.push(result.proposedAction);
+      return result.output;
+    };
+
+    await execute("search_operational_records", { query: request.question });
+    if (
+      /(pendiente|atenci[oó]n|attention|bloque|triage|prioridad|qu[eé] pasa|needs me)/i.test(
+        request.question
+      )
+    ) {
+      await execute("list_attention_items", {});
     }
-    const selected = request.evidence.slice(0, 4);
+    if (
+      /(cotiz|quote|carrier|transportista|oferta|compar)/i.test(
+        request.question
+      )
+    ) {
+      await execute("compare_quotes", {
+        operationId: request.currentOperation.id
+      });
+    }
+    if (
+      /(selecciona|resuelve|autoriza|prepara la selecci[oó]n)/i.test(
+        request.question
+      )
+    ) {
+      const approval = request.currentOperation.approvals.find(
+        (item) => item.type === "carrier_selection" && item.status === "pending"
+      );
+      const selectedQuoteId =
+        approval?.recommendedQuoteId ??
+        request.currentOperation.quotes
+          .filter((quote) => approval?.quoteIds.includes(quote.id))
+          .sort((left, right) => left.priceMxn - right.priceMxn)[0]?.id;
+      if (approval && selectedQuoteId) {
+        await execute("propose_carrier_selection", {
+          approvalId: approval.id,
+          selectedQuoteId,
+          rationale: "Mejor opción disponible en la ronda registrada."
+        });
+      }
+    }
+    if (
+      /(cerrar|cierra|confirmar|confirma|ejecutar|ejecuta|call back|closing call)/i.test(
+        request.question
+      )
+    ) {
+      await execute("propose_close_approved_deal", {});
+    }
+
+    const selected = uniqueEvidence(evidence).slice(0, 4);
     return {
-      answer: selected.map((item) => item.excerpt).join(" "),
-      citationIds: selected.map((item) => item.id)
+      answer:
+        selected.length === 0
+          ? "No encontré información autoritativa para responder esa pregunta."
+          : selected.map((item) => item.excerpt).join(" "),
+      citationIds: selected.map((item) => item.id),
+      evidence: uniqueEvidence(evidence),
+      proposedActions: uniqueActions(proposedActions)
     };
   }
 }
@@ -104,6 +227,12 @@ export type OperationalAgentDependencies = {
   answerer: AgentAnswerer;
   getCurrentOperation(): Operation;
   executeCloseApprovedDeal(): Promise<boolean>;
+  resolveCarrierSelection(input: {
+    approvalId: string;
+    selectedQuoteId: string;
+    decidedBy: string;
+    decidedAt: string;
+  }): Promise<boolean> | boolean;
   now?: () => string;
 };
 
@@ -112,6 +241,7 @@ export function createOperationalAgent({
   answerer,
   getCurrentOperation,
   executeCloseApprovedDeal,
+  resolveCarrierSelection,
   now = () => new Date().toISOString()
 }: OperationalAgentDependencies) {
   async function sync(context: OrganizationContext) {
@@ -133,10 +263,19 @@ export function createOperationalAgent({
       return repository.listConversations(context);
     },
 
+    renameConversation(
+      context: OrganizationContext,
+      conversationId: string,
+      title: string
+    ) {
+      return repository.renameConversation(context, conversationId, title);
+    },
+
     async ask(
       context: OrganizationContext,
       conversationId: string,
-      question: string
+      question: string,
+      onActivity?: (activity: AgentActivity) => void
     ): Promise<AgentMessage> {
       const conversation = await repository.getConversation(
         context,
@@ -156,28 +295,32 @@ export function createOperationalAgent({
       };
       await repository.appendMessage(context, userMessage);
 
-      const evidence = await repository.searchEvidence(context, question);
-      const rawAnswer = await answerer.answer({
-        question,
-        evidence,
-        history: [...conversation.messages, userMessage]
-      });
-      const citations = validateCitations(rawAnswer.citationIds, evidence);
-      const proposedActions = await proposeActions({
+      const tools = createCentralBrainTools({
         context,
         conversationId,
-        question,
-        operation,
         repository,
+        getCurrentOperation,
         now
       });
+      const rawAnswer = await answerer.answer({
+        question,
+        history: [...conversation.messages, userMessage],
+        currentOperation: operation,
+        tools,
+        onActivity
+      });
+      onActivity?.({ stage: "answering", label: "Preparing the answer" });
+      const citations = validateCitations(
+        rawAnswer.citationIds,
+        rawAnswer.evidence
+      );
       const assistantMessage: AgentMessage = {
         id: randomUUID(),
         conversationId,
         role: "assistant",
         content: rawAnswer.answer,
         citations,
-        proposedActions,
+        proposedActions: rawAnswer.proposedActions,
         createdAt: now()
       };
       await repository.appendMessage(context, assistantMessage);
@@ -206,7 +349,10 @@ export function createOperationalAgent({
       }
 
       const operation = await sync(context);
-      if (operationVersion(operation) !== action.expectedOperationVersion) {
+      if (
+        operation.id !== action.operationId ||
+        operationVersion(operation) !== action.expectedOperationVersion
+      ) {
         const expired: ProposedAction = {
           ...action,
           status: "expired",
@@ -226,12 +372,20 @@ export function createOperationalAgent({
       };
       await repository.updateAction(approved);
       try {
-        const executed = await executeCloseApprovedDeal();
+        const executed =
+          approved.type === "close_approved_deal"
+            ? await executeCloseApprovedDeal()
+            : await resolveCarrierSelection({
+                approvalId: approved.payload.approvalId,
+                selectedQuoteId: approved.payload.selectedQuoteId,
+                decidedBy: context.userId,
+                decidedAt
+              });
         const result: ProposedAction = {
           ...approved,
           status: executed ? "executed" : "failed",
           executedAt: now(),
-          failureReason: executed ? undefined : "closing_authorization_required"
+          failureReason: executed ? undefined : "action_preconditions_failed"
         };
         await repository.updateAction(result);
         await sync(context);
@@ -260,39 +414,12 @@ function validateCitations(ids: string[], evidence: EvidenceCitation[]) {
   return evidence.slice(0, 3);
 }
 
-async function proposeActions(input: {
-  context: OrganizationContext;
-  conversationId: string;
-  question: string;
-  operation: Operation;
-  repository: AgentRepository;
-  now: () => string;
-}) {
-  const requestsClosing =
-    /(cerrar|cierra|confirmar|confirma|ejecutar|ejecuta|call back|closing call)/i.test(
-      input.question
-    );
-  if (
-    !requestsClosing ||
-    !input.operation.closingAuthorization ||
-    input.operation.commitment
-  ) {
-    return [];
-  }
-  const action: ProposedAction = {
-    id: randomUUID(),
-    organizationId: input.context.organizationId,
-    conversationId: input.conversationId,
-    operationId: input.operation.id,
-    type: "close_approved_deal",
-    status: "pending",
-    summary: "Realizar la llamada de cierre con los términos ya autorizados.",
-    expectedOperationVersion: operationVersion(input.operation),
-    requestedBy: input.context.userId,
-    createdAt: input.now()
-  };
-  await input.repository.saveAction(action);
-  return [action];
+function uniqueEvidence(evidence: EvidenceCitation[]) {
+  return [...new Map(evidence.map((item) => [item.id, item])).values()];
+}
+
+function uniqueActions(actions: ProposedAction[]) {
+  return [...new Map(actions.map((item) => [item.id, item])).values()];
 }
 
 export type OperationalAgent = ReturnType<typeof createOperationalAgent>;

@@ -386,12 +386,11 @@ export type TranscriptSegment = {
   createdAt: string;
 };
 
-export type ProposedAction = {
+type ProposedActionBase = {
   id: string;
   organizationId: string;
   conversationId: string;
   operationId: string;
-  type: "close_approved_deal";
   status:
     "pending" | "approved" | "declined" | "executed" | "failed" | "expired";
   summary: string;
@@ -402,6 +401,33 @@ export type ProposedAction = {
   decidedAt?: string;
   executedAt?: string;
   failureReason?: string;
+};
+
+export type ProposedAction = ProposedActionBase &
+  (
+    | {
+        type: "close_approved_deal";
+        payload: Record<string, never>;
+      }
+    | {
+        type: "resolve_carrier_selection";
+        payload: {
+          approvalId: string;
+          selectedQuoteId: string;
+          rationale?: string;
+        };
+      }
+  );
+
+export type AgentActivity = {
+  stage:
+    | "searching_records"
+    | "reviewing_operation"
+    | "reviewing_attention"
+    | "comparing_quotes"
+    | "preparing_action"
+    | "answering";
+  label: string;
 };
 
 export type AgentMessage = {

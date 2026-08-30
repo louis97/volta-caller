@@ -1,8 +1,15 @@
 # Volta Operational Agent
 
 The operational agent lives entirely in the Express backend. The dashboard creates a
-conversation, posts questions, consumes the SSE answer, and renders evidence or proposed actions.
-OpenAI and database credentials are never sent to the browser.
+conversation, posts questions, consumes readable tool activity plus the final SSE answer, and
+renders evidence or proposed actions. OpenAI and database credentials are never sent to the
+browser.
+
+The central brain may read every operation persisted for the caller's organization, but mutating
+proposals are limited to the operation currently active in the dispatch store. Its server-owned
+tool registry can search records, inspect an operation, list attention items, compare quotes,
+propose a carrier selection, and propose an already-authorized closing call. Read tools return
+authorized evidence; proposal tools persist a `ProposedAction` and never execute it inline.
 
 ## Runtime
 
@@ -25,15 +32,19 @@ Mock mode supplies a local organization and dispatcher identity.
 
 - `GET|POST /api/agent/conversations` lists or creates conversations.
 - `GET /api/agent/conversations/:id` retrieves durable history.
+- `PATCH /api/agent/conversations/:id` renames a conversation with `{ "title": "..." }`.
 - `POST /api/agent/conversations/:id/messages` accepts `{ "question": "..." }` and returns SSE
-  `status`, `final`, or `error` events.
+  `activity`, `final`, or `error` events. Activity labels are user-facing summaries rather than
+  raw tool arguments or results.
 - `POST /api/agent/actions/:id/decision` accepts `{ "decision": "approve" | "decline" }`.
 - `GET /api/evidence/:type/:id` resolves a citation within the caller's organization.
 - `POST /api/internal/shipment-events` ingests the authoritative last-known shipment milestones.
 - `POST /api/internal/transcript-segments` ingests speaker-attributed, timestamped transcripts.
 
-An approved action is revalidated against the current operation version before execution. A stale
-proposal expires instead of executing against changed terms.
+An approved action is revalidated against the active operation ID and current operation version
+before execution. Carrier selection additionally rechecks that the approval remains pending and
+that the selected quote belongs to it. A stale proposal expires instead of executing against
+changed terms.
 
 ## Retention and production rollout
 

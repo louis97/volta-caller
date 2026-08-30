@@ -1,0 +1,600 @@
+"use client";
+
+import type {
+  AgentActivity,
+  AgentConversation,
+  AgentMessage,
+  OperationReadModel,
+  ProposedAction
+} from "@volta/contracts";
+import { AnimatePresence } from "motion/react";
+import * as m from "motion/react-m";
+import {
+  type FormEvent,
+  type KeyboardEvent,
+  useEffect,
+  useRef,
+  useState
+} from "react";
+
+import { ArrowIcon, EditIcon, LinkIcon, PlusIcon } from "./icons";
+
+const QUICK_PROMPTS = [
+  "What needs my attention right now?",
+  "Compare the carrier quotes for the active operation",
+  "Summarize the latest calls and exceptions",
+  "Which offer best fits the mandate?"
+];
+
+type VoltaChatProps = {
+  onOperationChange?: (operation: OperationReadModel) => void;
+};
+
+export function VoltaChat({ onOperationChange }: VoltaChatProps) {
+  const [conversations, setConversations] = useState<AgentConversation[]>([]);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<AgentMessage[]>([]);
+  const [question, setQuestion] = useState("");
+  const [activity, setActivity] = useState<AgentActivity | null>(null);
+  const [isSending, setIsSending] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameTitle, setRenameTitle] = useState("");
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const threadRef = useRef<HTMLDivElement>(null);
+  const loadSequenceRef = useRef(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function restoreLatest() {
+      setIsRestoring(true);
+      setLoadError(null);
+      try {
+        const listResponse = await fetch("/api/agent/conversations");
+        if (!listResponse.ok) throw new Error("conversation_list_failed");
+        const list = (await listResponse.json()) as AgentConversation[];
+        if (cancelled) return;
+        setConversations(list);
+        const latest = list[0];
+        if (!latest) return;
+        const detailResponse = await fetch(
+          `/api/agent/conversations/${latest.id}`
+        );
+        if (!detailResponse.ok) throw new Error("conversation_load_failed");
+        const detail = (await detailResponse.json()) as AgentConversation;
+        if (cancelled) return;
+        setConversationId(detail.id);
+        setMessages(detail.messages);
+      } catch {
+        if (!cancelled) {
+          setLoadError(
+            "Volta could not load conversation history. You can still start a new chat."
+          );
+        }
+      } finally {
+        if (!cancelled) setIsRestoring(false);
+      }
+    }
+    void restoreLatest();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const thread = threadRef.current;
+    if (thread) thread.scrollTop = thread.scrollHeight;
+  }, [messages, activity]);
+
+  useEffect(() => {
+    if (!isRestoring) inputRef.current?.focus();
+  }, [conversationId, isRestoring]);
+
+  async function openConversation(id: string) {
+    if (id === conversationId || isSending) return;
+    const sequence = ++loadSequenceRef.current;
+    setIsRestoring(true);
+    setLoadError(null);
+    try {
+      const response = await fetch(`/api/agent/conversations/${id}`);
+      if (!response.ok) throw new Error("conversation_load_failed");
+      const detail = (await response.json()) as AgentConversation;
+      if (sequence !== loadSequenceRef.current) return;
+      setConversationId(detail.id);
+      setMessages(detail.messages);
+    } catch {
+      if (sequence === loadSequenceRef.current) {
+        setLoadError("This conversation could not be loaded.");
+      }
+    } finally {
+      if (sequence === loadSequenceRef.current) setIsRestoring(false);
+    }
+  }
+
+  function startNewChat() {
+    if (isSending) return;
+    loadSequenceRef.current += 1;
+    setConversationId(null);
+    setMessages([]);
+    setQuestion("");
+    setActivity(null);
+    setLoadError(null);
+    setIsRestoring(false);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }
+
+  async function renameConversation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const title = renameTitle.trim();
+    if (!renamingId || !title) return;
+    try {
+      const response = await fetch(`/api/agent/conversations/${renamingId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title })
+      });
+      if (!response.ok) throw new Error("conversation_rename_failed");
+      const renamed = (await response.json()) as AgentConversation;
+      setConversations((current) =>
+        current.map((item) =>
+          item.id === renamed.id ? { ...item, ...renamed } : item
+        )
+      );
+      setRenamingId(null);
+      setRenameTitle("");
+    } catch {
+      setLoadError("The conversation title could not be saved.");
+    }
+  }
+
+  async function askVolta(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmedQuestion = question.trim();
+    if (!trimmedQuestion || isSending || isRestoring) return;
+
+    let activeConversationId = conversationId;
+    let createdConversation: AgentConversation | undefined;
+    const optimisticMessage = localMessage(
+      "user-" + Date.now(),
+      activeConversationId ?? "pending",
+      "user",
+      trimmedQuestion
+    );
+    setMessages((current) => [...current, optimisticMessage]);
+    setQuestion("");
+    setIsSending(true);
+    setLoadError(null);
+    setActivity({
+      stage: "searching_records",
+      label: "Connecting to operational records"
+    });
+
+    try {
+      if (!activeConversationId) {
+        const conversationResponse = await fetch("/api/agent/conversations", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ title: trimmedQuestion.slice(0, 120) })
+        });
+        if (!conversationResponse.ok) throw new Error("conversation_failed");
+        createdConversation =
+          (await conversationResponse.json()) as AgentConversation;
+        activeConversationId = createdConversation.id;
+        setConversationId(createdConversation.id);
+        setConversations((current) => [createdConversation!, ...current]);
+      }
+      const response = await fetch(
+        `/api/agent/conversations/${activeConversationId}/messages`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ question: trimmedQuestion })
+        }
+      );
+      const assistantMessage = await readAgentMessage(response, setActivity);
+      setMessages((current) => [...current, assistantMessage]);
+      setConversations((current) => {
+        const updated = current.map((item) =>
+          item.id === activeConversationId
+            ? { ...item, updatedAt: assistantMessage.createdAt }
+            : item
+        );
+        return updated.sort((left, right) =>
+          right.updatedAt.localeCompare(left.updatedAt)
+        );
+      });
+    } catch {
+      setMessages((current) => [
+        ...current,
+        localMessage(
+          "assistant-" + Date.now(),
+          activeConversationId ?? "failed",
+          "assistant",
+          "I could not reach the operational brain. No action was taken; try again shortly."
+        )
+      ]);
+      if (createdConversation) {
+        setConversations((current) =>
+          current.some((item) => item.id === createdConversation?.id)
+            ? current
+            : [createdConversation!, ...current]
+        );
+      }
+    } finally {
+      setActivity(null);
+      setIsSending(false);
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }
+  }
+
+  async function decideAction(
+    action: ProposedAction,
+    decision: "approve" | "decline"
+  ) {
+    try {
+      const response = await fetch(`/api/agent/actions/${action.id}/decision`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision })
+      });
+      if (!response.ok) throw new Error("action_decision_failed");
+      const payload = (await response.json()) as {
+        action: ProposedAction;
+        operation?: OperationReadModel;
+      };
+      setMessages((current) =>
+        current.map((message) => ({
+          ...message,
+          proposedActions: message.proposedActions.map((item) =>
+            item.id === action.id ? payload.action : item
+          )
+        }))
+      );
+      if (payload.operation) onOperationChange?.(payload.operation);
+    } catch {
+      setMessages((current) => [
+        ...current,
+        localMessage(
+          "action-error-" + Date.now(),
+          conversationId ?? "failed",
+          "assistant",
+          "The action could not be decided safely. Refresh the operation before trying again."
+        )
+      ]);
+    }
+  }
+
+  function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      event.currentTarget.form?.requestSubmit();
+    }
+  }
+
+  const activeConversation = conversations.find(
+    (item) => item.id === conversationId
+  );
+
+  return (
+    <section className="brain" aria-label="Volta central brain">
+      <nav className="brain__history" aria-label="Volta conversations">
+        <header className="brain__history-head">
+          <div>
+            <p className="ml">Operational memory</p>
+            <h2>Conversations</h2>
+          </div>
+          <button
+            aria-label="New chat"
+            className="brain__new"
+            disabled={isSending}
+            onClick={startNewChat}
+            type="button"
+          >
+            <PlusIcon />
+          </button>
+        </header>
+        <div className="brain__history-list">
+          {conversations.map((conversation) => (
+            <div
+              className={
+                conversation.id === conversationId
+                  ? "brain__conversation is-active"
+                  : "brain__conversation"
+              }
+              key={conversation.id}
+            >
+              {renamingId === conversation.id ? (
+                <form onSubmit={renameConversation}>
+                  <label
+                    className="sr-only"
+                    htmlFor={`rename-${conversation.id}`}
+                  >
+                    Conversation title
+                  </label>
+                  <input
+                    autoFocus
+                    id={`rename-${conversation.id}`}
+                    maxLength={120}
+                    onChange={(event) => setRenameTitle(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") setRenamingId(null);
+                    }}
+                    value={renameTitle}
+                  />
+                </form>
+              ) : (
+                <>
+                  <button
+                    className="brain__conversation-open"
+                    disabled={isSending}
+                    onClick={() => void openConversation(conversation.id)}
+                    type="button"
+                  >
+                    <b>{conversation.title}</b>
+                    <time dateTime={conversation.updatedAt}>
+                      {formatConversationTime(conversation.updatedAt)}
+                    </time>
+                  </button>
+                  <button
+                    aria-label={`Rename ${conversation.title}`}
+                    className="brain__rename"
+                    onClick={() => {
+                      setRenamingId(conversation.id);
+                      setRenameTitle(conversation.title);
+                    }}
+                    type="button"
+                  >
+                    <EditIcon />
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+          {!isRestoring && conversations.length === 0 && (
+            <p className="brain__history-empty">No saved conversations yet.</p>
+          )}
+        </div>
+      </nav>
+
+      <section className="brain__chat" aria-labelledby="volta-title">
+        <header className="brain__head">
+          <div className="brain__identity">
+            <span>V/</span>
+            <div>
+              <p className="ml">Central brain</p>
+              <h1 id="volta-title">Volta</h1>
+            </div>
+          </div>
+          <div className="brain__thread-title">
+            <span className="pulse" />
+            {activeConversation?.title ?? "New operational conversation"}
+          </div>
+        </header>
+
+        <div className="brain__thread" aria-live="polite" ref={threadRef}>
+          {loadError && <p className="brain__notice">{loadError}</p>}
+          {isRestoring ? (
+            <div className="brain__loading">
+              <i className="pulse" /> Loading operational memory
+            </div>
+          ) : messages.length === 0 ? (
+            <section className="brain__welcome">
+              <span className="brain__welcome-mark">V/</span>
+              <p className="kicker">One operational record</p>
+              <h2>What should we look at?</h2>
+              <p>
+                I can investigate every operation, call, quote, transcript and
+                exception. I can prepare actions on the active operation, but
+                nothing changes without your approval.
+              </p>
+              <div className="brain__prompts">
+                {QUICK_PROMPTS.map((prompt) => (
+                  <button
+                    key={prompt}
+                    onClick={() => {
+                      setQuestion(prompt);
+                      inputRef.current?.focus();
+                    }}
+                    type="button"
+                  >
+                    <ArrowIcon />
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : (
+            <div className="brain__messages">
+              <AnimatePresence initial={false}>
+                {messages.map((message) => (
+                  <m.article
+                    animate={{ opacity: 1, y: 0 }}
+                    className={`brain__message brain__message--${message.role}`}
+                    exit={{ opacity: 0, y: -4 }}
+                    initial={{ opacity: 0, y: 8 }}
+                    key={message.id}
+                  >
+                    <div className="brain__message-author">
+                      <span>{message.role === "assistant" ? "V/" : "YOU"}</span>
+                      <time dateTime={message.createdAt}>
+                        {formatMessageTime(message.createdAt)}
+                      </time>
+                    </div>
+                    <p>{message.content}</p>
+                    {message.citations.length > 0 && (
+                      <ol className="brain__cites" aria-label="Evidence">
+                        {message.citations.map((citation) => (
+                          <li key={citation.id}>
+                            <a href={citation.href} target="_blank">
+                              <LinkIcon />
+                              <span>{citation.title}</span>
+                            </a>
+                            <time dateTime={citation.occurredAt}>
+                              {new Date(
+                                citation.occurredAt
+                              ).toLocaleDateString()}
+                            </time>
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                    {message.proposedActions.map((action) => (
+                      <section className="brain__action" key={action.id}>
+                        <p className="ml">Human approval required</p>
+                        <h3>
+                          {action.type === "resolve_carrier_selection"
+                            ? "Carrier selection"
+                            : "Approved closing call"}
+                        </h3>
+                        <p>{action.summary}</p>
+                        {action.status === "pending" ? (
+                          <div>
+                            <button
+                              className="btn btn--primary btn--sm"
+                              onClick={() =>
+                                void decideAction(action, "approve")
+                              }
+                              type="button"
+                            >
+                              Approve action
+                            </button>
+                            <button
+                              className="btn btn--secondary btn--sm"
+                              onClick={() =>
+                                void decideAction(action, "decline")
+                              }
+                              type="button"
+                            >
+                              Decline
+                            </button>
+                          </div>
+                        ) : (
+                          <strong>Action {action.status}</strong>
+                        )}
+                      </section>
+                    ))}
+                  </m.article>
+                ))}
+              </AnimatePresence>
+              {activity && (
+                <m.div
+                  animate={{ opacity: 1, y: 0 }}
+                  className="brain__activity"
+                  initial={{ opacity: 0, y: 4 }}
+                  key={activity.stage}
+                >
+                  <i className="pulse" />
+                  <span>{activity.label}</span>
+                </m.div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <form className="brain__composer" onSubmit={askVolta}>
+          <label htmlFor="volta-question">Ask across operational history</label>
+          <div>
+            <textarea
+              disabled={isRestoring}
+              id="volta-question"
+              onChange={(event) => setQuestion(event.target.value)}
+              onKeyDown={handleComposerKeyDown}
+              placeholder="Ask what changed, what is blocked, or what Volta should prepare…"
+              ref={inputRef}
+              rows={2}
+              value={question}
+            />
+            <m.button
+              aria-label="Ask Volta"
+              className="brain__send"
+              disabled={!question.trim() || isSending || isRestoring}
+              type="submit"
+              whileTap={{ scale: 0.96 }}
+            >
+              <ArrowIcon />
+            </m.button>
+          </div>
+          <small>Enter to send · Shift + Enter for a new line</small>
+        </form>
+      </section>
+    </section>
+  );
+}
+
+async function readAgentMessage(
+  response: Response,
+  onActivity: (activity: AgentActivity | null) => void
+) {
+  if (!response.ok) throw new Error("agent_request_rejected");
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("agent_stream_unavailable");
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalMessage: AgentMessage | undefined;
+
+  function consume(event: string) {
+    const eventName = event
+      .split("\n")
+      .find((line) => line.startsWith("event: "))
+      ?.slice(7);
+    const data = event
+      .split("\n")
+      .find((line) => line.startsWith("data: "))
+      ?.slice(6);
+    if (eventName === "error") throw new Error("agent_stream_failed");
+    if (eventName === "activity" && data) {
+      onActivity(JSON.parse(data) as AgentActivity);
+    }
+    if (eventName === "final" && data) {
+      finalMessage = JSON.parse(data) as AgentMessage;
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() ?? "";
+    events.forEach(consume);
+    if (done) break;
+  }
+  if (buffer.trim()) consume(buffer);
+  if (!finalMessage) throw new Error("agent_answer_missing");
+  return finalMessage;
+}
+
+function localMessage(
+  id: string,
+  conversationId: string,
+  role: AgentMessage["role"],
+  content: string
+): AgentMessage {
+  return {
+    id,
+    conversationId,
+    role,
+    content,
+    citations: [],
+    proposedActions: [],
+    createdAt: new Date().toISOString()
+  };
+}
+
+function formatConversationTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric"
+  }).format(date);
+}
+
+function formatMessageTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("en", {
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(date);
+}
