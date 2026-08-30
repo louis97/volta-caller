@@ -37,7 +37,7 @@ export function createRealtimeSessionConfig(
     turn_detection: { type: "server_vad", silence_duration_ms: 350 },
     interrupt_response: true,
     instructions: configuration.instructions,
-    tools: configuration.tools
+    tools: [...configuration.tools]
   };
 }
 

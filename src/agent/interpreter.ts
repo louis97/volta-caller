@@ -1,16 +1,20 @@
-import type { Escalation, Quote } from "@volta/contracts";
+import type { Escalation, Incident, Quote } from "@volta/contracts";
 import type { z } from "zod";
 
 import { createCallBrief } from "../audit/callBrief";
 import { evaluateMandate, type MandateDecision } from "../core/mandate";
+import type { ExceptionCallContext } from "../core/exceptions";
 import type { OperationStore } from "../core/state";
 import { createModeConfiguration, type CallMode } from "./modes";
 import {
   checkMandateSchema,
   confirmSelectedDealSchema,
   registerQuoteSchema,
+  notifyDashboardSchema,
+  recordIncidentSchema,
   reviewDealSchema,
-  triggerEscalationSchema
+  triggerEscalationSchema,
+  updateOperationStatusSchema
 } from "./tools";
 
 type ConfirmSelectedDealInput = z.infer<typeof confirmSelectedDealSchema>;
@@ -29,11 +33,20 @@ export type ToolDependencies = {
   now?: () => string;
 };
 
+export type ExceptionToolDependencies = {
+  store: OperationStore;
+  context: ExceptionCallContext;
+  now?: () => string;
+};
+
 export type ToolCallResult =
   | { outcome: "approved" }
   | { outcome: "registered"; mandateDecision: MandateDecision }
   | { outcome: "reviewed"; mandateDecision: MandateDecision }
   | { outcome: "confirmation_requested" }
+  | { outcome: "incident_recorded"; feasibility: Incident["feasibility"] }
+  | { outcome: "status_updated" }
+  | { outcome: "dashboard_notified" }
   | {
       outcome: "escalated";
       reason: string;
@@ -127,6 +140,187 @@ export async function executeToolCall(
     default:
       return { outcome: "rejected", reason: "tool_not_allowed" };
   }
+}
+
+export async function executeExceptionToolCall(
+  request: ToolCallRequest,
+  dependencies: ExceptionToolDependencies
+): Promise<ToolCallResult> {
+  switch (request.name) {
+    case "record_incident":
+      return recordExceptionIncident(request.arguments, dependencies);
+    case "update_operation_status":
+      return updateExceptionOperationStatus(request.arguments, dependencies);
+    case "notify_dashboard":
+      return notifyExceptionDashboard(request.arguments, dependencies);
+    case "trigger_escalation":
+      return triggerExceptionEscalation(request.arguments, dependencies);
+    default:
+      return { outcome: "rejected", reason: "tool_not_allowed" };
+  }
+}
+
+function recordExceptionIncident(
+  argumentsValue: unknown,
+  dependencies: ExceptionToolDependencies
+): ToolCallResult {
+  const parsed = recordIncidentSchema.safeParse(argumentsValue);
+  if (!parsed.success) return invalidArguments();
+
+  const operation = dependencies.store.getOperation();
+  if (operation.id !== dependencies.context.operationId) {
+    return { outcome: "rejected", reason: "caller_unverified" };
+  }
+  if (!hasVerifiedCallerIdentity(parsed.data, dependencies.context)) {
+    return { outcome: "rejected", reason: "caller_unverified" };
+  }
+
+  const feasibility = feasibilityFor(
+    parsed.data.revisedEta,
+    dependencies.context.mandate.destinationDatetime
+  );
+  if (!feasibility) return invalidArguments();
+
+  dependencies.store.recordIncident({
+    id: `incident-${dependencies.context.operationId}-${operation.incidents.length + 1}`,
+    operationId: dependencies.context.operationId,
+    callerName: parsed.data.callerName,
+    carrierId: parsed.data.carrierId,
+    truckPlate: parsed.data.truckPlate,
+    processStage: parsed.data.processStage,
+    issue: parsed.data.issue,
+    delayMinutes: parsed.data.delayMinutes,
+    revisedEta: parsed.data.revisedEta,
+    feasibility,
+    createdAt: (dependencies.now ?? (() => new Date().toISOString()))(),
+    verifiedCallerIdentity: parsed.data.callerName
+  });
+  return { outcome: "incident_recorded", feasibility };
+}
+
+function updateExceptionOperationStatus(
+  argumentsValue: unknown,
+  dependencies: ExceptionToolDependencies
+): ToolCallResult {
+  const parsed = updateOperationStatusSchema.safeParse(argumentsValue);
+  if (!parsed.success) return invalidArguments();
+
+  const operation = dependencies.store.getOperation();
+  if (operation.id !== dependencies.context.operationId) {
+    return { outcome: "rejected", reason: "incident_not_found" };
+  }
+  const incident = operation.incidents.find(
+    (candidate) =>
+      candidate.id === parsed.data.incidentId &&
+      candidate.operationId === dependencies.context.operationId
+  );
+  if (!incident) return { outcome: "rejected", reason: "incident_not_found" };
+
+  const feasibility = feasibilityFor(
+    incident.revisedEta,
+    dependencies.context.mandate.destinationDatetime
+  );
+  if (!feasibility)
+    return { outcome: "rejected", reason: "invalid_incident_eta" };
+  if (feasibility === "unachievable") {
+    return { outcome: "rejected", reason: "mandate_unachievable" };
+  }
+
+  dependencies.store.updateOperationStatus({
+    incidentId: incident.id,
+    status: "incident_monitoring"
+  });
+  return { outcome: "status_updated" };
+}
+
+function notifyExceptionDashboard(
+  argumentsValue: unknown,
+  dependencies: ExceptionToolDependencies
+): ToolCallResult {
+  const parsed = notifyDashboardSchema.safeParse(argumentsValue);
+  if (!parsed.success) return invalidArguments();
+
+  const operation = dependencies.store.getOperation();
+  if (operation.id !== dependencies.context.operationId) {
+    return { outcome: "rejected", reason: "incident_not_found" };
+  }
+  const incident = operation.incidents.find(
+    (candidate) =>
+      candidate.id === parsed.data.incidentId &&
+      candidate.operationId === dependencies.context.operationId
+  );
+  if (!incident) return { outcome: "rejected", reason: "incident_not_found" };
+  if (
+    operation.dashboardNotifications.some(
+      (notification) => notification.incidentId === incident.id
+    )
+  ) {
+    return { outcome: "rejected", reason: "dashboard_already_notified" };
+  }
+  if (
+    feasibilityFor(
+      incident.revisedEta,
+      dependencies.context.mandate.destinationDatetime
+    ) !== "unachievable"
+  ) {
+    return { outcome: "rejected", reason: "mandate_achievable" };
+  }
+
+  dependencies.store.notifyDashboard({
+    operationId: dependencies.context.operationId,
+    incidentId: incident.id,
+    message: `Incident ${incident.id} has a revised ETA after the destination deadline.`,
+    createdAt: (dependencies.now ?? (() => new Date().toISOString()))()
+  });
+  return { outcome: "dashboard_notified" };
+}
+
+function triggerExceptionEscalation(
+  argumentsValue: unknown,
+  dependencies: ExceptionToolDependencies
+): ToolCallResult {
+  const parsed = triggerEscalationSchema.safeParse(argumentsValue);
+  if (!parsed.success) return invalidArguments();
+
+  const operation = dependencies.store.getOperation();
+  if (operation.id !== dependencies.context.operationId) {
+    return { outcome: "rejected", reason: "operation_mismatch" };
+  }
+  dependencies.store.requestEscalation({
+    id: `escalation-${dependencies.context.operationId}-${operation.escalations.length + 1}`,
+    operationId: dependencies.context.operationId,
+    callId: parsed.data.callId,
+    reason: parsed.data.reason,
+    attemptedPriceMxn: parsed.data.current_price_offered,
+    attemptedPickupTime: dependencies.context.mandate.pickupDatetime,
+    status: "requested",
+    requestedAt: (dependencies.now ?? (() => new Date().toISOString()))()
+  });
+  return { outcome: "escalated", reason: parsed.data.reason };
+}
+
+function hasVerifiedCallerIdentity(
+  input: { carrierId: string; truckPlate?: string },
+  context: ExceptionCallContext
+): boolean {
+  const carrierMatches = context.selectedCarrier
+    ? input.carrierId === context.selectedCarrier.id
+    : context.knownCarrierIds.includes(input.carrierId);
+  const plateMatches =
+    !context.knownTruckPlate ||
+    !input.truckPlate ||
+    input.truckPlate === context.knownTruckPlate;
+  return carrierMatches && plateMatches;
+}
+
+function feasibilityFor(
+  revisedEta: string,
+  destinationDatetime: string
+): Incident["feasibility"] | undefined {
+  const eta = Date.parse(revisedEta);
+  const deadline = Date.parse(destinationDatetime);
+  if (!Number.isFinite(eta) || !Number.isFinite(deadline)) return undefined;
+  return eta <= deadline ? "achievable" : "unachievable";
 }
 
 async function confirmSelectedDeal(

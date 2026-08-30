@@ -6,6 +6,9 @@ import {
   type RelaySocket
 } from "../../src/telephony/mediaStream";
 import { createModeConfiguration } from "../../src/agent/modes";
+import { createExceptionModeConfiguration } from "../../src/agent/modes";
+import { createExceptionCallContext } from "../../src/core/exceptions";
+import { seedOperation } from "../../src/core/seed";
 import { createInboundTwiML } from "../../src/telephony/twilio";
 import { createMockTelephonyGateway } from "../../src/mocks/telephony";
 
@@ -50,6 +53,24 @@ describe("telephony adapters", () => {
       interrupt_response: true,
       instructions: configuration.instructions,
       tools: configuration.tools
+    });
+  });
+
+  it("configures exception realtime sessions with preloaded context and only write tools", () => {
+    const configuration = createExceptionModeConfiguration(
+      createExceptionCallContext(seedOperation())
+    );
+
+    expect(createRealtimeSessionConfig(configuration)).toMatchObject({
+      instructions: expect.stringContaining(
+        '"operationId":"operation-textiles-pacifico-001"'
+      ),
+      tools: [
+        expect.objectContaining({ name: "record_incident" }),
+        expect.objectContaining({ name: "update_operation_status" }),
+        expect.objectContaining({ name: "notify_dashboard" }),
+        expect.objectContaining({ name: "trigger_escalation" })
+      ]
     });
   });
 

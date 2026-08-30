@@ -44,6 +44,10 @@ describe("mode-specific agent tools", () => {
     ).not.toContain("register_quote");
   });
 
+  it("requires preloaded context before exception tools are configured", () => {
+    expect(createModeConfiguration("exception").tools).toEqual([]);
+  });
+
   it("rejects a confirmation tool invoked in negotiation mode", async () => {
     const store = createOperationStore(seedOperation());
 

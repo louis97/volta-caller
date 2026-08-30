@@ -42,11 +42,32 @@ export const triggerEscalationSchema = z.object({
   callId: z.string().min(1).optional()
 });
 
+export const recordIncidentSchema = z.object({
+  callerName: z.string().min(1),
+  carrierId: z.string().min(1),
+  truckPlate: z.string().min(1).optional(),
+  processStage: z.string().min(1),
+  issue: z.string().min(1),
+  delayMinutes: z.number().int().nonnegative(),
+  revisedEta: z.string().datetime({ offset: true })
+});
+
+export const updateOperationStatusSchema = z.object({
+  incidentId: z.string().min(1)
+});
+
+export const notifyDashboardSchema = z.object({
+  incidentId: z.string().min(1)
+});
+
 export type AgentToolName =
   | "check_mandate"
   | "register_quote"
   | "review_deal"
   | "confirm_selected_deal"
+  | "record_incident"
+  | "update_operation_status"
+  | "notify_dashboard"
   | "trigger_escalation";
 
 export type AgentToolDefinition = {
@@ -97,6 +118,24 @@ export const triggerEscalationTool = defineTool(
   "trigger_escalation",
   "Request human intervention for pressure, contradictions, or unsupported exceptions.",
   triggerEscalationSchema
+);
+
+export const recordIncidentTool = defineTool(
+  "record_incident",
+  "Record verified operational facts reported during this exception call.",
+  recordIncidentSchema
+);
+
+export const updateOperationStatusTool = defineTool(
+  "update_operation_status",
+  "Set incident monitoring only for a recorded incident whose ETA meets the destination deadline.",
+  updateOperationStatusSchema
+);
+
+export const notifyDashboardTool = defineTool(
+  "notify_dashboard",
+  "Notify the dashboard once for a recorded incident whose ETA misses the destination deadline.",
+  notifyDashboardSchema
 );
 
 export const agentToolDefinitions: AgentToolDefinition[] = [

@@ -1,14 +1,19 @@
 import {
   confirmationPrompt,
+  createExceptionPrompt,
   exceptionPrompt,
   negotiationPrompt
 } from "./prompt";
+import type { ExceptionCallContext } from "../core/exceptions";
 import {
   checkMandateTool,
   confirmSelectedDealTool,
   registerQuoteTool,
+  notifyDashboardTool,
+  recordIncidentTool,
   reviewDealTool,
   triggerEscalationTool,
+  updateOperationStatusTool,
   type AgentToolDefinition
 } from "./tools";
 
@@ -44,5 +49,19 @@ export function createModeConfiguration(mode: CallMode): ModeConfiguration {
   return {
     instructions: configuration.instructions,
     tools: [...configuration.tools]
+  };
+}
+
+export function createExceptionModeConfiguration(
+  context: ExceptionCallContext
+): ModeConfiguration {
+  return {
+    instructions: createExceptionPrompt(context),
+    tools: [
+      recordIncidentTool,
+      updateOperationStatusTool,
+      notifyDashboardTool,
+      triggerEscalationTool
+    ]
   };
 }
