@@ -148,7 +148,7 @@ async function confirmSelectedDeal(
     return { outcome: "rejected", reason: "selection_required" };
   }
   if (operation.confirmationCallId !== intent.callId) {
-    return { outcome: "rejected", reason: "confirmation_call_mismatch" };
+    return failConfirmation(intent, dependencies, "confirmation_call_mismatch");
   }
 
   const now = (dependencies.now ?? (() => new Date().toISOString()))();
@@ -220,15 +220,16 @@ function failConfirmation(
   reason: string
 ): ToolCallResult {
   const operation = dependencies.store.getOperation();
+  const confirmationCallId = operation.confirmationCallId ?? intent.callId;
   try {
-    dependencies.store.failConfirmation(reason, intent.callId);
+    dependencies.store.failConfirmation(reason, confirmationCallId);
   } catch {
     return { outcome: "rejected", reason: "confirmation_call_mismatch" };
   }
   dependencies.store.recordCallBrief(
     createCallBrief({
-      id: `brief-${intent.callId}-${operation.callBriefs.length + 1}`,
-      callId: intent.callId,
+      id: `brief-${confirmationCallId}-${operation.callBriefs.length + 1}`,
+      callId: confirmationCallId,
       carrierId: intent.carrierId,
       summary: `Confirmation failed because ${reason.replaceAll("_", " ")}.`,
       quotedPriceMxn: intent.finalPrice,

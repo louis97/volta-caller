@@ -213,4 +213,49 @@ describe("executeToolCall", () => {
     });
     expect(store.getOperation().commitment).toBeUndefined();
   });
+
+  it("fails confirmation and records a brief when the callback identity mismatches", async () => {
+    const store = createOperationStore(seedOperation());
+    store.registerQuote(quote);
+    store.reviewDeal({
+      quoteId: quote.id,
+      reviewedAt: "2026-09-01T15:01:00.000Z"
+    });
+    store.selectQuote({ quoteId: quote.id, now: "2026-09-01T15:02:00.000Z" });
+    store.beginConfirmation(quote.id, confirmationArguments.callId);
+
+    const result = await executeToolCall(
+      {
+        name: "confirm_selected_deal",
+        arguments: {
+          ...confirmationArguments,
+          callId: "stale-confirmation-call"
+        }
+      },
+      {
+        mode: "confirmation",
+        store,
+        finalizeConfirmation: async () => {
+          throw new Error("finalizer must not run");
+        }
+      }
+    );
+
+    expect(result).toEqual({
+      outcome: "rejected",
+      reason: "confirmation_call_mismatch"
+    });
+    expect(store.getOperation()).toMatchObject({
+      status: "confirmation_failed",
+      callBriefs: [
+        expect.objectContaining({
+          callId: confirmationArguments.callId,
+          carrierId: quote.carrierId,
+          outcome: "failed",
+          objections: ["confirmation_call_mismatch"]
+        })
+      ]
+    });
+    expect(store.getOperation().commitment).toBeUndefined();
+  });
 });
