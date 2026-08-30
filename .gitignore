@@ -9,6 +9,9 @@ dist/
 *.log
 *.tsbuildinfo
 .vercel
+.env*
+api/index.js
+api/migrations/
 .env.backup
 .env.*
 !.env.example

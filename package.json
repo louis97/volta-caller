@@ -17,7 +17,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit && npm --workspace @volta/contracts run typecheck && npm --workspace frontend run typecheck",
     "test": "vitest run",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "vercel-build": "node scripts/build-api.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.4",
@@ -37,6 +38,7 @@
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.5.13",
     "concurrently": "^9.2.1",
+    "esbuild": "^0.28.2",
     "eslint": "^9.39.1",
     "globals": "^16.5.0",
     "jsdom": "^27.1.0",
