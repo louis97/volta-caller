@@ -47,6 +47,8 @@ type View =
   | "carriers"
   | "notifications";
 
+const EMPTY_CALL_SESSIONS: CallSession[] = [];
+
 type Tone = "signal" | "brass" | "commit" | "halt" | "idle";
 
 type MandateSaveState =
@@ -1565,9 +1567,53 @@ function CallFloorView({
 }) {
   const operation = useLiveOperation(directory.selectedOperationId);
   const transcript = useLiveTranscript();
-  const sessions = operation?.callSessions ?? [];
+  const sessions = operation?.callSessions ?? EMPTY_CALL_SESSIONS;
+  const [extractions, setExtractions] = useState<QuoteExtraction[]>([]);
   const liveLines = sessions.filter(isLiveCall);
   useTicker(liveLines.length > 0);
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    const completedCalls = sessions.filter(
+      (session) => session.status === "completed"
+    );
+    let interval: number | undefined;
+    const reload = async () => {
+      try {
+        const response = await fetch("/api/quote-extractions", {
+          signal: controller.signal
+        });
+        if (!response.ok || cancelled) return;
+        const items = (await response.json()) as QuoteExtraction[];
+        if (cancelled) return;
+        setExtractions(items);
+        if (
+          completedCalls.every((session) =>
+            items.some(
+              (extraction) =>
+                extraction.callId === session.id ||
+                extraction.callId === session.callSid
+            )
+          )
+        ) {
+          if (interval !== undefined) window.clearInterval(interval);
+        }
+      } catch {
+        // The transcript stays useful even if its post-call analysis is down.
+      }
+    };
+    void reload();
+
+    if (completedCalls.length > 0) {
+      interval = window.setInterval(() => void reload(), 2_000);
+    }
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (interval) window.clearInterval(interval);
+    };
+  }, [sessions]);
 
   const quotes = operation?.quotes ?? [];
   const best = bestQuote(quotes);
@@ -1642,6 +1688,10 @@ function CallFloorView({
               (session.callSid !== undefined && item.callId === session.callSid)
           );
           const live = isLiveCall(session);
+          const extraction = extractions.find(
+            (item) =>
+              item.callId === session.id || item.callId === session.callSid
+          );
           const carrier =
             session.driverName ??
             operation?.candidates.find((item) => item.id === session.carrierId)
@@ -1679,6 +1729,12 @@ function CallFloorView({
                     segment.callId === session.id
                 )}
               />
+              {extraction?.summary ? (
+                <p className="call__summary">
+                  <span>Call summary</span>
+                  {extraction.summary}
+                </p>
+              ) : null}
 
               <div className="call__foot">
                 {quote ? (
