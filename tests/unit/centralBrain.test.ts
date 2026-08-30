@@ -5,7 +5,8 @@ import { createCentralBrainTools } from "../../src/agent/centralBrain";
 import {
   DeterministicAgentAnswerer,
   createResponsesToolDefinitions,
-  createOperationalAgent
+  createOperationalAgent,
+  responseOutputAsInput
 } from "../../src/agent/operationalAgent";
 import {
   MemoryAgentRepository,
@@ -41,6 +42,30 @@ describe("central brain tools", () => {
         new Set(Object.keys(parameters.properties ?? {}))
       );
     }
+  });
+
+  it("removes SDK-only parsed arguments before the next Responses request", () => {
+    const input = responseOutputAsInput([
+      {
+        type: "function_call",
+        arguments: '{"operationId":null}',
+        call_id: "call-001",
+        name: "list_attention_items",
+        parsed_arguments: { operationId: null },
+        status: "completed"
+      }
+    ]);
+
+    expect(input).toEqual([
+      {
+        type: "function_call",
+        arguments: '{"operationId":null}',
+        call_id: "call-001",
+        name: "list_attention_items",
+        status: "completed"
+      }
+    ]);
+    expect(input[0]).not.toHaveProperty("parsed_arguments");
   });
 
   it("compares real quotes against the canonical mandate", async () => {
