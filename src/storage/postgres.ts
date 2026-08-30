@@ -347,11 +347,17 @@ export class PostgresAgentRepository implements AgentRepository {
   }
 
   private async runMigrations() {
-    const sql = await readFile(
-      new URL("./migrations/001_agent_knowledge.sql", import.meta.url),
-      "utf8"
-    );
-    await this.pool.query(sql);
+    const migrations = [
+      "001_agent_knowledge.sql",
+      "002_mandates_security.sql"
+    ];
+    for (const migration of migrations) {
+      const sql = await readFile(
+        new URL(`./migrations/${migration}`, import.meta.url),
+        "utf8"
+      );
+      await this.pool.query(sql);
+    }
   }
 }
 

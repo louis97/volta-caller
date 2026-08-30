@@ -6,9 +6,10 @@ OpenAI and database credentials are never sent to the browser.
 
 ## Runtime
 
-Set `DATABASE_URL` to enable the PostgreSQL repository. On first use, the API applies
-`src/storage/migrations/001_agent_knowledge.sql`. Without a database the API uses the in-memory
-repository, which is intended only for tests and mock development.
+Set `DATABASE_URL` to enable the PostgreSQL repository. `npm run dev:api` loads the root `.env`,
+and on first use the API applies every SQL file listed by its storage migrator. Supabase deployments
+use the matching ordered files in `supabase/migrations`. Without a database the API uses the
+in-memory repository, which is intended only for tests and mock development.
 
 Set a newly generated `OPENAI_API_KEY` and optionally `VOLTA_COPILOT_MODEL`. When the key is absent,
 mock mode uses the deterministic grounded answerer so the retrieval and evidence path remains
@@ -40,6 +41,8 @@ The migration installs configurable defaults of 90 days for audio, 365 days for 
 1,825 days for audit records. The schema is ready for a scheduled retention worker; destructive
 deletion should remain disabled until the organization approves its legal policy.
 
-Before live rollout, deploy the API as a persistent Node process compatible with SSE and WebSockets,
-provision PostgreSQL and object storage, configure authentication headers at the gateway, rotate all
-exposed credentials, and point `VOLTA_API_URL` in the frontend deployment to the API.
+The managed PostgreSQL schema is provisioned in Supabase with RLS enabled and no public table
+policies; the API accesses it through `DATABASE_URL` and the server-only service role. Before live
+rollout, deploy the API as a persistent Node process compatible with SSE and WebSockets, provision
+object storage, configure authentication headers at the gateway, rotate all exposed credentials,
+and point `VOLTA_API_URL` in the frontend deployment to the API.
