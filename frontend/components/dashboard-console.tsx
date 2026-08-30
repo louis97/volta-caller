@@ -4,6 +4,7 @@ import type {
   AgentConversation,
   AgentMessage,
   ApprovalRequest,
+  CallSession,
   CreateMandateRequest,
   Operation,
   ProposedAction,
@@ -20,10 +21,15 @@ import { useEffect, useRef, useState } from "react";
 import {
   ApprovalIcon,
   ArrowIcon,
+  ChevronIcon,
+  ClockIcon,
+  OperationsIcon,
+  PhoneIcon,
   PlusIcon,
+  RouteIcon,
 } from "./icons";
 
-type View = "new-mandate" | "approvals";
+type View = "new-mandate" | "call-floor" | "pipeline" | "carriers" | "approvals";
 
 type MandateSaveState =
   | { status: "idle" }
@@ -41,6 +47,9 @@ const navItems: Array<{
   icon: typeof ApprovalIcon;
 }> = [
   { id: "new-mandate", label: "New mandate", icon: PlusIcon },
+  { id: "call-floor", label: "Call floor", icon: PhoneIcon },
+  { id: "pipeline", label: "Pipeline", icon: OperationsIcon },
+  { id: "carriers", label: "Carriers", icon: RouteIcon },
   { id: "approvals", label: "Approvals", icon: ApprovalIcon }
 ];
 
@@ -392,7 +401,6 @@ function ApprovalsView() {
           selectedQuoteId: isSelectionApproval
             ? (selectedQuoteId ?? undefined)
             : undefined,
-          decidedBy: "Bryan Riano"
         })
       });
       if (!response.ok) throw new Error("decision_rejected");
@@ -415,7 +423,7 @@ function ApprovalsView() {
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ undoneBy: "Bryan Riano" })
+          body: JSON.stringify({})
         }
       );
       if (!response.ok) throw new Error("undo_rejected");
@@ -683,6 +691,94 @@ function ApprovalsView() {
       )}
     </>
   );
+}
+
+function useLiveOperation() {
+  const [operation, setOperation] = useState<Operation | null>(null);
+  useEffect(() => {
+    const refresh = async () => {
+      const response = await fetch("/api/operation");
+      if (response.ok) setOperation((await response.json()) as Operation);
+    };
+    void refresh();
+    if (typeof EventSource === "undefined") return;
+    const events = new EventSource("/api/events");
+    const sync = () => void refresh();
+    ["mandate.created", "call.started", "call.updated", "quote.registered", "approval.requested", "approval.resolved", "commitment.finalized"].forEach((name) => events.addEventListener(name, sync));
+    return () => events.close();
+  }, []);
+  return operation;
+}
+
+function callDuration(session: CallSession): string {
+  const start = Date.parse(session.startedAt);
+  const end = Date.parse(session.endedAt ?? new Date().toISOString());
+  const seconds = Math.max(0, Math.floor((end - start) / 1000));
+  return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function callTone(status: CallSession["status"]): "blue" | "green" | "amber" | "red" | "neutral" {
+  if (status === "completed") return "green";
+  if (status === "failed") return "red";
+  if (status === "pending") return "amber";
+  return "blue";
+}
+
+function CallFloorView() {
+  const operation = useLiveOperation();
+  return <>
+    <Topbar title="Call floor" eyebrow="Live negotiation" description="Every carrier leg is visible from dial through quote and outcome." action={<span className="floor-live"><i /> LIVE</span>} />
+    <section className="call-grid">
+      {(operation?.callSessions ?? []).map((session) => {
+        const quote = operation?.quotes.find((item) => item.id === session.quoteId || item.callId === session.id);
+        return <article className="panel call-card" key={session.id}>
+          <div className="call-card-head"><Status tone={callTone(session.status)}>{session.status.replace("_", " ")}</Status><time><ClockIcon /> {callDuration(session)}</time></div>
+          <p className="machine-ref">{session.callSid ?? session.id}</p>
+          <h2>{session.driverName ?? operation?.candidates.find((item) => item.id === session.carrierId)?.name ?? "Carrier"}</h2>
+          <p><RouteIcon /> {operation?.origin} → {operation?.destination}</p>
+          <div className="waveform waveform--blue">{Array.from({ length: 16 }, (_, index) => <i key={index} />)}</div>
+          <div className="call-actions">
+            {quote ? <strong>{formatMxn(quote.priceMxn)} · {quote.etaMinutes} min</strong> : <span>{session.endedReason ? `✕ ${session.endedReason}` : "Awaiting quote"}</span>}
+          </div>
+        </article>;
+      })}
+    </section>
+    {!operation?.callSessions.length && <section className="panel decision-complete"><PhoneIcon /><p className="section-label">No active calls</p><h2>Launch a mandate to open the carrier floor.</h2></section>}
+  </>;
+}
+
+function PipelineView() {
+  const operation = useLiveOperation();
+  const [expanded, setExpanded] = useState(false);
+  const completed = operation?.callSessions.filter((item) => item.status === "completed").length ?? 0;
+  const best = operation?.quotes.slice().sort((left, right) => left.priceMxn - right.priceMxn)[0];
+  return <>
+    <Topbar title="Pipeline" eyebrow="Operation progress" description="Persisted stages and live call outcomes for the active operation." />
+    {operation && <section className="panel activity-card">
+      <button className="operation-row" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+        <div><span className="machine-ref">{operation.id}</span><b>{operation.origin} → {operation.destination}</b></div>
+        <div><span>Stage</span><Status tone="blue">{operation.status.replace("_", " ")}</Status></div>
+        <span>{completed}/{operation.callSessions.length} calls</span>
+        <strong>{best ? formatMxn(best.priceMxn) : "—"}</strong><ChevronIcon />
+      </button>
+      {expanded && <ul className="timeline">{operation.callSessions.map((session) => <li key={session.id}><i className={`timeline-mark ${session.status === "completed" ? "green" : "blue"}`} /><div><b>{session.driverName ?? session.carrierId ?? "Carrier"}</b><time>{callDuration(session)}</time><p>{session.status}{session.endedReason ? ` · ${session.endedReason}` : ""}</p></div></li>)}</ul>}
+    </section>}
+  </>;
+}
+
+function CarriersView() {
+  const [carriers, setCarriers] = useState<Array<{ id: string; name: string; phone: string; lanes: string[]; active: boolean }>>([]);
+  const refresh = async () => { const response = await fetch("/api/carriers"); if (response.ok) setCarriers(await response.json()); };
+  useEffect(() => { void refresh(); }, []);
+  return <>
+    <Topbar title="Carriers" eyebrow="Network directory" description="Maintain the active carrier pool used for the next mandate fan-out." />
+    <form className="panel form-panel" onSubmit={async (event) => { event.preventDefault(); const data = new FormData(event.currentTarget); const response = await fetch("/api/carriers", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: data.get("name"), phone: data.get("phone"), lanes: String(data.get("lanes") ?? "").split(",").map((item) => item.trim()).filter(Boolean) }) }); if (response.ok) { event.currentTarget.reset(); await refresh(); } }}>
+      <div className="step-heading"><span>+</span><div><h2>Add carrier</h2><p>Only active carriers receive new call rounds.</p></div></div>
+      <div className="form-grid"><label>Name<input name="name" required /></label><label>Phone<input name="phone" type="tel" required /></label><label className="span-2">Lanes<input name="lanes" placeholder="Manzanillo → Guadalajara" /></label></div>
+      <button className="button button--primary" type="submit">Add carrier <PlusIcon /></button>
+    </form>
+    <section className="panel activity-card">{carriers.map((carrier) => <div className="operation-row" key={carrier.id}><div><span className="machine-ref">{carrier.phone}</span><b>{carrier.name}</b></div><div><span>Lanes</span><b>{carrier.lanes.join(", ") || "All lanes"}</b></div><span /><Status tone={carrier.active ? "green" : "neutral"}>{carrier.active ? "active" : "inactive"}</Status><RouteIcon /></div>)}</section>
+  </>;
 }
 
 function localMessage(
@@ -1075,8 +1171,11 @@ export function DashboardConsole() {
                 key={view}
               >
                 {view === "new-mandate" && (
-                  <NewMandateView onCreated={() => setView("approvals")} />
+                  <NewMandateView onCreated={() => setView("call-floor")} />
                 )}
+                {view === "call-floor" && <CallFloorView />}
+                {view === "pipeline" && <PipelineView />}
+                {view === "carriers" && <CarriersView />}
                 {view === "approvals" && <ApprovalsView />}
               </m.div>
             </AnimatePresence>
