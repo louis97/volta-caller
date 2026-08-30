@@ -1,15 +1,17 @@
-import { createCommitmentFinalizer } from "../audit/commitment";
+import { createCallBrief } from "../audit/callBrief";
 import { executeToolCall } from "../agent/interpreter";
 import { seedOperation, THURSDAY_PICKUP } from "../core/seed";
 import { createOperationStore, type OperationStore } from "../core/state";
-import { MockSmsGateway } from "./sms";
 
 const RUN_AT = "2026-09-01T15:00:00.000Z";
-const RECAP_AT = "2026-09-01T15:05:00.000Z";
 
 export type MockScenario = {
   store: OperationStore;
   run(): Promise<void>;
+  /**
+   * Places the closing call for whatever the dispatcher approved. Kept on the
+   * scenario because the operational agent drives it from the dashboard.
+   */
   closeApprovedDeal(): Promise<boolean>;
 };
 
@@ -19,28 +21,65 @@ export function createMockScenario(
   const store = createOperationStore(seedOperation());
   if (onEvent) store.subscribe(onEvent);
   const operation = store.getOperation();
-  const costaPacifico = operation.candidates[0];
-  const rutaOccidente = operation.candidates[1];
-  const logisticaManzanillo = operation.candidates[2];
+  const approvedCarrier = operation.candidates[0];
+  const overCapCarrier = operation.candidates[1];
+  const unavailableCarrier = operation.candidates[2];
+  const approvedCallId = "mock-call-costa-pacifico-001";
+  const overCapCallId = "mock-call-ruta-occidente-001";
+  const unavailableCallId = "mock-call-logistica-manzanillo-001";
+  const toolDependencies = {
+    mode: "negotiation" as const,
+    store,
+    finalizeConfirmation: async () => {},
+    now: () => RUN_AT
+  };
 
   return {
     store,
+    async closeApprovedDeal() {
+      const activeOperation = store.getOperation();
+      const authorization = activeOperation.closingAuthorization;
+      if (!authorization) return false;
+
+      const quote = activeOperation.quotes.find(
+        (candidate) => candidate.id === authorization.quoteId
+      );
+      if (!quote) return false;
+
+      try {
+        store.selectQuote({ quoteId: quote.id, now: RUN_AT });
+        store.beginConfirmation(quote.id, quote.callId);
+        return true;
+      } catch {
+        return false;
+      }
+    },
     async run() {
       await executeToolCall(
         {
           name: "register_quote",
           arguments: {
             id: "quote-costa-pacifico-001",
-            carrierId: costaPacifico.id,
-            carrierName: costaPacifico.name,
-            priceMxn: 8750,
+            carrierId: approvedCarrier.id,
+            carrierName: approvedCarrier.name,
+            priceMxn: 8500,
             etaMinutes: 90,
             pickupTime: THURSDAY_PICKUP,
-            callId: "mock-quote-costa-pacifico-001",
+            callId: approvedCallId,
             createdAt: RUN_AT
           }
         },
-        { store, finalizeBooking: async () => {}, now: () => RUN_AT }
+        toolDependencies
+      );
+      await executeToolCall(
+        {
+          name: "review_deal",
+          arguments: {
+            quoteId: "quote-costa-pacifico-001",
+            reviewedAt: RUN_AT
+          }
+        },
+        toolDependencies
       );
 
       await executeToolCall(
@@ -48,81 +87,40 @@ export function createMockScenario(
           name: "register_quote",
           arguments: {
             id: "quote-ruta-occidente-001",
-            carrierId: rutaOccidente.id,
-            carrierName: rutaOccidente.name,
-            priceMxn: 8500,
+            carrierId: overCapCarrier.id,
+            carrierName: overCapCarrier.name,
+            priceMxn: 9200,
             etaMinutes: 75,
             pickupTime: THURSDAY_PICKUP,
-            callId: "mock-quote-ruta-occidente-001",
+            callId: overCapCallId,
             createdAt: RUN_AT
           }
         },
-        { store, finalizeBooking: async () => {}, now: () => RUN_AT }
+        toolDependencies
       );
       await executeToolCall(
         {
-          name: "register_quote",
+          name: "review_deal",
           arguments: {
-            id: "quote-logistica-manzanillo-001",
-            carrierId: logisticaManzanillo.id,
-            carrierName: logisticaManzanillo.name,
-            priceMxn: 8640,
-            etaMinutes: 80,
-            pickupTime: THURSDAY_PICKUP,
-            callId: "mock-quote-logistica-manzanillo-001",
-            createdAt: RUN_AT
+            quoteId: "quote-ruta-occidente-001",
+            reviewedAt: RUN_AT
           }
         },
-        { store, finalizeBooking: async () => {}, now: () => RUN_AT }
+        toolDependencies
       );
-      await executeToolCall(
-        {
-          name: "request_quote_approval",
-          arguments: {
-            quoteIds: [
-              "quote-costa-pacifico-001",
-              "quote-ruta-occidente-001",
-              "quote-logistica-manzanillo-001"
-            ],
-            recommendedQuoteId: "quote-ruta-occidente-001"
-          }
-        },
-        { store, finalizeBooking: async () => {}, now: () => RUN_AT }
-      );
-    },
-    async closeApprovedDeal() {
-      const activeOperation = store.getOperation();
-      const authorization = activeOperation.closingAuthorization;
-      if (!authorization) return false;
 
-      const carrier = activeOperation.candidates.find(
-        (candidate) => candidate.id === authorization.carrierId
+      store.recordCallBrief(
+        createCallBrief({
+          id: `brief-${unavailableCallId}`,
+          callId: unavailableCallId,
+          carrierId: unavailableCarrier.id,
+          summary: `${unavailableCarrier.name} was unavailable to provide a quote.`,
+          objections: ["carrier_unavailable"],
+          actions: ["Continue with the available quotes"],
+          outcome: "unavailable",
+          createdAt: RUN_AT
+        })
       );
-      if (!carrier) return false;
-      const closeCallId = `mock-close-${carrier.id}-001`;
-      const finalizeBooking = createCommitmentFinalizer({
-        store,
-        sms: new MockSmsGateway(),
-        callId: closeCallId,
-        recipient: activeOperation.mandate.escalationPhone,
-        now: () => RECAP_AT
-      });
-
-      const result = await executeToolCall(
-        {
-          name: "commit_deal",
-          arguments: {
-            carrierId: authorization.carrierId,
-            finalPrice: authorization.finalPriceMxn,
-            pickupTime: authorization.pickupTime,
-            timestampMs: 42_500,
-            driverName: "María López",
-            plate: "ABC-123"
-          }
-        },
-        { store, finalizeBooking, now: () => RECAP_AT }
-      );
-      return result.outcome === "booking_requested";
     }
   };
 }

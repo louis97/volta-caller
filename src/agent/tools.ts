@@ -6,11 +6,10 @@ export const checkMandateSchema = z.object({
 });
 
 /**
- * `id`, `callId` and `createdAt` stay optional here so existing callers can
- * supply them, but they are stripped from what the model sees and always
- * overwritten by the server. A model asked which call it is on will invent a
- * plausible id, and with several calls running that silently misattributes
- * quotes.
+ * `id`, `callId` and `createdAt` are stripped from what the model sees and
+ * always overwritten by the server. A model asked which call it is on will
+ * invent a plausible id, and with several calls running that silently
+ * misattributes quotes between carriers.
  */
 export const registerQuoteSchema = z.object({
   id: z.string().min(1).optional(),
@@ -23,28 +22,33 @@ export const registerQuoteSchema = z.object({
   createdAt: z.string().datetime({ offset: true }).optional()
 });
 
-/**
- * `timestampMs` is the audio offset a commitment is anchored to. It comes from
- * counting Twilio media frames, never from the model: an invented offset makes
- * a hallucinated commitment indistinguishable from a real one in the audit
- * trail.
- */
-export const commitDealSchema = z.object({
+/** Takes no arguments: the caller's identity comes from the call, not the model. */
+export const getLeverageSchema = z.object({});
+
+export const reviewDealSchema = z.object({
+  quoteId: z.string().min(1),
+  reviewedAt: z.string().datetime({ offset: true })
+});
+
+export const confirmSelectedDealSchema = z.object({
+  quoteId: z.string().min(1),
   carrierId: z.string().min(1),
   finalPrice: z.number().nonnegative(),
   pickupTime: z.string().datetime({ offset: true }),
+  destinationDatetime: z.string().datetime({ offset: true }),
+  typeOfContent: z.string().min(1),
+  weightKg: z.number().positive(),
+  measures: z.string().min(1),
+  /**
+   * Audio offset the commitment is anchored to. Counted from Twilio media
+   * frames server-side: an invented offset makes a hallucinated commitment
+   * indistinguishable from a real one in the audit trail.
+   */
   timestampMs: z.number().int().nonnegative().optional(),
-  driverName: z.string().optional(),
-  plate: z.string().optional()
+  driverName: z.string().min(1).optional(),
+  plate: z.string().min(1).optional(),
+  callId: z.string().min(1).optional()
 });
-
-export const requestQuoteApprovalSchema = z.object({
-  quoteIds: z.array(z.string().min(1)).min(1),
-  recommendedQuoteId: z.string().min(1).optional()
-});
-
-/** Takes no arguments: the caller's own identity comes from the call, not the model. */
-export const getLeverageSchema = z.object({});
 
 export const triggerEscalationSchema = z.object({
   reason: z.string().min(1),
@@ -52,21 +56,44 @@ export const triggerEscalationSchema = z.object({
   callId: z.string().min(1).optional()
 });
 
-type AgentToolDefinition = {
+export const recordIncidentSchema = z.object({
+  callerName: z.string().min(1),
+  carrierId: z.string().min(1),
+  truckPlate: z.string().min(1).optional(),
+  processStage: z.string().min(1),
+  issue: z.string().min(1),
+  delayMinutes: z.number().int().nonnegative(),
+  revisedEta: z.string().datetime({ offset: true })
+});
+
+export const updateOperationStatusSchema = z.object({
+  incidentId: z.string().min(1)
+});
+
+export const notifyDashboardSchema = z.object({
+  incidentId: z.string().min(1)
+});
+
+export type AgentToolName =
+  | "check_mandate"
+  | "get_leverage"
+  | "register_quote"
+  | "review_deal"
+  | "confirm_selected_deal"
+  | "record_incident"
+  | "update_operation_status"
+  | "notify_dashboard"
+  | "trigger_escalation";
+
+export type AgentToolDefinition = {
   type: "function";
-  name:
-    | "check_mandate"
-    | "register_quote"
-    | "request_quote_approval"
-    | "commit_deal"
-    | "trigger_escalation"
-    | "get_leverage";
+  name: AgentToolName;
   description: string;
   parameters: Record<string, unknown>;
 };
 
 function defineTool(
-  name: AgentToolDefinition["name"],
+  name: AgentToolName,
   description: string,
   schema: z.ZodObject
 ): AgentToolDefinition {
@@ -78,44 +105,67 @@ function defineTool(
   };
 }
 
-// What the model is allowed to fill in. Server-owned identity and timing
-// fields are omitted so the model cannot assert them at all.
-const registerQuoteModelSchema = registerQuoteSchema.omit({
-  id: true,
-  callId: true,
-  createdAt: true
-});
-const commitDealModelSchema = commitDealSchema.omit({ timestampMs: true });
+export const checkMandateTool = defineTool(
+  "check_mandate",
+  "Check whether a proposed price and pickup time comply with the shipment mandate.",
+  checkMandateSchema
+);
+
+// Identity and timing are stripped from what the model may fill in, so it
+// cannot assert them at all; the server supplies them from the live call.
+export const registerQuoteTool = defineTool(
+  "register_quote",
+  "Record a carrier's complete factual quote.",
+  registerQuoteSchema.omit({ id: true, callId: true, createdAt: true })
+);
+
+export const getLeverageTool = defineTool(
+  "get_leverage",
+  "Return the quotes other carriers have actually given on this operation, to use as a reference when negotiating. Only real offers are returned: if it is empty, there is nothing to cite and no third-party price may be mentioned.",
+  getLeverageSchema
+);
+
+export const reviewDealTool = defineTool(
+  "review_deal",
+  "Publish a completed carrier quote and its mandate evaluation for client review.",
+  reviewDealSchema
+);
+
+export const confirmSelectedDealTool = defineTool(
+  "confirm_selected_deal",
+  "Finalize only the client-selected quote after the carrier confirms every original term unchanged.",
+  confirmSelectedDealSchema.omit({ timestampMs: true, callId: true })
+);
+
+export const triggerEscalationTool = defineTool(
+  "trigger_escalation",
+  "Request human intervention for pressure, contradictions, or unsupported exceptions.",
+  triggerEscalationSchema
+);
+
+export const recordIncidentTool = defineTool(
+  "record_incident",
+  "Record verified operational facts reported during this exception call.",
+  recordIncidentSchema
+);
+
+export const updateOperationStatusTool = defineTool(
+  "update_operation_status",
+  "Set incident monitoring only for a recorded incident whose ETA meets the destination deadline.",
+  updateOperationStatusSchema
+);
+
+export const notifyDashboardTool = defineTool(
+  "notify_dashboard",
+  "Notify the dashboard once for a recorded incident whose ETA misses the destination deadline.",
+  notifyDashboardSchema
+);
 
 export const agentToolDefinitions: AgentToolDefinition[] = [
-  defineTool(
-    "check_mandate",
-    "Comprueba si precio y ventana de recolección están autorizados.",
-    checkMandateSchema
-  ),
-  defineTool(
-    "register_quote",
-    "Registra una cotización completa de un transportista.",
-    registerQuoteModelSchema
-  ),
-  defineTool(
-    "request_quote_approval",
-    "Envía la ronda de cotizaciones al dispatcher para que autorice una llamada de cierre.",
-    requestQuoteApprovalSchema
-  ),
-  defineTool(
-    "commit_deal",
-    "Solicita reservar un acuerdo con términos ya confirmados.",
-    commitDealModelSchema
-  ),
-  defineTool(
-    "get_leverage",
-    "Devuelve las cotizaciones reales que otros transportistas ya dieron en esta operación, para usarlas como referencia al negociar. Solo devuelve ofertas que existen: si está vacío, no hay nada que citar y no debes mencionar ningún precio de terceros.",
-    getLeverageSchema
-  ),
-  defineTool(
-    "trigger_escalation",
-    "Solicita intervención humana para términos no aprobados.",
-    triggerEscalationSchema
-  )
+  checkMandateTool,
+  getLeverageTool,
+  registerQuoteTool,
+  reviewDealTool,
+  confirmSelectedDealTool,
+  triggerEscalationTool
 ];

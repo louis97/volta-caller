@@ -59,51 +59,48 @@ describe("call clock", () => {
 
   it("anchors a commitment to the call clock, not to model input", async () => {
     const store = createOperationStore(seedOperation());
-    const booked: Array<{ timestampMs: number }> = [];
+    const booked: Array<{ timestampMs?: number }> = [];
     const dependencies = {
+      mode: "confirmation" as const,
       store,
-      finalizeBooking: (intent: { timestampMs: number }) => {
+      finalizeConfirmation: (intent: { timestampMs?: number }) => {
         booked.push(intent);
       },
-      callContext: { callId: "CA1", callClockMs: () => 94_200 }
+      callContext: { callId: "CA-real", callClockMs: () => 94_200 }
     };
 
-    // Committing requires a human-approved closing authorization first.
-    await executeToolCall(
-      {
-        name: "register_quote",
-        arguments: {
-          carrierId: "carrier-costa-pacifico",
-          carrierName: "Transportes Costa Pacífico",
-          priceMxn: 8500,
-          etaMinutes: 90,
-          pickupTime: THURSDAY_PICKUP
-        }
-      },
-      dependencies
-    );
-    const quoteId = store.getOperation().quotes[0]!.id;
-    const approval = store.requestCarrierSelectionApproval({
-      id: "approval-1",
-      quoteIds: [quoteId],
-      recommendedQuoteId: quoteId,
-      createdAt: "2026-08-29T23:00:00.000Z"
+    // Reach a client-selected carrier: only then may a confirmation close.
+    const quote = {
+      id: "quote-1",
+      carrierId: "carrier-costa-pacifico",
+      carrierName: "Transportes Costa Pacífico",
+      priceMxn: 8500,
+      etaMinutes: 90,
+      pickupTime: THURSDAY_PICKUP,
+      callId: "CA-real",
+      createdAt: "2026-09-01T15:00:00.000Z"
+    };
+    store.registerQuote(quote);
+    store.reviewDeal({
+      quoteId: quote.id,
+      reviewedAt: "2026-09-01T15:01:00.000Z"
     });
-    store.resolveApproval({
-      approvalId: approval.id,
-      action: "approve",
-      selectedQuoteId: quoteId,
-      decidedBy: "tester",
-      decidedAt: "2026-08-29T23:00:01.000Z"
-    });
+    store.selectQuote({ quoteId: quote.id, now: "2026-09-01T15:02:00.000Z" });
+    store.beginConfirmation(quote.id, "CA-real");
 
+    const mandate = store.getOperation().mandate;
     await executeToolCall(
       {
-        name: "commit_deal",
+        name: "confirm_selected_deal",
         arguments: {
-          carrierId: "carrier-costa-pacifico",
-          finalPrice: 8500,
-          pickupTime: THURSDAY_PICKUP,
+          quoteId: quote.id,
+          carrierId: quote.carrierId,
+          finalPrice: quote.priceMxn,
+          pickupTime: quote.pickupTime,
+          destinationDatetime: mandate.destinationDatetime,
+          typeOfContent: mandate.typeOfContent,
+          weightKg: mandate.weightKg,
+          measures: mandate.measures,
           // The model claims an offset. It must not survive.
           timestampMs: 999_999
         }
@@ -132,7 +129,8 @@ describe("call clock", () => {
       },
       {
         store,
-        finalizeBooking: () => {},
+        mode: "negotiation" as const,
+        finalizeConfirmation: () => {},
         callContext: { callId: "CA-real", callClockMs: () => 0 }
       }
     );

@@ -1,6 +1,7 @@
 import type { ToolCallRequest, ToolCallResult } from "../agent/interpreter";
+import type { ModeConfiguration } from "../agent/modes";
 import { VOLTA_SYSTEM_PROMPT } from "../agent/prompt";
-import { agentToolDefinitions } from "../agent/tools";
+import { agentToolDefinitions, type AgentToolDefinition } from "../agent/tools";
 import { env } from "../config/env";
 import type { CallRuntime } from "./registry";
 
@@ -34,7 +35,7 @@ export type RealtimeSessionConfig = {
     };
   };
   instructions: string;
-  tools: typeof agentToolDefinitions;
+  tools: AgentToolDefinition[];
 };
 
 export type MediaStreamRelayDependencies = {
@@ -56,6 +57,8 @@ export type MediaStreamRelayDependencies = {
    * job details are sent as a second update rather than guessed at.
    */
   instructionsFor?: (runtime: CallRuntime) => string;
+  /** Mode for this call; decides which tools the session exposes. */
+  configuration?: ModeConfiguration;
 };
 
 export type RealtimeSocketFactory = () => RelaySocket;
@@ -83,12 +86,25 @@ export type RealtimeSocketFactory = () => RelaySocket;
  * cannot finish a sentence, and that has to be fixable between two calls.
  */
 export function createRealtimeSessionConfig(
-  overrides: Partial<{
-    voice: string;
-    turnDetection: TurnDetectionConfig;
-    noiseReduction: "near_field" | "far_field" | "none";
-  }> = {}
+  input:
+    | ModeConfiguration
+    | Partial<{
+        voice: string;
+        turnDetection: TurnDetectionConfig;
+        noiseReduction: "near_field" | "far_field" | "none";
+        /**
+         * Which call this is. Each mode exposes only the tools that make sense for
+         * it, so the agent cannot confirm a booking during a negotiation call: the
+         * tool is not on the session at all.
+         */
+        configuration: ModeConfiguration;
+      }> = {}
 ): RealtimeSessionConfig {
+  // Callers pass either tuning overrides or a mode configuration directly.
+  const overrides =
+    "instructions" in input
+      ? { configuration: input as ModeConfiguration }
+      : input;
   const turnDetection: TurnDetectionConfig =
     overrides.turnDetection ??
     (env.REALTIME_TURN_DETECTION === "semantic_vad"
@@ -125,8 +141,10 @@ export function createRealtimeSessionConfig(
         voice: overrides.voice ?? env.OPENAI_REALTIME_VOICE
       }
     },
-    instructions: VOLTA_SYSTEM_PROMPT,
-    tools: agentToolDefinitions
+    instructions: overrides.configuration?.instructions ?? VOLTA_SYSTEM_PROMPT,
+    tools: overrides.configuration
+      ? [...overrides.configuration.tools]
+      : agentToolDefinitions
   };
 }
 
@@ -135,7 +153,8 @@ export function attachMediaStreamRelay({
   realtime,
   executeToolCall: runToolCall,
   onStart,
-  instructionsFor
+  instructionsFor,
+  configuration
 }: MediaStreamRelayDependencies): void {
   let streamSid: string | undefined;
   let runtime: CallRuntime | undefined;
@@ -143,7 +162,7 @@ export function attachMediaStreamRelay({
   realtime.send(
     JSON.stringify({
       type: "session.update",
-      session: createRealtimeSessionConfig()
+      session: createRealtimeSessionConfig({ configuration })
     })
   );
 

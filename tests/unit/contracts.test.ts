@@ -3,7 +3,8 @@ import {
   createOperationFromMandate,
   seedOperation
 } from "../../src/core/seed";
-import { expect, it } from "vitest";
+import type { Incident } from "@volta/contracts";
+import { expect, expectTypeOf, it } from "vitest";
 
 it("seeds a market of carrier candidates under one Textiles Pacífico operation", () => {
   const operation = seedOperation();
@@ -41,4 +42,36 @@ it("maps the dashboard manifest into the canonical operation mandate", () => {
       weightKg: 18400
     }
   });
+});
+
+it("models a reviewed candidate, selected quote, and exception state", () => {
+  const operation = seedOperation();
+
+  expect(operation.status).toBe("open");
+  expect(operation.reviewedDeals).toEqual([]);
+  expect(operation.selection).toBeUndefined();
+  expect(operation.incidents).toEqual([]);
+  expect(operation.dashboardNotifications).toEqual([]);
+});
+
+it("requires verified caller identity on incidents and initializes manifest state", () => {
+  expectTypeOf<Incident["verifiedCallerIdentity"]>().toEqualTypeOf<string>();
+
+  const operation = createOperationFromMandate(
+    {
+      budget_cap: 9000,
+      destination_datetime: "2026-09-03T18:00:00-06:00",
+      destination_place: "Textiles Pacífico, Guadalajara, Jalisco",
+      type_of_content: "Textiles",
+      weight: 18400,
+      measures: "120 × 100 × 110 cm",
+      pickup_address: "Terminal de Contenedores, Manzanillo, Colima",
+      pickup_datetime: THURSDAY_PICKUP
+    },
+    "operation-contract-state-1"
+  );
+
+  expect(operation.reviewedDeals).toEqual([]);
+  expect(operation.incidents).toEqual([]);
+  expect(operation.dashboardNotifications).toEqual([]);
 });

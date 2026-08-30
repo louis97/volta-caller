@@ -58,7 +58,7 @@ it("creates a real operation, then retains the mandate record", async () => {
   await expect(listResponse.json()).resolves.toEqual([created]);
 });
 
-it("runs the mock call round through quotes and a pending carrier approval", async () => {
+it("runs the mock call round through quotes and stops for a client decision", async () => {
   const app = createApp({ mandatesRepository: new MemoryRepository() });
   for (const carrier of [
     { name: "Transportes Norte", phone: "+525511111111" },
@@ -83,7 +83,7 @@ it("runs the mock call round through quotes and a pending carrier approval", asy
     pipelineStage: string;
     quotes: Array<{ id: string }>;
     callSessions: Array<{ status: string; quoteId?: string }>;
-    approvals: Array<{ status: string; quoteIds: string[] }>;
+    reviewedDeals: Array<{ quoteId: string; mandateDecision: string }>;
   };
   expect(operation.pipelineStage).toBe("awaiting_approval");
   expect(operation.quotes).toHaveLength(2);
@@ -100,14 +100,11 @@ it("runs the mock call round through quotes and a pending carrier approval", asy
       })
     ])
   );
-  expect(operation.approvals).toEqual([
-    expect.objectContaining({
-      status: "pending",
-      quoteIds: expect.arrayContaining(
-        operation.quotes.map((quote) => quote.id)
-      )
-    })
-  ]);
+  // Every quote of the round is published for the client to choose from;
+  // reviewing is what stops the round and hands the decision to a human.
+  expect(operation.reviewedDeals.map((deal) => deal.quoteId)).toEqual(
+    expect.arrayContaining(operation.quotes.map((quote) => quote.id))
+  );
 
   const readResponse = await request(app, "/api/operation");
   await expect(readResponse.json()).resolves.toMatchObject({

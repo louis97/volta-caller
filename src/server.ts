@@ -35,7 +35,15 @@ import {
 } from "./core/mandates/service";
 import { createSupabaseMandatesRepositoryFromConfig } from "./core/mandates/supabase-repository";
 import type { MandatesRepository } from "./core/mandates/types";
-import { createMockScenario } from "./mocks/callScenario";
+import type { OperationStore } from "./core/state";
+import type { TelephonyGateway } from "./telephony/twilio";
+import {
+  ConfirmationCoordinatorError,
+  createConfirmationCoordinator,
+  type ConfirmationCoordinator
+} from "./core/confirmation";
+import { createMockScenario, type MockScenario } from "./mocks/callScenario";
+import { createMockTelephonyGateway } from "./mocks/telephony";
 import { createOperationFromMandate } from "./core/seed";
 import { derivePipelineStage } from "./core/pipeline";
 import { fanOutCalls } from "./telephony/orchestrator";
@@ -65,6 +73,9 @@ const legacyCopilotRequestSchema = z.object({
     )
     .max(8)
     .default([])
+});
+const selectQuoteRequestSchema = z.object({
+  quoteId: z.string().trim().min(1)
 });
 const createConversationSchema = z.object({
   title: z.string().trim().min(1).max(120).optional()
@@ -113,6 +124,12 @@ const transcriptSegmentsSchema = z.object({
 });
 
 export type CreateAppOptions = {
+  confirmationCoordinator?: ConfirmationCoordinator;
+  /** Injected scenario/store/telephony, for tests that drive one operation. */
+  scenario?: Partial<MockScenario> & { store: OperationStore };
+  store?: OperationStore;
+  telephony?: TelephonyGateway;
+  now?: () => string;
   repository?: AgentRepository;
   answerer?: AgentAnswerer;
   mandatesRepository?: MandatesRepository;
@@ -135,6 +152,29 @@ export function createApp(options: CreateAppOptions = {}) {
   const eventClients = new Set<EventClient>();
   let activeOrganizationId = env.VOLTA_DEFAULT_ORGANIZATION_ID;
   const dialled = new Map<string, { id: string; name: string }>();
+  const injectedStore = options.store ?? options.scenario?.store;
+  const scenario: MockScenario = options.scenario
+    ? {
+        run: async () => {},
+        closeApprovedDeal: async () => false,
+        ...options.scenario
+      }
+    : injectedStore
+      ? {
+          store: injectedStore,
+          run: async () => {},
+          closeApprovedDeal: async () => false
+        }
+      : createMockScenario();
+  // A client's quote selection is what authorises the closing call; this
+  // places it.
+  const confirmationCoordinator =
+    options.confirmationCoordinator ??
+    createConfirmationCoordinator({
+      store: scenario.store,
+      telephony: options.telephony ?? createMockTelephonyGateway(),
+      now: options.now
+    });
   const mandatesRepository =
     options.mandatesRepository ?? createDefaultMandatesRepository();
   const repository =
@@ -169,7 +209,9 @@ export function createApp(options: CreateAppOptions = {}) {
       }
     }
   };
-  const scenario = createMockScenario(publish);
+  // Already built above (possibly injected); wire its event stream now that
+  // `publish` exists.
+  scenario.store.subscribe(publish);
   app.locals.operationStore = scenario.store;
   app.locals.telephonyDialled = dialled;
   app.locals.saveCallSession = (
@@ -334,6 +376,36 @@ export function createApp(options: CreateAppOptions = {}) {
       }
       console.error("Mandate creation failed", error);
       response.status(500).json({ error: "mandate_persistence_failed" });
+    }
+  });
+
+  /**
+   * A client picking a quote is what authorises the closing call; the
+   * coordinator places it. Quotes on their own are only market intelligence.
+   */
+  app.post("/operations/:id/select-quote", async (request, response) => {
+    const parsed = selectQuoteRequestSchema.safeParse(request.body);
+    if (!parsed.success) {
+      response.status(400).json({ error: "invalid_selection" });
+      return;
+    }
+
+    try {
+      await confirmationCoordinator.start(
+        request.params.id,
+        parsed.data.quoteId
+      );
+      response.status(202).json(scenario.store.getOperation());
+    } catch (error) {
+      if (error instanceof ConfirmationCoordinatorError) {
+        response
+          .status(error.code === "operation_not_found" ? 404 : 502)
+          .json({ error: error.code });
+        return;
+      }
+      const code =
+        error instanceof Error ? error.message : "selection_not_allowed";
+      response.status(409).json({ error: code });
     }
   });
 

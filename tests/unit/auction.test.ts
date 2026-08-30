@@ -113,7 +113,8 @@ describe("get_leverage tool", () => {
       { name: "get_leverage", arguments: {} },
       {
         store,
-        finalizeBooking: () => {},
+        mode: "negotiation" as const,
+        finalizeConfirmation: () => {},
         leverage: () => auction.leverageFor("a")
       }
     );
@@ -133,7 +134,8 @@ describe("get_leverage tool", () => {
       { name: "get_leverage", arguments: {} },
       {
         store: createOperationStore(seedOperation()),
-        finalizeBooking: () => {}
+        mode: "negotiation" as const,
+        finalizeConfirmation: () => {}
       }
     );
 

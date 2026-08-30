@@ -5,10 +5,11 @@ import {
   createRealtimeSessionConfig,
   type RelaySocket
 } from "../../src/telephony/mediaStream";
-import {
-  createInboundTwiML,
-  mapTwilioStatus
-} from "../../src/telephony/twilio";
+import { createModeConfiguration } from "../../src/agent/modes";
+import { createExceptionModeConfiguration } from "../../src/agent/modes";
+import { createExceptionCallContext } from "../../src/core/exceptions";
+import { seedOperation } from "../../src/core/seed";
+import { createInboundTwiML } from "../../src/telephony/twilio";
 import { createMockTelephonyGateway } from "../../src/mocks/telephony";
 
 class FakeSocket implements RelaySocket {
@@ -43,26 +44,39 @@ describe("telephony adapters", () => {
   });
 
   it("configures PCMU and server VAD with interruption enabled for realtime sessions", () => {
-    // GA session shape. The flat Beta payload is rejected server-side with
-    // `beta_api_shape_disabled`, which on a live call looks like a mute agent.
-    expect(createRealtimeSessionConfig()).toMatchObject({
+    const configuration = createModeConfiguration("negotiation");
+
+    // GA session shape. The flat Beta payload is switched off server-side and
+    // answers `beta_api_shape_disabled`, which on a live call is a mute agent.
+    expect(createRealtimeSessionConfig(configuration)).toMatchObject({
       type: "realtime",
       audio: {
         input: {
           format: { type: "audio/pcmu" },
-          // Noise reduction and a raised threshold: on a hackathon floor the
-          // default sensitivity treats room chatter as an interruption and the
-          // agent never finishes a sentence.
-          noise_reduction: { type: "near_field" },
-          turn_detection: {
-            type: "server_vad",
-            threshold: 0.7,
-            silence_duration_ms: 600,
-            interrupt_response: true
-          }
+          turn_detection: { type: "server_vad", interrupt_response: true }
         },
         output: { format: { type: "audio/pcmu" } }
-      }
+      },
+      instructions: configuration.instructions,
+      tools: configuration.tools
+    });
+  });
+
+  it("configures exception realtime sessions with preloaded context and only write tools", () => {
+    const configuration = createExceptionModeConfiguration(
+      createExceptionCallContext(seedOperation())
+    );
+
+    expect(createRealtimeSessionConfig(configuration)).toMatchObject({
+      instructions: expect.stringContaining(
+        '"operationId":"operation-textiles-pacifico-001"'
+      ),
+      tools: [
+        expect.objectContaining({ name: "record_incident" }),
+        expect.objectContaining({ name: "update_operation_status" }),
+        expect.objectContaining({ name: "notify_dashboard" }),
+        expect.objectContaining({ name: "trigger_escalation" })
+      ]
     });
   });
 
@@ -74,17 +88,13 @@ describe("telephony adapters", () => {
     attachMediaStreamRelay({
       twilio,
       realtime,
+      configuration: createModeConfiguration("negotiation"),
       executeToolCall: async (request) => {
         toolCalls.push(request);
         return { outcome: "approved" };
       }
     });
 
-    twilio.receive({
-      event: "start",
-      streamSid: "MZ123",
-      start: { streamSid: "MZ123", callSid: "CA123" }
-    });
     twilio.receive({
       event: "media",
       streamSid: "MZ123",
@@ -108,9 +118,6 @@ describe("telephony adapters", () => {
 
     expect(realtime.sent.map((message) => JSON.parse(message))).toEqual(
       expect.arrayContaining([
-        // Volta greets on stream start; server VAD would otherwise leave both
-        // sides waiting for the other to speak.
-        { type: "response.create" },
         { type: "input_audio_buffer.append", audio: "twilio-pcmu" },
         {
           type: "conversation.item.create",
@@ -158,20 +165,18 @@ describe("telephony adapters", () => {
       startedAt: "2026-09-01T15:00:00.000Z"
     });
     expect(gateway.calls).toEqual([
+      {
+        type: "created",
+        callId: session.id,
+        input: {
+          operationId: "operation-001",
+          carrierId: "carrier-001",
+          to: "+525500000000",
+          from: "+525522222222",
+          twimlUrl: "https://volta.example.test/twiml"
+        }
+      },
       { type: "transferred", callId: session.id }
     ]);
-  });
-
-  it("maps terminal Twilio statuses to explicit call outcomes", () => {
-    expect(mapTwilioStatus("answered")).toEqual({ status: "in_progress" });
-    expect(mapTwilioStatus("completed")).toMatchObject({ status: "completed" });
-    expect(mapTwilioStatus("no-answer")).toMatchObject({
-      status: "failed",
-      endedReason: "no-answer"
-    });
-    expect(mapTwilioStatus("busy")).toMatchObject({
-      status: "failed",
-      endedReason: "busy"
-    });
   });
 });

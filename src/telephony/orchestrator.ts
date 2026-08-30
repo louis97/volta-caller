@@ -64,7 +64,8 @@ export async function fanOutCalls(
           },
           {
             store,
-            finalizeBooking: async () => {},
+            mode: "negotiation" as const,
+            finalizeConfirmation: async () => {},
             now,
             callContext: {
               callId: pendingId,
@@ -116,16 +117,24 @@ export async function fanOutCalls(
       quoteIds.length === candidates.length &&
       !current.approvals.some((approval) => approval.status === "pending")
     ) {
-      const recommendedQuoteId = current.quotes
-        .filter((quote) => quoteIds.includes(quote.id))
-        .sort((left, right) => left.priceMxn - right.priceMxn)[0]?.id;
-      await executeToolCall(
-        {
-          name: "request_quote_approval",
-          arguments: { quoteIds, recommendedQuoteId }
-        },
-        { store, finalizeBooking: async () => {}, now }
-      );
+      // Publish every quote of the round for client review. `review_deal`
+      // replaced `request_quote_approval`: a quote is market intelligence
+      // until a human picks one, and picking is what authorises the closing
+      // call.
+      for (const quoteId of quoteIds) {
+        await executeToolCall(
+          {
+            name: "review_deal",
+            arguments: { quoteId, reviewedAt: now() }
+          },
+          {
+            store,
+            mode: "negotiation" as const,
+            finalizeConfirmation: async () => {},
+            now
+          }
+        );
+      }
     }
   }
 }

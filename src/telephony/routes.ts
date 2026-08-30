@@ -6,10 +6,8 @@ import { WebSocketServer } from "ws";
 
 import { executeToolCall } from "../agent/interpreter";
 import { buildCallInstructions } from "../agent/prompt";
-import { createCommitmentFinalizer } from "../audit/commitment";
 import { env } from "../config/env";
 import type { OperationStore } from "../core/state";
-import { MockSmsGateway } from "../mocks/sms";
 import { auctionFromOperation, type Auction } from "./auction";
 import { fanOutCalls } from "./orchestrator";
 import { attachMediaStreamRelay } from "./mediaStream";
@@ -182,12 +180,10 @@ export function mountTelephonyRoutes(
         context.auction.startCall(carrier.id, callId);
       }
     });
-    response
-      .status(202)
-      .json({
-        status: context.auction.status(),
-        operation: store.getOperation()
-      });
+    response.status(202).json({
+      status: context.auction.status(),
+      operation: store.getOperation()
+    });
   });
 
   app.get("/api/auction", (_request, response) => {
@@ -400,12 +396,8 @@ function openMediaStreamSession(
             }
           : undefined,
         // Built per call so the recap and the audio anchor belong to this leg.
-        finalizeBooking: createCommitmentFinalizer({
-          store,
-          sms: new MockSmsGateway(),
-          callId: current?.callSid ?? "unknown-call",
-          recipient: store.getOperation().mandate.escalationPhone
-        })
+        mode: "negotiation" as const,
+        finalizeConfirmation: async () => {}
       });
     }
   });

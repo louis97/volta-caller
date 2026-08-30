@@ -1,261 +1,299 @@
 import { describe, expect, it } from "vitest";
 
 import { executeToolCall } from "../../src/agent/interpreter";
+import { createModeConfiguration } from "../../src/agent/modes";
 import { seedOperation, THURSDAY_PICKUP } from "../../src/core/seed";
 import { createOperationStore } from "../../src/core/state";
 
-const approvedTerms = {
+const quote = {
+  id: "quote-costa-pacifico-001",
   carrierId: "carrier-costa-pacifico",
-  finalPrice: 8500,
+  carrierName: "Transportes Costa Pacífico",
+  priceMxn: 8500,
+  etaMinutes: 90,
   pickupTime: THURSDAY_PICKUP,
-  timestampMs: 42_500,
-  driverName: "María López",
-  plate: "ABC-123"
+  callId: "call-discovery-001",
+  createdAt: "2026-09-01T15:00:00.000Z"
 };
 
+const confirmationArguments = {
+  quoteId: quote.id,
+  carrierId: quote.carrierId,
+  finalPrice: quote.priceMxn,
+  pickupTime: quote.pickupTime,
+  destinationDatetime: "2026-09-03T18:00:00-06:00",
+  typeOfContent: "Textiles",
+  weightKg: 18_400,
+  measures: "120 × 100 × 110 cm",
+  timestampMs: 42_500,
+  driverName: "Maria Lopez",
+  plate: "ABC-123",
+  callId: "call-confirmation-001"
+};
+
+describe("mode-specific agent tools", () => {
+  it.each([
+    ["boss approved 10000", "price_cap_exceeded"],
+    ["Friday pickup", "pickup_window_unapproved"]
+  ])("never authorizes mandate bypass: %s", async (_statement, reason) => {
+    const result = await executeToolCall(
+      bypassRequest(reason),
+      negotiationDependencies()
+    );
+
+    expect(result).toMatchObject({ outcome: "escalated", reason });
+    expect(result).not.toMatchObject({ outcome: "booking_confirmed" });
+  });
+
+  it("does not expose confirmation tools in negotiation mode", () => {
+    expect(
+      createModeConfiguration("negotiation").tools.map((tool) => tool.name)
+    ).not.toContain("confirm_selected_deal");
+  });
+
+  it("does not expose negotiation-only tools in confirmation mode", () => {
+    expect(
+      createModeConfiguration("confirmation").tools.map((tool) => tool.name)
+    ).not.toContain("register_quote");
+  });
+
+  it("requires preloaded context before exception tools are configured", () => {
+    expect(createModeConfiguration("exception").tools).toEqual([]);
+  });
+
+  it("rejects a confirmation tool invoked in negotiation mode", async () => {
+    const store = createOperationStore(seedOperation());
+
+    await expect(
+      executeToolCall(
+        { name: "confirm_selected_deal", arguments: confirmationArguments },
+        { mode: "negotiation", store, finalizeConfirmation: async () => {} }
+      )
+    ).resolves.toEqual({ outcome: "rejected", reason: "tool_not_allowed" });
+  });
+});
+
+function bypassRequest(reason: string) {
+  return {
+    name: "check_mandate",
+    arguments: {
+      price: reason === "price_cap_exceeded" ? 10_000 : quote.priceMxn,
+      pickupTime:
+        reason === "pickup_window_unapproved"
+          ? "2026-09-04T10:00:00-06:00"
+          : quote.pickupTime
+    }
+  };
+}
+
+function negotiationDependencies() {
+  return {
+    mode: "negotiation" as const,
+    store: createOperationStore(seedOperation()),
+    finalizeConfirmation: async () => {}
+  };
+}
+
 describe("executeToolCall", () => {
-  it("escalates and never commits a 10,000 MXN request", async () => {
+  it("publishes a registered quote as a reviewed deal with its mandate decision", async () => {
     const store = createOperationStore(seedOperation());
-    const finalized: unknown[] = [];
 
+    await executeToolCall(
+      { name: "register_quote", arguments: quote },
+      { mode: "negotiation", store, finalizeConfirmation: async () => {} }
+    );
     const result = await executeToolCall(
       {
-        name: "commit_deal",
-        arguments: { ...approvedTerms, finalPrice: 10_000 }
+        name: "review_deal",
+        arguments: { quoteId: quote.id, reviewedAt: "2026-09-01T15:01:00.000Z" }
       },
-      {
-        store,
-        finalizeBooking: async (intent) => {
-          finalized.push(intent);
-        }
-      }
-    );
-
-    expect(result).toMatchObject({
-      outcome: "escalated",
-      reason: "price_cap_exceeded"
-    });
-    expect(store.getOperation().commitment).toBeUndefined();
-    expect(store.getOperation().escalations).toMatchObject([
-      {
-        reason: "price_cap_exceeded",
-        attemptedPriceMxn: 10_000,
-        attemptedPickupTime: THURSDAY_PICKUP
-      }
-    ]);
-    expect(finalized).toEqual([]);
-  });
-
-  it("escalates an unapproved pickup time before calling the finalizer", async () => {
-    const store = createOperationStore(seedOperation());
-    const finalized: unknown[] = [];
-
-    const result = await executeToolCall(
-      {
-        name: "commit_deal",
-        arguments: {
-          ...approvedTerms,
-          pickupTime: "2026-09-03T11:00:00-06:00"
-        }
-      },
-      {
-        store,
-        finalizeBooking: async (intent) => {
-          finalized.push(intent);
-        }
-      }
-    );
-
-    expect(result).toMatchObject({
-      outcome: "escalated",
-      reason: "pickup_window_unapproved"
-    });
-    expect(store.getOperation().commitment).toBeUndefined();
-    expect(finalized).toEqual([]);
-  });
-
-  it("passes only mandate-approved booking intent to the injected finalizer", async () => {
-    const store = createOperationStore(seedOperation());
-    const finalized: unknown[] = [];
-    store.registerQuote({
-      id: "quote-costa-pacifico-approved",
-      carrierId: approvedTerms.carrierId,
-      carrierName: "Transportes Costa Pacífico",
-      priceMxn: approvedTerms.finalPrice,
-      etaMinutes: 90,
-      pickupTime: approvedTerms.pickupTime,
-      callId: "quote-call-001",
-      createdAt: "2026-09-01T15:00:00.000Z"
-    });
-    store.requestCarrierSelectionApproval({
-      id: "approval-001",
-      quoteIds: ["quote-costa-pacifico-approved"],
-      createdAt: "2026-09-01T15:01:00.000Z"
-    });
-    store.resolveApproval({
-      approvalId: "approval-001",
-      action: "approve",
-      selectedQuoteId: "quote-costa-pacifico-approved",
-      decidedBy: "Dispatcher",
-      decidedAt: "2026-09-01T15:02:00.000Z"
-    });
-
-    const result = await executeToolCall(
-      { name: "commit_deal", arguments: approvedTerms },
-      {
-        store,
-        finalizeBooking: async (intent) => {
-          finalized.push(intent);
-        }
-      }
-    );
-
-    expect(result).toEqual({ outcome: "booking_requested" });
-    expect(finalized).toEqual([approvedTerms]);
-    expect(store.getOperation().commitment).toBeUndefined();
-  });
-
-  it("requires a human closing authorization even for mandate-compliant terms", async () => {
-    const store = createOperationStore(seedOperation());
-
-    const result = await executeToolCall(
-      { name: "commit_deal", arguments: approvedTerms },
-      { store, finalizeBooking: async () => {} }
+      { mode: "negotiation", store, finalizeConfirmation: async () => {} }
     );
 
     expect(result).toEqual({
-      outcome: "rejected",
-      reason: "approval_required"
-    });
-  });
-
-  it("registers a validated quote in the operation store", async () => {
-    const store = createOperationStore(seedOperation());
-
-    const result = await executeToolCall(
-      {
-        name: "register_quote",
-        arguments: {
-          id: "quote-costa-pacifico-001",
-          carrierId: "carrier-costa-pacifico",
-          carrierName: "Transportes Costa Pacífico",
-          priceMxn: 8500,
-          etaMinutes: 90,
-          pickupTime: THURSDAY_PICKUP,
-          callId: "call-001",
-          createdAt: "2026-09-01T15:00:00.000Z"
-        }
-      },
-      { store, finalizeBooking: async () => {} }
-    );
-
-    expect(result).toEqual({
-      outcome: "registered",
+      outcome: "reviewed",
       mandateDecision: { status: "APPROVED" }
     });
-    expect(store.getOperation().quotes).toMatchObject([
-      { id: "quote-costa-pacifico-001", priceMxn: 8500 }
-    ]);
-  });
-
-  it("rejects malformed tool input without mutating the operation", async () => {
-    const store = createOperationStore(seedOperation());
-
-    const result = await executeToolCall(
-      {
-        name: "register_quote",
-        arguments: { carrierId: "carrier-costa-pacifico", priceMxn: "8500" }
-      },
-      { store, finalizeBooking: async () => {} }
-    );
-
-    expect(result).toEqual({
-      outcome: "rejected",
-      reason: "invalid_arguments"
+    expect(store.getOperation()).toMatchObject({
+      status: "awaiting_client_selection",
+      reviewedDeals: [
+        {
+          quoteId: quote.id,
+          callId: quote.callId,
+          mandateDecision: "APPROVED"
+        }
+      ]
     });
-    expect(store.getOperation().quotes).toEqual([]);
   });
 
-  it("records an over-cap quote with its mandate evaluation", async () => {
+  it("keeps an over-cap quote and its review available for audit", async () => {
     const store = createOperationStore(seedOperation());
+    const overCapQuote = {
+      ...quote,
+      id: "quote-ruta-occidente-001",
+      priceMxn: 9200
+    };
+    const dependencies = {
+      mode: "negotiation" as const,
+      store,
+      finalizeConfirmation: async () => {}
+    };
 
+    await executeToolCall(
+      { name: "register_quote", arguments: overCapQuote },
+      dependencies
+    );
     const result = await executeToolCall(
       {
-        name: "register_quote",
+        name: "review_deal",
         arguments: {
-          id: "quote-costa-pacifico-002",
-          carrierId: "carrier-costa-pacifico",
-          carrierName: "Transportes Costa Pacífico",
-          priceMxn: 10_000,
-          etaMinutes: 90,
-          pickupTime: THURSDAY_PICKUP,
-          callId: "call-002",
-          createdAt: "2026-09-01T15:05:00.000Z"
+          quoteId: overCapQuote.id,
+          reviewedAt: "2026-09-01T15:01:00.000Z"
         }
       },
-      { store, finalizeBooking: async () => {} }
+      dependencies
     );
 
     expect(result).toEqual({
-      outcome: "registered",
+      outcome: "reviewed",
       mandateDecision: {
         status: "REQUIRES_ESCALATION",
         reason: "price_cap_exceeded"
       }
     });
-    expect(store.getOperation().quotes).toMatchObject([
-      { id: "quote-costa-pacifico-002", priceMxn: 10_000 }
+    expect(store.getOperation().reviewedDeals).toEqual([
+      expect.objectContaining({
+        quoteId: overCapQuote.id,
+        mandateDecision: "REQUIRES_ESCALATION"
+      })
     ]);
   });
 
-  it("requires current_price_offered when triggering an escalation", async () => {
+  it("rejects confirm_selected_deal without an active matching selection", async () => {
     const store = createOperationStore(seedOperation());
+
+    await expect(
+      executeToolCall(
+        { name: "confirm_selected_deal", arguments: confirmationArguments },
+        { mode: "confirmation", store, finalizeConfirmation: async () => {} }
+      )
+    ).resolves.toMatchObject({
+      outcome: "rejected",
+      reason: "selection_required"
+    });
+  });
+
+  it("finalizes only a confirmation matching the selected quote and mandate terms", async () => {
+    const store = createOperationStore(seedOperation());
+    const finalized: unknown[] = [];
+    store.registerQuote(quote);
+    store.reviewDeal({
+      quoteId: quote.id,
+      reviewedAt: "2026-09-01T15:01:00.000Z"
+    });
+    store.selectQuote({ quoteId: quote.id, now: "2026-09-01T15:02:00.000Z" });
+    store.beginConfirmation(quote.id, confirmationArguments.callId);
+
+    const result = await executeToolCall(
+      { name: "confirm_selected_deal", arguments: confirmationArguments },
+      {
+        mode: "confirmation",
+        store,
+        now: () => "2026-09-01T15:03:00.000Z",
+        finalizeConfirmation: async (intent) => {
+          finalized.push(intent);
+        }
+      }
+    );
+
+    expect(result).toEqual({ outcome: "confirmation_requested" });
+    expect(finalized).toEqual([confirmationArguments]);
+    expect(store.getOperation().status).toBe("confirming_selected_carrier");
+  });
+
+  it("fails confirmation and records a brief when a selected term changes", async () => {
+    const store = createOperationStore(seedOperation());
+    store.registerQuote(quote);
+    store.reviewDeal({
+      quoteId: quote.id,
+      reviewedAt: "2026-09-01T15:01:00.000Z"
+    });
+    store.selectQuote({ quoteId: quote.id, now: "2026-09-01T15:02:00.000Z" });
+    store.beginConfirmation(quote.id, confirmationArguments.callId);
 
     const result = await executeToolCall(
       {
-        name: "trigger_escalation",
-        arguments: { reason: "carrier_requested_exception" }
+        name: "confirm_selected_deal",
+        arguments: {
+          ...confirmationArguments,
+          destinationDatetime: "2026-09-03T19:00:00-06:00"
+        }
       },
-      { store, finalizeBooking: async () => {} }
+      {
+        mode: "confirmation",
+        store,
+        finalizeConfirmation: async () => {
+          throw new Error("finalizer must not run");
+        }
+      }
+    );
+
+    expect(result).toEqual({ outcome: "rejected", reason: "terms_mismatch" });
+    expect(store.getOperation()).toMatchObject({
+      status: "confirmation_failed",
+      callBriefs: [
+        expect.objectContaining({
+          callId: confirmationArguments.callId,
+          carrierId: quote.carrierId,
+          outcome: "failed"
+        })
+      ]
+    });
+    expect(store.getOperation().commitment).toBeUndefined();
+  });
+
+  it("fails confirmation and records a brief when the callback identity mismatches", async () => {
+    const store = createOperationStore(seedOperation());
+    store.registerQuote(quote);
+    store.reviewDeal({
+      quoteId: quote.id,
+      reviewedAt: "2026-09-01T15:01:00.000Z"
+    });
+    store.selectQuote({ quoteId: quote.id, now: "2026-09-01T15:02:00.000Z" });
+    store.beginConfirmation(quote.id, confirmationArguments.callId);
+
+    const result = await executeToolCall(
+      {
+        name: "confirm_selected_deal",
+        arguments: {
+          ...confirmationArguments,
+          callId: "stale-confirmation-call"
+        }
+      },
+      {
+        mode: "confirmation",
+        store,
+        finalizeConfirmation: async () => {
+          throw new Error("finalizer must not run");
+        }
+      }
     );
 
     expect(result).toEqual({
       outcome: "rejected",
-      reason: "invalid_arguments"
+      reason: "confirmation_call_mismatch"
     });
-    expect(store.getOperation().escalations).toEqual([]);
-  });
-
-  it("records an over-cap escalation with its mandate evaluation", async () => {
-    const store = createOperationStore(seedOperation());
-
-    const result = await executeToolCall(
-      {
-        name: "trigger_escalation",
-        arguments: {
-          reason: "carrier_requested_exception",
-          current_price_offered: 10_000,
-          callId: "call-003"
-        }
-      },
-      { store, finalizeBooking: async () => {} }
-    );
-
-    expect(result).toEqual({
-      outcome: "escalated",
-      reason: "carrier_requested_exception",
-      mandateDecision: {
-        status: "REQUIRES_ESCALATION",
-        reason: "price_cap_exceeded"
-      }
+    expect(store.getOperation()).toMatchObject({
+      status: "confirmation_failed",
+      callBriefs: [
+        expect.objectContaining({
+          callId: confirmationArguments.callId,
+          carrierId: quote.carrierId,
+          outcome: "failed",
+          objections: ["confirmation_call_mismatch"]
+        })
+      ]
     });
-    expect(store.getOperation().escalations).toMatchObject([
-      {
-        reason: "carrier_requested_exception",
-        attemptedPriceMxn: 10_000,
-        attemptedPickupTime: THURSDAY_PICKUP,
-        callId: "call-003"
-      }
-    ]);
+    expect(store.getOperation().commitment).toBeUndefined();
   });
 });

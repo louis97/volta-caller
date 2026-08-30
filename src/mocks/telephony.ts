@@ -6,10 +6,16 @@ import type {
   TransferInput
 } from "../telephony/twilio";
 
-export type MockTelephonyEvent = {
-  type: "created" | "transferred";
-  callId: string;
-};
+export type MockTelephonyEvent =
+  | {
+      type: "created";
+      callId: string;
+      input: OutboundCallInput;
+    }
+  | {
+      type: "transferred";
+      callId: string;
+    };
 
 export type MockTelephonyGateway = TelephonyGateway & {
   calls: MockTelephonyEvent[];
@@ -25,6 +31,11 @@ export function createMockTelephonyGateway({
     calls,
     async createOutboundCall(input: OutboundCallInput): Promise<CallSession> {
       const id = `mock-call-${nextCall++}`;
+      calls.push({
+        type: "created",
+        callId: id,
+        input: structuredClone(input)
+      });
       return {
         id,
         operationId: input.operationId,

@@ -1,6 +1,7 @@
 import type {
   Commitment,
   Escalation,
+  Incident,
   OperationEvent,
   Quote
 } from "@volta/contracts";
@@ -47,7 +48,264 @@ const escalation: Escalation = {
   requestedAt: "2026-09-01T15:10:00.000Z"
 };
 
+const incident: Incident = {
+  id: "incident-001",
+  operationId: "operation-textiles-pacifico-001",
+  callerName: "Juan Pérez",
+  carrierId: "carrier-costa-pacifico",
+  truckPlate: "ABC-123",
+  processStage: "en_route",
+  issue: "traffic delay",
+  delayMinutes: 30,
+  revisedEta: "2026-09-03T17:30:00-06:00",
+  feasibility: "achievable",
+  createdAt: "2026-09-03T14:00:00.000Z",
+  verifiedCallerIdentity: "Juan Pérez"
+};
+
 describe("createOperationStore", () => {
+  it("reviews a quote and makes an approved deal selectable", () => {
+    const operation = seedOperation();
+    operation.status = "negotiating";
+    operation.quotes = [quote];
+    const store = createOperationStore(operation);
+    const received: OperationEvent[] = [];
+    store.subscribe((event) => received.push(event));
+
+    const reviewed = store.reviewDeal({
+      quoteId: quote.id,
+      reviewedAt: "2026-09-01T15:01:00.000Z"
+    });
+
+    expect(reviewed).toMatchObject({
+      quoteId: quote.id,
+      callId: quote.callId,
+      mandateDecision: "APPROVED"
+    });
+    expect(store.getOperation().status).toBe("awaiting_client_selection");
+    expect(received).toContainEqual({
+      type: "deal.reviewed",
+      operationId: operation.id,
+      reviewedDeal: reviewed
+    });
+  });
+
+  it("publishes each reviewed candidate without removing earlier candidates", () => {
+    const operation = seedOperation();
+    operation.status = "negotiating";
+    operation.quotes = [
+      quote,
+      { ...quote, id: "quote-b", callId: "call-002", priceMxn: 9500 }
+    ];
+    const store = createOperationStore(operation);
+    store.reviewDeal({
+      quoteId: quote.id,
+      reviewedAt: "2026-09-01T15:01:00.000Z"
+    });
+    store.reviewDeal({
+      quoteId: "quote-b",
+      reviewedAt: "2026-09-01T15:02:00.000Z"
+    });
+
+    expect(store.getOperation().reviewedDeals).toHaveLength(2);
+    expect(store.getOperation().status).toBe("awaiting_client_selection");
+  });
+
+  it("rejects a second reviewed deal from the same discovery call", () => {
+    const operation = seedOperation();
+    operation.status = "negotiating";
+    operation.quotes = [
+      quote,
+      { ...quote, id: "quote-same-call", priceMxn: 8700 }
+    ];
+    const store = createOperationStore(operation);
+    store.reviewDeal({
+      quoteId: quote.id,
+      reviewedAt: "2026-09-01T15:01:00.000Z"
+    });
+
+    expect(() =>
+      store.reviewDeal({
+        quoteId: "quote-same-call",
+        reviewedAt: "2026-09-01T15:02:00.000Z"
+      })
+    ).toThrow("call_already_reviewed");
+    expect(store.getOperation().reviewedDeals).toHaveLength(1);
+  });
+
+  it("selects only an approved reviewed quote before destination expiry", () => {
+    const operation = seedOperation();
+    operation.status = "awaiting_client_selection";
+    operation.quotes = [quote];
+    operation.reviewedDeals = [
+      {
+        quoteId: quote.id,
+        callId: quote.callId,
+        mandateDecision: "APPROVED",
+        reviewedAt: "2026-09-01T15:01:00.000Z"
+      }
+    ];
+    const store = createOperationStore(operation);
+
+    const selection = store.selectQuote({
+      quoteId: quote.id,
+      now: "2026-09-03T23:59:59Z"
+    });
+
+    expect(selection).toEqual({
+      quoteId: quote.id,
+      selectedAt: "2026-09-03T23:59:59Z",
+      expiresAt: operation.mandate.destinationDatetime
+    });
+    expect(store.getOperation().status).toBe("carrier_selected");
+  });
+
+  it("marks an operation as selection_expired for an expired selection", () => {
+    const operation = seedOperation();
+    operation.status = "awaiting_client_selection";
+    operation.quotes = [quote];
+    operation.reviewedDeals = [
+      {
+        quoteId: quote.id,
+        callId: quote.callId,
+        mandateDecision: "APPROVED",
+        reviewedAt: "2026-09-01T15:01:00.000Z"
+      }
+    ];
+    const store = createOperationStore(operation);
+    const before = store.getOperation();
+
+    expect(() =>
+      store.selectQuote({ quoteId: quote.id, now: "2026-09-04T00:00:00Z" })
+    ).toThrow("selection_expired");
+    expect(store.getOperation()).toMatchObject({
+      ...before,
+      status: "selection_expired"
+    });
+    expect(store.getOperation().selection).toBeUndefined();
+  });
+
+  it("rejects selection of a reviewed quote that is not approved", () => {
+    const operation = seedOperation();
+    operation.status = "awaiting_client_selection";
+    operation.quotes = [{ ...quote, id: "quote-rejected", priceMxn: 9500 }];
+    operation.reviewedDeals = [
+      {
+        quoteId: "quote-rejected",
+        callId: quote.callId,
+        mandateDecision: "REQUIRES_ESCALATION",
+        reviewedAt: "2026-09-01T15:01:00.000Z"
+      }
+    ];
+    const store = createOperationStore(operation);
+    expect(() =>
+      store.selectQuote({
+        quoteId: "quote-rejected",
+        now: "2026-09-03T23:00:00Z"
+      })
+    ).toThrow("selection_not_approved");
+    expect(store.getOperation()).toEqual(operation);
+  });
+
+  it("transitions confirmation and records immutable incidents and notifications", () => {
+    const operation = seedOperation();
+    operation.status = "carrier_selected";
+    operation.selection = {
+      quoteId: quote.id,
+      selectedAt: "2026-09-03T15:00:00.000Z",
+      expiresAt: operation.mandate.destinationDatetime
+    };
+    const store = createOperationStore(operation);
+    const received: OperationEvent[] = [];
+    store.subscribe((event) => received.push(event));
+
+    store.beginConfirmation(quote.id, "call-confirm-001");
+    store.failConfirmation("caller_unverified", "call-confirm-001");
+    store.recordIncident(incident);
+    store.updateOperationStatus({
+      incidentId: incident.id,
+      status: "incident_monitoring"
+    });
+    const notification = {
+      operationId: incident.operationId,
+      incidentId: incident.id,
+      message: "Delay recorded",
+      createdAt: incident.createdAt
+    };
+    store.notifyDashboard(notification);
+
+    expect(store.getOperation()).toMatchObject({
+      status: "incident_monitoring",
+      incidents: [incident],
+      dashboardNotifications: [notification]
+    });
+    expect(received.map((event) => event.type)).toEqual([
+      "confirmation.failed",
+      "incident.updated",
+      "dashboard.notification.created"
+    ]);
+  });
+
+  it("rejects confirmation failure outside an active confirmation", () => {
+    const store = createOperationStore(seedOperation());
+    const before = store.getOperation();
+
+    expect(() =>
+      store.failConfirmation("caller_unverified", "call-001")
+    ).toThrow("confirmation_not_allowed");
+    expect(store.getOperation()).toEqual(before);
+  });
+
+  it("rejects a stale confirmation failure call ID without mutation", () => {
+    const operation = seedOperation();
+    operation.status = "carrier_selected";
+    operation.selection = {
+      quoteId: quote.id,
+      selectedAt: "2026-09-03T15:00:00.000Z",
+      expiresAt: operation.mandate.destinationDatetime
+    };
+    const store = createOperationStore(operation);
+    store.beginConfirmation(quote.id, "call-confirm-current");
+    const before = store.getOperation();
+
+    expect(() =>
+      store.failConfirmation("stale_callback", "call-confirm-stale")
+    ).toThrow("confirmation_call_mismatch");
+    expect(store.getOperation()).toEqual(before);
+  });
+
+  it("does not let listeners mutate newly emitted payloads", () => {
+    const operation = seedOperation();
+    operation.status = "negotiating";
+    operation.quotes = [quote];
+    const store = createOperationStore(operation);
+    const received: OperationEvent[] = [];
+    store.subscribe((event) => {
+      received.push(event);
+      if (event.type === "deal.reviewed") event.reviewedDeal.callId = "mutated";
+      if (event.type === "incident.updated") event.incident.issue = "mutated";
+      if (event.type === "dashboard.notification.created")
+        event.notification.message = "mutated";
+    });
+
+    store.reviewDeal({
+      quoteId: quote.id,
+      reviewedAt: "2026-09-01T15:01:00.000Z"
+    });
+    store.recordIncident(incident);
+    store.notifyDashboard({
+      operationId: incident.operationId,
+      incidentId: incident.id,
+      message: "Delay recorded",
+      createdAt: incident.createdAt
+    });
+
+    expect(store.getOperation().reviewedDeals[0].callId).toBe(quote.callId);
+    expect(store.getOperation().incidents[0].issue).toBe(incident.issue);
+    expect(store.getOperation().dashboardNotifications[0].message).toBe(
+      "Delay recorded"
+    );
+  });
   it("publishes a quote event and retains the quote", () => {
     const store = createOperationStore(seedOperation());
     const received: OperationEvent[] = [];
