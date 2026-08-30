@@ -1,6 +1,7 @@
 import { createCallBrief } from "../audit/callBrief";
 import { executeToolCall } from "../agent/interpreter";
-import { seedOperation, THURSDAY_PICKUP } from "../core/seed";
+import { emptyOperation } from "../core/emptyOperation";
+import { THURSDAY_PICKUP } from "../core/seed";
 import { createOperationStore, type OperationStore } from "../core/state";
 
 const RUN_AT = "2026-09-01T15:00:00.000Z";
@@ -18,7 +19,10 @@ export type MockScenario = {
 export function createMockScenario(
   onEvent?: Parameters<OperationStore["subscribe"]>[0]
 ): MockScenario {
-  const store = createOperationStore(seedOperation());
+  // Starts with no shipment on purpose. The operation a call speaks comes from
+  // the mandate that invoked it, and a process holding demo cargo will happily
+  // announce it to a real carrier.
+  const store = createOperationStore(emptyOperation());
   if (onEvent) store.subscribe(onEvent);
   const operation = store.getOperation();
   const approvedCarrier = operation.candidates[0];

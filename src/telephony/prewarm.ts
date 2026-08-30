@@ -1,3 +1,4 @@
+import { buildCallInstructions } from "../agent/prompt";
 import { env } from "../config/env";
 import type { OperationStore } from "../core/state";
 import { createRealtimeSessionConfig } from "./mediaStream";
@@ -141,6 +142,40 @@ export async function prewarmRealtimeSession(input: {
   console.error(
     `[prewarm] session ${outcome} after ${elapsedMs}ms token=${short(callToken)}; dialling anyway`
   );
+}
+
+/**
+ * Warms the session for one outbound call, briefed for the carrier about to be
+ * dialled.
+ *
+ * Every dial path goes through here. A round launched from a mandate and one
+ * launched from the console are the same call to the carrier who answers it,
+ * and wiring only one of them is how the greeting stays slow on the path
+ * anybody actually uses.
+ */
+export async function warmOutboundCall(input: {
+  store: OperationStore;
+  organizationId?: string;
+  callToken: string;
+  carrier?: { id: string; name: string };
+}): Promise<void> {
+  if (env.VOLTA_MODE !== "live" || !input.callToken) return;
+
+  const operation = input.store.getOperation();
+  await prewarmRealtimeSession({
+    callToken: input.callToken,
+    instructions: buildCallInstructions(operation, input.carrier?.name),
+    context: {
+      store: input.store,
+      context: {
+        operationId: operation.id,
+        carrierId: input.carrier?.id,
+        organizationId: input.organizationId
+      },
+      organizationId: input.organizationId,
+      carrier: input.carrier
+    }
+  });
 }
 
 /**

@@ -1,5 +1,6 @@
 import type { Operation } from "@volta/contracts";
 
+import { hasMandate } from "../core/emptyOperation";
 import type { ExceptionCallContext } from "../core/exceptions";
 
 export const VOLTA_SYSTEM_PROMPT = `You are Volta, a transport coordination agent for Textiles Pacífico.
@@ -40,6 +41,13 @@ export function buildCallInstructions(
   operation: Operation,
   carrierName?: string
 ): string {
+  // Refusing here is what stops a process that has not been sent a mandate
+  // from briefing the agent on blank fields. Every dial path funnels through
+  // this, including the pre-warm, so the throw is the last line of defence
+  // rather than the first.
+  if (!hasMandate(operation)) {
+    throw new Error("no_active_mandate");
+  }
   const { mandate } = operation;
   const who = carrierName ?? "a carrier";
 

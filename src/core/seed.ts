@@ -1,7 +1,43 @@
-import type { CreateMandateRequest, Operation } from "@volta/contracts";
+import type {
+  CarrierCandidate,
+  CreateMandateRequest,
+  Operation
+} from "@volta/contracts";
 
 export const THURSDAY_PICKUP = "2026-09-03T10:00:00-06:00";
 
+/**
+ * The demo pool the carrier directory is backfilled with, so a round always
+ * has someone to dial without anyone retyping three numbers. These are the
+ * only seeded values production code is allowed to reach: a mandate is never
+ * seeded, because a carrier would hear it.
+ */
+export function seedCarriers(): CarrierCandidate[] {
+  return [
+    {
+      id: "carrier-costa-pacifico",
+      name: "Transportes Costa Pacífico",
+      phone: "+573104083853"
+    },
+    {
+      id: "carrier-ruta-occidente",
+      name: "Ruta Occidente",
+      phone: "+573142117112"
+    },
+    {
+      id: "carrier-fletes-bajio",
+      name: "Fletes del Bajío",
+      phone: "+573224118118"
+    }
+  ];
+}
+
+/**
+ * Test fixture only. Nothing under `src/` may import this: a process that has
+ * not been sent a mandate holds `emptyOperation()`, and dialling is refused
+ * until a real one arrives. Wiring this back into the runtime is what made
+ * every call announce a container from Manzanillo to Guadalajara.
+ */
 export function seedOperation(): Operation {
   return {
     id: "operation-textiles-pacifico-001",
@@ -22,23 +58,7 @@ export function seedOperation(): Operation {
       // Real, verified handset. The fiction stays Mexican; the dialling is not.
       escalationPhone: "+573224118118"
     },
-    candidates: [
-      {
-        id: "carrier-costa-pacifico",
-        name: "Transportes Costa Pacífico",
-        phone: "+573104083853"
-      },
-      {
-        id: "carrier-ruta-occidente",
-        name: "Ruta Occidente",
-        phone: "+573142117112"
-      },
-      {
-        id: "carrier-fletes-bajio",
-        name: "Fletes del Bajío",
-        phone: "+573224118118"
-      }
-    ],
+    candidates: seedCarriers(),
     callSessions: [],
     quotes: [],
     approvals: [],

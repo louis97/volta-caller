@@ -9,6 +9,7 @@ import type { CallSession, CallSupervision } from "@volta/contracts";
 import { executeToolCall } from "../agent/interpreter";
 import { buildCallInstructions } from "../agent/prompt";
 import { env } from "../config/env";
+import { hasMandate } from "../core/emptyOperation";
 import type { OperationStore } from "../core/state";
 import { auctionFromOperation, type Auction } from "./auction";
 import { closeBridge, getBridge, openBridge } from "./hub";
@@ -30,9 +31,9 @@ import {
   answeredAt,
   discardWarmSession,
   markCallAnswered,
-  prewarmRealtimeSession,
   takeWarmSession,
   warmCallContext,
+  warmOutboundCall,
   type WarmSession
 } from "./prewarm";
 import {
@@ -336,33 +337,16 @@ export function mountTelephonyRoutes(
   });
   const twiml = express.urlencoded({ extended: false });
 
-  /**
-   * Opens the agent's session before the number starts ringing, briefed for
-   * this exact carrier. The context is cached alongside it so the media
-   * WebSocket does not have to read it back out of Postgres while the carrier
-   * waits on the upgrade.
-   */
-  const warmSessionFor = async (
+  const warmSessionFor = (
     reference: OutboundCallReference,
     carrier?: { id: string; name: string }
-  ) => {
-    if (env.VOLTA_MODE !== "live" || !reference.callToken) return;
-    const operation = store.getOperation();
-    await prewarmRealtimeSession({
+  ) =>
+    warmOutboundCall({
+      store,
+      organizationId: dependencies.organizationId,
       callToken: reference.callToken,
-      instructions: buildCallInstructions(operation, carrier?.name),
-      context: {
-        store,
-        context: {
-          operationId: operation.id,
-          carrierId: carrier?.id,
-          organizationId: dependencies.organizationId
-        },
-        organizationId: dependencies.organizationId,
-        carrier
-      }
+      carrier
     });
-  };
 
   const hangUp = (response: express.Response) =>
     response
@@ -407,6 +391,17 @@ export function mountTelephonyRoutes(
     // against — speaking the wrong mandate — is real but far rarer than the
     // calls the guard was killing.
     if (!reference) {
+      // The fail-open only has something to fall back to when the instance
+      // actually holds a mandate. With none, opening the stream would put the
+      // agent on the line with blank fields, so hanging up is the honest
+      // outcome — and there was no round for this callback to belong to.
+      if (!hasMandate(store.getOperation())) {
+        console.warn(
+          `[twilio] no call context in ${request.originalUrl} and no active mandate; hanging up`
+        );
+        hangUp(response);
+        return;
+      }
       console.warn(
         `[twilio] no call context in ${request.originalUrl}; using the active operation`
       );
@@ -493,6 +488,13 @@ export function mountTelephonyRoutes(
    * which is what makes this a market rather than three separate calls.
    */
   app.post("/api/calls/negotiate", jsonBody, async (_request, response) => {
+    // Nothing to negotiate until a mandate has been sent. Refusing before
+    // Twilio is touched is what keeps a carrier from being called about a
+    // shipment nobody asked for.
+    if (!hasMandate(store.getOperation())) {
+      response.status(409).json({ error: "no_active_mandate" });
+      return;
+    }
     context.resetAuction();
     dialled.clear();
 
@@ -768,6 +770,13 @@ export function mountTelephonyRoutes(
     const twimlPath =
       request.query.twiml === "say" ? "/twiml/say" : "/twiml/outbound";
 
+    // The diagnostic path speaks a fixed line and needs no shipment; the agent
+    // path would have to invent one.
+    if (twimlPath === "/twiml/outbound" && !hasMandate(store.getOperation())) {
+      response.status(409).json({ error: "no_active_mandate" });
+      return;
+    }
+
     try {
       const gateway = createTwilioGateway({ client: getTwilioClient() });
       const operation = store.getOperation();
@@ -898,6 +907,21 @@ export function attachTelephonyWebSockets(
           }
           if (callToken) warm = takeWarmSession(callToken);
         }
+      }
+
+      // Whatever we resolved to, it has to be a real shipment. Opening the
+      // relay against a mandate-less operation is the one failure mode worse
+      // than silence: the agent stays on the line and negotiates a load that
+      // does not exist.
+      if (
+        pathname === MEDIA_STREAM_PATH &&
+        !hasMandate(resolved.store.getOperation())
+      ) {
+        console.warn(
+          "[twilio] media stream refused: this instance has no mandate to negotiate"
+        );
+        socket.destroy();
+        return;
       }
 
       const upgradeMs = Date.now() - upgradeStartedAt;

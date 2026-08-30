@@ -51,7 +51,8 @@ import {
 } from "./core/confirmation";
 import { createMockScenario, type MockScenario } from "./mocks/callScenario";
 import { createMockTelephonyGateway } from "./mocks/telephony";
-import { createOperationFromMandate, seedOperation } from "./core/seed";
+import { hasMandate } from "./core/emptyOperation";
+import { createOperationFromMandate, seedCarriers } from "./core/seed";
 import { derivePipelineStage } from "./core/pipeline";
 import {
   fanOutCalls,
@@ -69,6 +70,7 @@ import {
   type KapsoMessenger,
   type KapsoWebhookPayload
 } from "./whatsapp/kapso";
+import { warmOutboundCall } from "./telephony/prewarm";
 import {
   attachTelephonyWebSockets,
   createLiveTelephonyGateway,
@@ -689,6 +691,31 @@ export function createApp(options: CreateAppOptions = {}) {
   app.locals.telephonyDialled = dialled;
   app.locals.ensureCarrierDirectory = () =>
     ensureCarrierDirectory(repository, activeOrganizationId);
+  // The active operation lives in memory, so a restart used to wipe the
+  // mandate the dispatcher had sent. Recovering the most recent one keeps the
+  // console usable across deploys without ever inventing a shipment: if the
+  // organization has none, the process stays empty and dialling is refused.
+  app.locals.restoreActiveOperation = async () => {
+    try {
+      const operations = await repository.listOperations({
+        organizationId: activeOrganizationId,
+        userId: "system"
+      });
+      const latest = operations[0];
+      if (!latest) {
+        console.log(
+          "[operation] no mandate on record; waiting for one before dialling"
+        );
+        return;
+      }
+      scenario.store.replaceOperation(latest);
+      console.log(
+        `[operation] restored ${latest.id}: ${latest.origin} -> ${latest.destination}`
+      );
+    } catch (error) {
+      console.error("[operation] could not restore the last mandate:", error);
+    }
+  };
   app.locals.listTranscript = (callId?: string) =>
     repository.listTranscript(activeOrganizationId, callId);
   app.locals.listActiveCarriers = async () => {
@@ -839,8 +866,7 @@ export function createApp(options: CreateAppOptions = {}) {
           "[mandates] no active carriers in the directory; falling back to the seeded pool"
         );
       }
-      operation.candidates =
-        active.length > 0 ? active : seedOperation().candidates;
+      operation.candidates = active.length > 0 ? active : seedCarriers();
       scenario.store.replaceOperation(operation);
       await persistCurrentOperation(context);
       const telephony = telephonyContext(scenario.store);
@@ -862,6 +888,16 @@ export function createApp(options: CreateAppOptions = {}) {
             ? createLiveTelephonyGateway()
             : undefined),
         createCallReference: createTelephonyCallReference,
+        // Opens the agent's session while the phone rings instead of after the
+        // carrier answers. This is the path the console dials from, so leaving
+        // it out is what keeps the first greeting slow.
+        prewarm: ({ reference, carrier }) =>
+          warmOutboundCall({
+            store: scenario.store,
+            organizationId: context.organizationId,
+            callToken: reference.callToken,
+            carrier
+          }),
         timeLimitSeconds: env.CALL_TIME_LIMIT_SECONDS,
         record: env.TWILIO_RECORD_CALLS,
         detectAnsweringMachine: env.TWILIO_HANGUP_ON_MACHINE,
@@ -938,9 +974,14 @@ export function createApp(options: CreateAppOptions = {}) {
     try {
       const operations = await repository.listOperations(context);
       const current = scenario.store.getOperation();
+      // Storage may not have caught up with a round already in flight, so the
+      // in-memory operation stands in for it. A process without a mandate has
+      // nothing to stand in with, and pushing the placeholder would draw a
+      // phantom mandate in the console's deck.
       if (
         context.organizationId === activeOrganizationId &&
-        operations.length === 0
+        operations.length === 0 &&
+        hasMandate(current)
       ) {
         operations.push(current);
       }
@@ -1558,7 +1599,7 @@ async function ensureCarrierDirectory(
 
     // Adds only what is missing, by number. Anything the team added or
     // deactivated through the console is left exactly as they left it.
-    const missing = seedOperation().candidates.filter(
+    const missing = seedCarriers().filter(
       (candidate) => !known.has(candidate.phone)
     );
     if (missing.length === 0) return;
@@ -1709,6 +1750,7 @@ if (isMainModule(import.meta.url, process.argv[1])) {
   });
 
   void app.locals.ensureCarrierDirectory?.();
+  void app.locals.restoreActiveOperation?.();
 
   const missing = missingTelephonyConfig();
   if (missing.length > 0) {
