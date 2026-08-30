@@ -1,6 +1,7 @@
 import type {
   ApprovalRequest,
   CallBrief,
+  CallSession,
   ClosingAuthorization,
   Commitment,
   Escalation,
@@ -13,6 +14,11 @@ export type OperationStore = {
   getOperation(): Operation;
   replaceOperation(operation: Operation): void;
   registerQuote(quote: Quote): void;
+  openCallSession(callSession: CallSession): void;
+  updateCallSession(
+    callSessionId: string,
+    patch: Partial<Omit<CallSession, "id" | "operationId">>
+  ): CallSession;
   requestCarrierSelectionApproval(input: {
     id: string;
     quoteIds: string[];
@@ -71,13 +77,53 @@ export function createOperationStore(
       operation = {
         ...operation,
         status: "negotiating",
-        quotes: [...operation.quotes, storedQuote]
+        quotes: [...operation.quotes, storedQuote],
+        callSessions: operation.callSessions.map((session) =>
+          session.id === storedQuote.callId
+            ? { ...session, quoteId: storedQuote.id }
+            : session
+        )
       };
       publish({
         type: "quote.registered",
         operationId: operation.id,
         quote: storedQuote
       });
+    },
+    openCallSession: (callSession) => {
+      if (callSession.operationId !== operation.id) {
+        throw new Error("call_operation_invalid");
+      }
+      if (operation.callSessions.some((item) => item.id === callSession.id)) {
+        throw new Error("call_session_exists");
+      }
+      const storedCallSession = clone(callSession);
+      operation = {
+        ...operation,
+        status: "negotiating",
+        callSessions: [...operation.callSessions, storedCallSession]
+      };
+      publish({
+        type: "call.started",
+        operationId: operation.id,
+        callSession: storedCallSession
+      });
+    },
+    updateCallSession: (callSessionId, patch) => {
+      const index = operation.callSessions.findIndex(
+        (item) => item.id === callSessionId
+      );
+      if (index === -1) throw new Error("call_session_not_found");
+      const callSession = { ...operation.callSessions[index], ...clone(patch) };
+      const callSessions = [...operation.callSessions];
+      callSessions[index] = callSession;
+      operation = { ...operation, callSessions };
+      publish({
+        type: "call.updated",
+        operationId: operation.id,
+        callSession
+      });
+      return clone(callSession);
     },
     requestCarrierSelectionApproval: (input) => {
       const quoteIds = [...new Set(input.quoteIds)];

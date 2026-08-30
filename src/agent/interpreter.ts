@@ -73,7 +73,8 @@ export type ToolCallResult =
         | "invalid_arguments"
         | "invalid_tool"
         | "invalid_price"
-        | "approval_required";
+        | "approval_required"
+        | "approval_already_pending";
     }
   | { outcome: "booking_failed" };
 
@@ -139,7 +140,13 @@ export async function executeToolCall(
           createdAt: (dependencies.now ?? (() => new Date().toISOString()))()
         });
         return { outcome: "approval_requested", approval };
-      } catch {
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === "approval_already_pending"
+        ) {
+          return { outcome: "rejected", reason: "approval_already_pending" };
+        }
         return { outcome: "rejected", reason: "invalid_arguments" };
       }
     }

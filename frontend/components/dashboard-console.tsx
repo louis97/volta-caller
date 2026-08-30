@@ -4,8 +4,10 @@ import type {
   AgentConversation,
   AgentMessage,
   ApprovalRequest,
+  CallSession,
   CreateMandateRequest,
   Operation,
+  OperationReadModel,
   ProposedAction,
   Quote
 } from "@volta/contracts";
@@ -13,11 +15,7 @@ import {
   AnimatePresence,
   LazyMotion,
   MotionConfig,
-  animate,
-  domMax,
-  useMotionValue,
-  useReducedMotion,
-  useSpring
+  domMax
 } from "motion/react";
 import * as m from "motion/react-m";
 import { useEffect, useRef, useState } from "react";
@@ -32,7 +30,8 @@ import {
   RouteIcon
 } from "./icons";
 
-type View = "operations" | "new-mandate" | "call-floor" | "approvals";
+type View =
+  "new-mandate" | "call-floor" | "pipeline" | "carriers" | "approvals";
 
 type MandateSaveState =
   | { status: "idle" }
@@ -47,89 +46,23 @@ const MANDATE_TIMEZONE_OFFSET = "-06:00";
 const navItems: Array<{
   id: View;
   label: string;
-  icon: typeof OperationsIcon;
-  count?: number;
-  tone?: "live" | "waiting";
+  icon: typeof ApprovalIcon;
 }> = [
-  { id: "operations", label: "Operations", icon: OperationsIcon },
   { id: "new-mandate", label: "New mandate", icon: PlusIcon },
-  {
-    id: "call-floor",
-    label: "Call floor",
-    icon: PhoneIcon,
-    count: 4,
-    tone: "live"
-  },
-  {
-    id: "approvals",
-    label: "Approvals",
-    icon: ApprovalIcon,
-    count: 1,
-    tone: "waiting"
-  }
+  { id: "call-floor", label: "Call floor", icon: PhoneIcon },
+  { id: "pipeline", label: "Pipeline", icon: OperationsIcon },
+  { id: "carriers", label: "Carriers", icon: RouteIcon },
+  { id: "approvals", label: "Approvals", icon: ApprovalIcon }
 ];
-
-const bars = [
-  8, 14, 10, 20, 26, 16, 12, 30, 22, 25, 14, 19, 11, 27, 32, 13, 18, 29, 21, 25,
-  12, 17
-];
-
-function WaveformBar({ height, index }: { height: number; index: number }) {
-  const shouldReduceMotion = useReducedMotion();
-  const amplitude = useMotionValue(0.42);
-  const scaleY = useSpring(amplitude, {
-    damping: 18,
-    stiffness: 320
-  });
-
-  useEffect(() => {
-    if (shouldReduceMotion) {
-      amplitude.set(1);
-      return;
-    }
-
-    const controls = animate(amplitude, [0.34, 1, 0.52, 0.84], {
-      delay: index * 0.028,
-      duration: 0.72 + (index % 4) * 0.08,
-      ease: "easeInOut",
-      repeat: Infinity,
-      repeatType: "mirror"
-    });
-
-    return () => controls.stop();
-  }, [amplitude, index, shouldReduceMotion]);
-
-  return <m.i aria-hidden="true" style={{ height, scaleY }} />;
-}
-
-function Waveform({ blue = false }: { blue?: boolean }) {
-  return (
-    <span
-      className={`waveform ${blue ? "waveform--blue" : ""}`}
-      aria-label="Live audio"
-    >
-      {bars.map((height, index) => (
-        <WaveformBar height={height} index={index} key={index} />
-      ))}
-    </span>
-  );
-}
 
 function Status({
   children,
-  tone,
-  live
+  tone
 }: {
   children: React.ReactNode;
   tone: "blue" | "green" | "amber" | "red" | "neutral";
-  live?: boolean;
 }) {
-  return (
-    <m.span layout="position" className={`status status--${tone}`}>
-      {live && <i className="live-dot" />}
-      {children}
-    </m.span>
-  );
+  return <m.span className={`status status--${tone}`}>{children}</m.span>;
 }
 
 function Topbar({
@@ -152,229 +85,6 @@ function Topbar({
       </div>
       {action}
     </header>
-  );
-}
-
-function Metric({
-  label,
-  value,
-  detail,
-  tone
-}: {
-  label: string;
-  value: string;
-  detail: string;
-  tone?: string;
-}) {
-  return (
-    <article className="metric panel">
-      <p className="section-label">{label}</p>
-      <strong className={tone}>{value}</strong>
-      <span>{detail}</span>
-    </article>
-  );
-}
-
-function OperationsView({ navigate }: { navigate: (view: View) => void }) {
-  return (
-    <>
-      <Topbar
-        title="Operations"
-        description="Monitor every mandate, call, and commitment from one dispatch desk."
-        action={
-          <m.button
-            className="button button--primary"
-            onClick={() => navigate("new-mandate")}
-            whileFocus={{ outlineOffset: 3 }}
-            whileTap={{ scale: 0.98 }}
-          >
-            <PlusIcon /> New mandate
-          </m.button>
-        }
-      />
-
-      <section className="metric-grid" aria-label="Today's dispatch metrics">
-        <Metric label="Active mandates" value="12" detail="3 negotiating now" />
-        <Metric
-          label="Calls today"
-          value="34"
-          detail="4 live on the floor"
-          tone="metric-blue"
-        />
-        <Metric
-          label="Needs you"
-          value="1"
-          detail="Budget exception"
-          tone="metric-amber"
-        />
-        <Metric
-          label="Award rate"
-          value="68%"
-          detail="+7% from last week"
-          tone="metric-green"
-        />
-      </section>
-
-      <div className="workspace-grid">
-        <section className="panel operations-panel">
-          <div className="panel-heading">
-            <div>
-              <p className="section-label">Live operations</p>
-              <h2>Freight in motion</h2>
-            </div>
-            <button className="text-action">
-              View all <ArrowIcon />
-            </button>
-          </div>
-
-          <article className="operation-feature">
-            <div className="operation-title">
-              <Status tone="green" live>
-                Negotiating
-              </Status>
-              <span className="machine-ref">VLT-2041</span>
-            </div>
-            <h3>Textiles Pacífico</h3>
-            <div className="route-line">
-              <span>Manzanillo</span>
-              <i />
-              <RouteIcon />
-              <i />
-              <span>Guadalajara</span>
-            </div>
-            <div className="operation-facts">
-              <div>
-                <span>Container</span>
-                <strong>MSCU-TP-001</strong>
-              </div>
-              <div>
-                <span>Budget cap</span>
-                <strong>MXN 9,000</strong>
-              </div>
-              <div>
-                <span>Pickup</span>
-                <strong>Thu · 10:00 AM</strong>
-              </div>
-              <div>
-                <span>Best quote</span>
-                <strong className="positive">MXN 8,640</strong>
-              </div>
-            </div>
-            <div className="agent-line">
-              <span className="agent-avatar">V</span>
-              <div>
-                <b>Volta is speaking with Ruta Occidente</b>
-                <span>Countered at MXN 8,640 using the lane average.</span>
-              </div>
-              <Waveform />
-            </div>
-          </article>
-
-          <div className="operation-row">
-            <div>
-              <span className="machine-ref">VLT-2038</span>
-              <b>Aceros del Bajío</b>
-            </div>
-            <span>Veracruz → León</span>
-            <Status tone="blue">Calling 2 of 5</Status>
-            <strong>MXN 12,400</strong>
-            <ChevronIcon />
-          </div>
-          <div className="operation-row">
-            <div>
-              <span className="machine-ref">VLT-2036</span>
-              <b>Agroexport del Sur</b>
-            </div>
-            <span>Lázaro Cárdenas → Morelia</span>
-            <Status tone="green">Awarded</Status>
-            <strong>MXN 7,950</strong>
-            <ChevronIcon />
-          </div>
-          <div className="operation-row">
-            <div>
-              <span className="machine-ref">VLT-2032</span>
-              <b>Casa Norte</b>
-            </div>
-            <span>Altamira → Monterrey</span>
-            <Status tone="neutral">Wrap-up</Status>
-            <strong>MXN 10,180</strong>
-            <ChevronIcon />
-          </div>
-        </section>
-
-        <aside className="right-column">
-          <section className="panel attention-card">
-            <div className="attention-head">
-              <span className="attention-icon">!</span>
-              <Status tone="amber">Needs you</Status>
-            </div>
-            <p className="section-label amber-text">Human decision required</p>
-            <h2>Pickup window exception</h2>
-            <p>
-              Transportes Costa Pacífico can meet the budget, but requested
-              pickup at 12:30 PM.
-            </p>
-            <dl>
-              <div>
-                <dt>Quoted</dt>
-                <dd>MXN 8,750</dd>
-              </div>
-              <div>
-                <dt>Mandate</dt>
-                <dd>Thu · 10:00 AM</dd>
-              </div>
-            </dl>
-            <m.button
-              className="button button--primary full"
-              onClick={() => navigate("approvals")}
-              whileFocus={{ outlineOffset: 3 }}
-              whileTap={{ scale: 0.98 }}
-            >
-              Review approval <ArrowIcon />
-            </m.button>
-          </section>
-
-          <section className="panel activity-card">
-            <div className="panel-heading">
-              <div>
-                <p className="section-label">Agent activity</p>
-                <h2>Latest work</h2>
-              </div>
-              <span className="live-label">
-                <i />
-                Live
-              </span>
-            </div>
-            <ol className="timeline">
-              <li>
-                <i className="timeline-mark blue" />
-                <div>
-                  <b>Quote registered</b>
-                  <p>Ruta Occidente · MXN 8,640</p>
-                  <time>14:32</time>
-                </div>
-              </li>
-              <li>
-                <i className="timeline-mark green" />
-                <div>
-                  <b>Carrier reached</b>
-                  <p>Volta connected after 2 attempts</p>
-                  <time>14:29</time>
-                </div>
-              </li>
-              <li>
-                <i className="timeline-mark" />
-                <div>
-                  <b>Mandate checked</b>
-                  <p>Budget and pickup constraints loaded</p>
-                  <time>14:28</time>
-                </div>
-              </li>
-            </ol>
-          </section>
-        </aside>
-      </div>
-    </>
   );
 }
 
@@ -447,7 +157,10 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
           <div className="form-grid">
             <label>
               Type of content
-              <select name="type_of_content" defaultValue="textiles" required>
+              <select name="type_of_content" defaultValue="" required>
+                <option value="" disabled>
+                  Select content type
+                </option>
                 <option value="textiles">Textiles</option>
                 <option value="general-cargo">General cargo</option>
                 <option value="food-grade">Food-grade cargo</option>
@@ -462,7 +175,6 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
                   type="number"
                   min="0"
                   step="0.01"
-                  defaultValue="18400"
                   required
                 />
                 <span>KG</span>
@@ -470,13 +182,7 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
             </label>
             <label className="span-2">
               Measures
-              <input
-                className="mono"
-                name="measures"
-                defaultValue="120 × 100 × 110 cm"
-                placeholder="Length × width × height"
-                required
-              />
+              <input className="mono" name="measures" required />
             </label>
           </div>
         </section>
@@ -491,11 +197,7 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
           <div className="form-grid">
             <label className="span-2">
               Pickup address
-              <input
-                name="pickup_address"
-                defaultValue="Terminal de Contenedores, Manzanillo, Colima"
-                required
-              />
+              <input name="pickup_address" required />
             </label>
             <label>
               Pickup date &amp; time
@@ -503,7 +205,6 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
                 className="mono"
                 name="pickup_datetime"
                 type="datetime-local"
-                defaultValue="2026-09-03T10:00"
                 required
               />
             </label>
@@ -513,17 +214,12 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
                 className="mono"
                 name="destination_datetime"
                 type="datetime-local"
-                defaultValue="2026-09-03T18:00"
                 required
               />
             </label>
             <label className="span-2">
               Destination place
-              <input
-                name="destination_place"
-                defaultValue="Textiles Pacífico, Guadalajara, Jalisco"
-                required
-              />
+              <input name="destination_place" required />
             </label>
             <label className="span-2">
               Budget cap
@@ -534,7 +230,6 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
                   type="number"
                   min="0"
                   step="1"
-                  defaultValue="9000"
                   required
                 />
               </div>
@@ -545,41 +240,18 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
             <div>
               <b>This mandate is binding</b>
               <p>
-                The agent cannot exceed MXN 9,000 or change either datetime
-                without human approval.
+                The agent cannot exceed the authorized budget or change either
+                datetime without human approval.
               </p>
             </div>
           </div>
         </section>
         <aside className="panel mandate-summary">
           <p className="section-label">Mandate preview</p>
-          <h2>Manzanillo → Guadalajara</h2>
-          <div className="summary-route">
-            <RouteIcon />
-            <div>
-              <span>Pickup</span>
-              <b>Terminal de Contenedores</b>
-              <small>Thu, Sep 03 · 10:00 AM</small>
-            </div>
-          </div>
-          <div className="summary-route">
-            <ClockIcon />
-            <div>
-              <span>Destination deadline</span>
-              <b>Thu, Sep 03 · 6:00 PM</b>
-            </div>
-          </div>
-          <div className="summary-route">
-            <span className="currency-icon">$</span>
-            <div>
-              <span>Hard ceiling</span>
-              <b>MXN 9,000</b>
-            </div>
-          </div>
-          <hr />
+          <h2>Review before launch</h2>
           <p className="summary-copy">
-            Textiles · 18,400 kg · 120 × 100 × 110 cm. Volta may negotiate any
-            rate at or below the ceiling; either datetime remains binding.
+            Complete the mandate details. Volta may negotiate only within the
+            budget and schedule you authorize.
           </p>
           {saveState.status === "saved" ? (
             <div className="saved-message">
@@ -627,113 +299,6 @@ function toOffsetDatetime(value: FormDataEntryValue | null): string {
   }
 
   return `${value}:00${MANDATE_TIMEZONE_OFFSET}`;
-}
-
-const liveCalls = [
-  {
-    carrier: "Ruta Occidente",
-    operation: "VLT-2041",
-    detail: "Countering at MXN 8,640",
-    time: "02:08",
-    tone: "green" as const
-  },
-  {
-    carrier: "Transportes del Centro",
-    operation: "VLT-2038",
-    detail: "Confirming equipment availability",
-    time: "01:14",
-    tone: "blue" as const
-  },
-  {
-    carrier: "Carga Express MX",
-    operation: "VLT-2029",
-    detail: "Waiting for dispatcher",
-    time: "00:46",
-    tone: "amber" as const
-  },
-  {
-    carrier: "Logística Manzanillo",
-    operation: "VLT-2041",
-    detail: "Ringing · attempt 2",
-    time: "00:18",
-    tone: "blue" as const
-  }
-];
-
-function CallFloorView() {
-  return (
-    <>
-      <Topbar
-        title="Call floor"
-        eyebrow="Live voice operations"
-        description="Hear where the work is happening and follow every agent decision in real time."
-        action={
-          <div className="floor-live">
-            <i />4 calls live
-          </div>
-        }
-      />
-      <section className="call-grid">
-        {liveCalls.map((call, index) => (
-          <article
-            className={`panel call-card ${index === 0 ? "call-card--featured" : ""}`}
-            key={call.carrier}
-          >
-            <div className="call-card-head">
-              <Status tone={call.tone} live>
-                {index === 3 ? "Ringing" : "Talking"}
-              </Status>
-              <time>{call.time}</time>
-            </div>
-            <span className="machine-ref">{call.operation}</span>
-            <h2>{call.carrier}</h2>
-            <p>{call.detail}</p>
-            <Waveform blue={call.tone === "blue"} />
-            <div className="call-actions">
-              <button className="button button--secondary">
-                Open transcript
-              </button>
-              <button
-                className="icon-button"
-                aria-label={`Open ${call.carrier}`}
-              >
-                <ArrowIcon />
-              </button>
-            </div>
-          </article>
-        ))}
-      </section>
-      <section className="panel transcript-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="section-label">Selected call</p>
-            <h2>Live transcript · Ruta Occidente</h2>
-          </div>
-          <span className="machine-ref">VLT-2041 / 02:08</span>
-        </div>
-        <div className="transcript-line agent">
-          <b>
-            VOLTA <time>02:01</time>
-          </b>
-          <p>
-            We can confirm today at MXN 8,640. Does that work with a Thursday
-            10:00 AM pickup?
-          </p>
-        </div>
-        <div className="transcript-line carrier">
-          <b>
-            CARRIER <time>02:08</time>
-          </b>
-          <p>Let me verify the truck. Hold for a moment.</p>
-        </div>
-        <div className="transcript-thinking">
-          <i />
-          <span>Volta is listening</span>
-          <Waveform />
-        </div>
-      </section>
-    </>
-  );
 }
 
 type ApprovalLoadState = "loading" | "ready" | "error";
@@ -826,8 +391,7 @@ function ApprovalsView() {
           action,
           selectedQuoteId: isSelectionApproval
             ? (selectedQuoteId ?? undefined)
-            : undefined,
-          decidedBy: "Bryan Riano"
+            : undefined
         })
       });
       if (!response.ok) throw new Error("decision_rejected");
@@ -850,7 +414,7 @@ function ApprovalsView() {
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ undoneBy: "Bryan Riano" })
+          body: JSON.stringify({})
         }
       );
       if (!response.ok) throw new Error("undo_rejected");
@@ -861,22 +425,6 @@ function ApprovalsView() {
       setDecisionError(
         "Volta could not undo this decision. A confirmed booking cannot be reversed here."
       );
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
-  async function runMockClosingCall() {
-    setDecisionError(null);
-    setIsSubmitting(true);
-    try {
-      const response = await fetch("/api/demo/close-approved-deal", {
-        method: "POST"
-      });
-      if (!response.ok) throw new Error("mock_close_failed");
-      setOperation((await response.json()) as Operation);
-    } catch {
-      setDecisionError("Volta could not start the demo closing call.");
     } finally {
       setIsSubmitting(false);
     }
@@ -959,15 +507,6 @@ function ApprovalsView() {
               whileTap={{ scale: 0.98 }}
             >
               Undo decision
-            </m.button>
-            <m.button
-              className="button button--primary"
-              disabled={isSubmitting}
-              onClick={() => void runMockClosingCall()}
-              whileFocus={{ outlineOffset: 3 }}
-              whileTap={{ scale: 0.98 }}
-            >
-              {isSubmitting ? "Starting call…" : "Run demo closing call"}
             </m.button>
           </div>
         </section>
@@ -1141,6 +680,285 @@ function ApprovalsView() {
           </aside>
         </section>
       )}
+    </>
+  );
+}
+
+function useLiveOperation() {
+  const [operation, setOperation] = useState<OperationReadModel | null>(null);
+  useEffect(() => {
+    const refresh = async () => {
+      const response = await fetch("/api/operation");
+      if (response.ok) {
+        setOperation((await response.json()) as OperationReadModel);
+      }
+    };
+    void refresh();
+    if (typeof EventSource === "undefined") return;
+    const events = new EventSource("/api/events");
+    const sync = () => void refresh();
+    [
+      "mandate.created",
+      "call.started",
+      "call.updated",
+      "quote.registered",
+      "approval.requested",
+      "approval.resolved",
+      "commitment.finalized"
+    ].forEach((name) => events.addEventListener(name, sync));
+    return () => events.close();
+  }, []);
+  return operation;
+}
+
+function callDuration(session: CallSession): string {
+  const start = Date.parse(session.startedAt);
+  const end = Date.parse(session.endedAt ?? new Date().toISOString());
+  const seconds = Math.max(0, Math.floor((end - start) / 1000));
+  return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function callTone(
+  status: CallSession["status"]
+): "blue" | "green" | "amber" | "red" | "neutral" {
+  if (status === "completed") return "green";
+  if (status === "failed") return "red";
+  if (status === "pending") return "amber";
+  return "blue";
+}
+
+function CallFloorView() {
+  const operation = useLiveOperation();
+  return (
+    <>
+      <Topbar
+        title="Call floor"
+        eyebrow="Live negotiation"
+        description="Every carrier leg is visible from dial through quote and outcome."
+        action={
+          <span className="floor-live">
+            <i /> LIVE
+          </span>
+        }
+      />
+      <section className="call-grid">
+        {(operation?.callSessions ?? []).map((session) => {
+          const quote = operation?.quotes.find(
+            (item) => item.id === session.quoteId || item.callId === session.id
+          );
+          return (
+            <article className="panel call-card" key={session.id}>
+              <div className="call-card-head">
+                <Status tone={callTone(session.status)}>
+                  {session.status.replace("_", " ")}
+                </Status>
+                <time>
+                  <ClockIcon /> {callDuration(session)}
+                </time>
+              </div>
+              <p className="machine-ref">{session.callSid ?? session.id}</p>
+              <h2>
+                {session.driverName ??
+                  operation?.candidates.find(
+                    (item) => item.id === session.carrierId
+                  )?.name ??
+                  "Carrier"}
+              </h2>
+              <p>
+                <RouteIcon /> {operation?.origin} → {operation?.destination}
+              </p>
+              <div className="waveform waveform--blue">
+                {Array.from({ length: 16 }, (_, index) => (
+                  <i key={index} />
+                ))}
+              </div>
+              <div className="call-actions">
+                {quote ? (
+                  <strong>
+                    {formatMxn(quote.priceMxn)} · {quote.etaMinutes} min
+                  </strong>
+                ) : (
+                  <span>
+                    {session.endedReason
+                      ? `✕ ${session.endedReason}`
+                      : "Awaiting quote"}
+                  </span>
+                )}
+              </div>
+            </article>
+          );
+        })}
+      </section>
+      {!operation?.callSessions.length && (
+        <section className="panel decision-complete">
+          <PhoneIcon />
+          <p className="section-label">No active calls</p>
+          <h2>Launch a mandate to open the carrier floor.</h2>
+        </section>
+      )}
+    </>
+  );
+}
+
+function PipelineView() {
+  const operation = useLiveOperation();
+  const [expanded, setExpanded] = useState(false);
+  const completed =
+    operation?.callSessions.filter((item) => item.status === "completed")
+      .length ?? 0;
+  const best = operation?.quotes
+    .slice()
+    .sort((left, right) => left.priceMxn - right.priceMxn)[0];
+  return (
+    <>
+      <Topbar
+        title="Pipeline"
+        eyebrow="Operation progress"
+        description="Persisted stages and live call outcomes for the active operation."
+      />
+      {operation && (
+        <section className="panel activity-card">
+          <button
+            className="operation-row"
+            onClick={() => setExpanded((value) => !value)}
+            aria-expanded={expanded}
+          >
+            <div>
+              <span className="machine-ref">{operation.id}</span>
+              <b>
+                {operation.origin} → {operation.destination}
+              </b>
+            </div>
+            <div>
+              <span>Stage</span>
+              <Status tone="blue">
+                {operation.pipelineStage.replace("_", " ")}
+              </Status>
+            </div>
+            <span>
+              {completed}/{operation.callSessions.length} calls
+            </span>
+            <strong>{best ? formatMxn(best.priceMxn) : "—"}</strong>
+            <ChevronIcon />
+          </button>
+          {expanded && (
+            <ul className="timeline">
+              {operation.callSessions.map((session) => (
+                <li key={session.id}>
+                  <i
+                    className={`timeline-mark ${session.status === "completed" ? "green" : "blue"}`}
+                  />
+                  <div>
+                    <b>
+                      {session.driverName ?? session.carrierId ?? "Carrier"}
+                    </b>
+                    <time>{callDuration(session)}</time>
+                    <p>
+                      {session.status}
+                      {session.endedReason ? ` · ${session.endedReason}` : ""}
+                    </p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+    </>
+  );
+}
+
+function CarriersView() {
+  const [carriers, setCarriers] = useState<
+    Array<{
+      id: string;
+      name: string;
+      phone: string;
+      lanes: string[];
+      active: boolean;
+    }>
+  >([]);
+  const refresh = async () => {
+    const response = await fetch("/api/carriers");
+    if (response.ok) setCarriers(await response.json());
+  };
+  useEffect(() => {
+    void refresh();
+  }, []);
+  return (
+    <>
+      <Topbar
+        title="Carriers"
+        eyebrow="Network directory"
+        description="Maintain the active carrier pool used for the next mandate fan-out."
+      />
+      <form
+        className="panel form-panel"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          const data = new FormData(event.currentTarget);
+          const response = await fetch("/api/carriers", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              name: data.get("name"),
+              phone: data.get("phone"),
+              lanes: String(data.get("lanes") ?? "")
+                .split(",")
+                .map((item) => item.trim())
+                .filter(Boolean)
+            })
+          });
+          if (response.ok) {
+            event.currentTarget.reset();
+            await refresh();
+          }
+        }}
+      >
+        <div className="step-heading">
+          <span>+</span>
+          <div>
+            <h2>Add carrier</h2>
+            <p>Only active carriers receive new call rounds.</p>
+          </div>
+        </div>
+        <div className="form-grid">
+          <label>
+            Name
+            <input name="name" required />
+          </label>
+          <label>
+            Phone
+            <input name="phone" type="tel" required />
+          </label>
+          <label className="span-2">
+            Lanes
+            <input name="lanes" placeholder="Manzanillo → Guadalajara" />
+          </label>
+        </div>
+        <button className="button button--primary" type="submit">
+          Add carrier <PlusIcon />
+        </button>
+      </form>
+      <section className="panel activity-card">
+        {carriers.map((carrier) => (
+          <div className="operation-row" key={carrier.id}>
+            <div>
+              <span className="machine-ref">{carrier.phone}</span>
+              <b>{carrier.name}</b>
+            </div>
+            <div>
+              <span>Lanes</span>
+              <b>{carrier.lanes.join(", ") || "All lanes"}</b>
+            </div>
+            <span />
+            <Status tone={carrier.active ? "green" : "neutral"}>
+              {carrier.active ? "active" : "inactive"}
+            </Status>
+            <RouteIcon />
+          </div>
+        ))}
+      </section>
     </>
   );
 }
@@ -1380,21 +1198,6 @@ function DispatchCopilot() {
                 Backend agent grounded in operational records. Every factual
                 answer links to its evidence; actions wait for your approval.
               </p>
-              <div className="copilot-prompts" aria-label="Suggested questions">
-                {[
-                  "Where is the shipment?",
-                  "Compare every negotiation",
-                  "What did the carriers say?"
-                ].map((prompt) => (
-                  <button
-                    key={prompt}
-                    onClick={() => setQuestion(prompt)}
-                    type="button"
-                  >
-                    {prompt}
-                  </button>
-                ))}
-              </div>
               <section className="copilot-thread" aria-live="polite">
                 <AnimatePresence initial={false}>
                   {messages.map((message) => (
@@ -1470,7 +1273,6 @@ function DispatchCopilot() {
                 <textarea
                   id="copilot-question"
                   onChange={(event) => setQuestion(event.target.value)}
-                  placeholder="Where is MSCU-TP-001 and what was negotiated?"
                   ref={inputRef}
                   rows={3}
                   value={question}
@@ -1498,7 +1300,7 @@ function DispatchCopilot() {
 }
 
 export function DashboardConsole() {
-  const [view, setView] = useState<View>("operations");
+  const [view, setView] = useState<View>("new-mandate");
   return (
     <LazyMotion features={domMax} strict>
       <MotionConfig
@@ -1528,17 +1330,14 @@ export function DashboardConsole() {
                   >
                     <Icon />
                     <span>{item.label}</span>
-                    {item.count && (
-                      <b className={`nav-count ${item.tone}`}>{item.count}</b>
-                    )}
                   </m.button>
                 );
               })}
             </nav>
             <div className="rail-footer">
-              <span className="operator-avatar">BR</span>
+              <span className="operator-avatar">O</span>
               <div>
-                <b>Bryan Riano</b>
+                <b>Operator</b>
                 <small>Dispatcher</small>
               </div>
               <button aria-label="Open operator menu">•••</button>
@@ -1553,11 +1352,12 @@ export function DashboardConsole() {
                 initial={{ opacity: 0, y: 8 }}
                 key={view}
               >
-                {view === "operations" && <OperationsView navigate={setView} />}
                 {view === "new-mandate" && (
-                  <NewMandateView onCreated={() => setView("operations")} />
+                  <NewMandateView onCreated={() => setView("call-floor")} />
                 )}
                 {view === "call-floor" && <CallFloorView />}
+                {view === "pipeline" && <PipelineView />}
+                {view === "carriers" && <CarriersView />}
                 {view === "approvals" && <ApprovalsView />}
               </m.div>
             </AnimatePresence>

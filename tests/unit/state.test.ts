@@ -148,4 +148,32 @@ describe("createOperationStore", () => {
       "Transportes Costa Pacífico"
     );
   });
+
+  it("opens and patches call sessions while publishing their lifecycle", () => {
+    const store = createOperationStore(seedOperation());
+    const events: OperationEvent[] = [];
+    store.subscribe((event) => events.push(event));
+    store.openCallSession({
+      id: "call-1",
+      operationId: "operation-textiles-pacifico-001",
+      carrierId: "carrier-costa-pacifico",
+      direction: "outbound",
+      status: "pending",
+      startedAt: "2026-09-01T15:00:00.000Z"
+    });
+    store.updateCallSession("call-1", {
+      status: "failed",
+      endedReason: "no-answer",
+      endedAt: "2026-09-01T15:01:00.000Z"
+    });
+    expect(store.getOperation().callSessions[0]).toMatchObject({
+      id: "call-1",
+      status: "failed",
+      endedReason: "no-answer"
+    });
+    expect(events.map((event) => event.type)).toEqual([
+      "call.started",
+      "call.updated"
+    ]);
+  });
 });
