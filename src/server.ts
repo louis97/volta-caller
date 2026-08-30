@@ -249,7 +249,6 @@ export function createApp(options: CreateAppOptions = {}) {
         response.status(400).json({ error: "invalid_kapso_payload" });
         return;
       }
-      if (idempotencyKey) processedKapsoEvents.add(idempotencyKey);
       try {
         for (const item of receivedKapsoMessages(payload)) {
           const inbound = inboundTextMessage(item);
@@ -269,6 +268,7 @@ export function createApp(options: CreateAppOptions = {}) {
             : "Por ahora puedo responder mensajes de texto. Envíame tu consulta por escrito.";
           await kapsoMessenger.sendText({ to: inbound.from, text: reply });
         }
+        if (idempotencyKey) processedKapsoEvents.add(idempotencyKey);
         response.status(200).json({ received: true });
       } catch (error) {
         console.error("Kapso WhatsApp webhook failed", error);
