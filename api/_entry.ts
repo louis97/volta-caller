@@ -9,7 +9,10 @@ const server = createServer(app);
 attachTelephonyWebSockets(server, {
   store: app.locals.operationStore,
   dialled: app.locals.telephonyDialled,
-  onCallSessionChanged: (session) => void app.locals.saveCallSession(session)
+  onCallSessionChanged: (session, organizationId) =>
+    void app.locals.saveCallSession(session, organizationId),
+  resolveCallContext: (reference) =>
+    app.locals.resolveTelephonyCallContext(reference)
 });
 
 export default server;

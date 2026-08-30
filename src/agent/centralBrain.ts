@@ -291,10 +291,7 @@ export function createCentralBrainTools({
           !conversation.messages.some(
             (message) =>
               message.role === "user" &&
-              confirmsNumericMxnBudget(
-                message.content,
-                parsed.data.budget_cap
-              )
+              confirmsNumericMxnBudget(message.content, parsed.data.budget_cap)
           )
         ) {
           return {
@@ -302,6 +299,20 @@ export function createCentralBrainTools({
               error: "budget_not_confirmed",
               message:
                 "Ask the user for an explicit numeric budget in MXN before proposing the mandate."
+            },
+            citations: []
+          };
+        }
+        const missingAddress = conversation.messages
+          .filter((message) => message.role === "user")
+          .flatMap((message) => addressesIn(message.content))
+          .find((address) => !payloadPreservesAddress(parsed.data, address));
+        if (missingAddress) {
+          return {
+            output: {
+              error: "address_not_preserved",
+              message:
+                "The user gave a street address that is missing from pickup_address and destination_place. Ask which endpoint it belongs to and preserve it."
             },
             citations: []
           };
@@ -455,7 +466,7 @@ function confirmsNumericMxnBudget(content: string, expected: number) {
     new RegExp(`${currency}\\s*\\$?\\s*(\\d[\\d.,\\s]*)`, "g"),
     new RegExp(`\\$?\\s*(\\d[\\d.,\\s]*)\\s*${currency}`, "g")
   ];
-  return patterns.some((pattern) =>
+  const digitsMatch = patterns.some((pattern) =>
     [...normalized.matchAll(pattern)].some((match) => {
       const amount = match[1]?.replace(/\s/g, "");
       if (!amount) return false;
@@ -468,6 +479,184 @@ function confirmsNumericMxnBudget(content: string, expected: number) {
       ];
       return interpretations.some((value) => Number(value) === expected);
     })
+  );
+  if (digitsMatch) return true;
+
+  return spokenMxnAmounts(normalized).includes(expected);
+}
+
+const spanishNumberValues: Record<string, number> = {
+  cero: 0,
+  un: 1,
+  uno: 1,
+  una: 1,
+  dos: 2,
+  tres: 3,
+  cuatro: 4,
+  cinco: 5,
+  seis: 6,
+  siete: 7,
+  ocho: 8,
+  nueve: 9,
+  diez: 10,
+  once: 11,
+  doce: 12,
+  trece: 13,
+  catorce: 14,
+  quince: 15,
+  dieciseis: 16,
+  diecisiete: 17,
+  dieciocho: 18,
+  diecinueve: 19,
+  veinte: 20,
+  veintiuno: 21,
+  veintidos: 22,
+  veintitres: 23,
+  veinticuatro: 24,
+  veinticinco: 25,
+  veintiseis: 26,
+  veintisiete: 27,
+  veintiocho: 28,
+  veintinueve: 29,
+  treinta: 30,
+  cuarenta: 40,
+  cincuenta: 50,
+  sesenta: 60,
+  setenta: 70,
+  ochenta: 80,
+  noventa: 90,
+  cien: 100,
+  ciento: 100,
+  doscientos: 200,
+  trescientos: 300,
+  cuatrocientos: 400,
+  quinientos: 500,
+  seiscientos: 600,
+  setecientos: 700,
+  ochocientos: 800,
+  novecientos: 900
+};
+
+function spokenMxnAmounts(content: string): number[] {
+  const tokens = content.match(/[a-z]+/g) ?? [];
+  const amounts: number[] = [];
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    const isMxn = token === "mxn";
+    const isPesosMexicanos =
+      (token === "peso" || token === "pesos") &&
+      /^(?:mexicano|mexicanos|mexicana|mexicanas)$/.test(
+        tokens[index + 1] ?? ""
+      );
+    if (!isMxn && !isPesosMexicanos) continue;
+
+    const currencyEnd = isPesosMexicanos ? index + 1 : index;
+    const before = contiguousNumberTokens(tokens, index - 1, -1).reverse();
+    const after = contiguousNumberTokens(tokens, currencyEnd + 1, 1);
+    for (const candidate of [before, after]) {
+      const amount = parseSpanishCardinal(candidate);
+      if (amount !== undefined) amounts.push(amount);
+    }
+  }
+
+  return amounts;
+}
+
+function contiguousNumberTokens(
+  tokens: string[],
+  start: number,
+  direction: -1 | 1
+): string[] {
+  const found: string[] = [];
+  for (
+    let index = start;
+    index >= 0 && index < tokens.length && found.length < 12;
+    index += direction
+  ) {
+    const token = tokens[index];
+    if (!isSpanishNumberToken(token)) break;
+    found.push(token);
+  }
+  return found;
+}
+
+function isSpanishNumberToken(token: string): boolean {
+  return (
+    token === "y" ||
+    token === "mil" ||
+    token === "millon" ||
+    token === "millones" ||
+    token in spanishNumberValues
+  );
+}
+
+function parseSpanishCardinal(tokens: string[]): number | undefined {
+  if (tokens.length === 0 || tokens[0] === "y" || tokens.at(-1) === "y")
+    return undefined;
+
+  let millions = 0;
+  let thousands = 0;
+  let current = 0;
+  let consumed = false;
+
+  for (const token of tokens) {
+    if (token === "y") continue;
+    if (token === "millon" || token === "millones") {
+      millions += (current || 1) * 1_000_000;
+      current = 0;
+      consumed = true;
+      continue;
+    }
+    if (token === "mil") {
+      thousands += (current || 1) * 1_000;
+      current = 0;
+      consumed = true;
+      continue;
+    }
+    const value = spanishNumberValues[token];
+    if (value === undefined) return undefined;
+    current += value;
+    consumed = true;
+  }
+
+  return consumed ? millions + thousands + current : undefined;
+}
+
+function addressesIn(content: string): string[] {
+  const normalized = content
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  return [
+    ...normalized.matchAll(
+      /\b(?:carrera|calle|avenida|diagonal|transversal)\s+[^,.;\n]{2,80}/g
+    )
+  ].map((match) =>
+    (match[0] ?? "").replace(
+      /\s+(?:a\s+las|para\s+el|el\s+dia|con\s+entrega)\b.*$/,
+      ""
+    )
+  );
+}
+
+function payloadPreservesAddress(
+  payload: CreateMandateRequest,
+  address: string
+): boolean {
+  const endpointTokens = new Set(
+    `${payload.pickup_address} ${payload.destination_place}`
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .match(/[a-z0-9]+/g) ?? []
+  );
+  const significant = (address.match(/[a-z0-9]+/g) ?? []).filter(
+    (token) => !["de", "del", "la", "el", "numero", "nro"].includes(token)
+  );
+  return (
+    significant.length > 0 &&
+    significant.every((token) => endpointTokens.has(token))
   );
 }
 

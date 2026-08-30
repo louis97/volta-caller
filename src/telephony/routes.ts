@@ -10,7 +10,11 @@ import { env } from "../config/env";
 import type { OperationStore } from "../core/state";
 import { auctionFromOperation, type Auction } from "./auction";
 import { closeBridge, getBridge, openBridge } from "./hub";
-import { fanOutCalls } from "./orchestrator";
+import {
+  fanOutCalls,
+  type OutboundCallContext,
+  withCallContext
+} from "./orchestrator";
 import { attachMediaStreamRelay } from "./mediaStream";
 import {
   callClockMs,
@@ -51,7 +55,8 @@ export type TelephonyDependencies = {
   organizationId?: string;
   dialled?: Map<string, { id: string; name: string }>;
   onCallSessionChanged?: (
-    session: import("@volta/contracts").CallSession
+    session: import("@volta/contracts").CallSession,
+    organizationId?: string
   ) => void;
   /**
    * Durable home for an utterance. The store keeps transcript in memory for
@@ -73,6 +78,23 @@ export type TelephonyDependencies = {
   listTranscript?: (
     callId?: string
   ) => Promise<Array<import("@volta/contracts").TranscriptSegment>>;
+  /**
+   * Rehydrates the exact operation named in an outbound callback. Render can
+   * restart or route the WebSocket to another process, where the local store
+   * and `dialled` map belong to a different round.
+   */
+  resolveCallContext?: (
+    reference: OutboundCallContext
+  ) => Promise<ResolvedTelephonyCallContext | undefined>;
+  callContext?: OutboundCallContext & {
+    carrier?: { id: string; name: string };
+  };
+};
+
+export type ResolvedTelephonyCallContext = {
+  store: OperationStore;
+  organizationId?: string;
+  carrier?: { id: string; name: string };
 };
 
 /**
@@ -173,9 +195,51 @@ function bindCallSession(
   return input.callSid;
 }
 
-function mediaStreamUrl(): string {
+function mediaStreamUrl(reference?: OutboundCallContext): string {
   if (!env.PUBLIC_WS_URL) throw new Error("public_ws_url_missing");
-  return `${env.PUBLIC_WS_URL.replace(/\/$/, "")}${MEDIA_STREAM_PATH}`;
+  const url = `${env.PUBLIC_WS_URL.replace(/\/$/, "")}${MEDIA_STREAM_PATH}`;
+  return reference ? withCallContext(url, reference) : url;
+}
+
+export function callContextFromUrl(url: URL): OutboundCallContext | undefined {
+  const operationId = url.searchParams.get("operationId")?.trim();
+  if (!operationId) return undefined;
+  const carrierId = url.searchParams.get("carrierId")?.trim() || undefined;
+  const organizationId =
+    url.searchParams.get("organizationId")?.trim() || undefined;
+  return { operationId, carrierId, organizationId };
+}
+
+export async function resolveCallDependencies(
+  dependencies: TelephonyDependencies,
+  reference?: OutboundCallContext
+): Promise<TelephonyDependencies> {
+  if (!reference) return dependencies;
+
+  const current = dependencies.store.getOperation();
+  if (current.id === reference.operationId) {
+    const carrier = reference.carrierId
+      ? current.candidates.find((item) => item.id === reference.carrierId)
+      : undefined;
+    return {
+      ...dependencies,
+      organizationId: reference.organizationId ?? dependencies.organizationId,
+      callContext: { ...reference, carrier }
+    };
+  }
+
+  const resolved = await dependencies.resolveCallContext?.(reference);
+  if (!resolved) throw new Error("telephony_call_context_not_found");
+  return {
+    ...dependencies,
+    store: resolved.store,
+    dialled: undefined,
+    organizationId:
+      resolved.organizationId ??
+      reference.organizationId ??
+      dependencies.organizationId,
+    callContext: { ...reference, carrier: resolved.carrier }
+  };
 }
 
 export function mountTelephonyRoutes(
@@ -187,7 +251,10 @@ export function mountTelephonyRoutes(
   const dialled = dependencies.dialled ?? context.dialled;
   store.subscribe((event) => {
     if (event.type === "call.started" || event.type === "call.updated")
-      dependencies.onCallSessionChanged?.(event.callSession);
+      dependencies.onCallSessionChanged?.(
+        event.callSession,
+        dependencies.organizationId
+      );
   });
   const twiml = express.urlencoded({ extended: false });
 
@@ -214,7 +281,12 @@ export function mountTelephonyRoutes(
         return;
       }
 
-      response.type("text/xml").send(createInboundTwiML(mediaStreamUrl()));
+      const reference = callContextFromUrl(
+        new URL(request.originalUrl, "http://localhost")
+      );
+      response
+        .type("text/xml")
+        .send(createInboundTwiML(mediaStreamUrl(reference)));
     }
   );
 
@@ -299,6 +371,7 @@ export function mountTelephonyRoutes(
 
     await fanOutCalls({
       store,
+      organizationId: dependencies.organizationId,
       ...(carriers.length > 0 ? { carriers } : {}),
       mode: env.VOLTA_MODE,
       publicBaseUrl: env.PUBLIC_BASE_URL,
@@ -432,7 +505,7 @@ export function mountTelephonyRoutes(
     });
   });
 
-  app.post("/twiml/status", twiml, (request, response) => {
+  app.post("/twiml/status", twiml, async (request, response) => {
     const callSid =
       typeof request.body.CallSid === "string"
         ? request.body.CallSid
@@ -441,14 +514,23 @@ export function mountTelephonyRoutes(
       typeof request.body.CallStatus === "string"
         ? request.body.CallStatus
         : undefined;
-    const session = store
-      .getOperation()
-      .callSessions.find((item) => item.callSid === callSid);
-    if (session && callStatus)
-      store.updateCallSession(
-        session.id,
-        mapTwilioStatus(callStatus as Parameters<typeof mapTwilioStatus>[0])
+    try {
+      const reference = callContextFromUrl(
+        new URL(request.originalUrl, "http://localhost")
       );
+      const resolved = await resolveCallDependencies(dependencies, reference);
+      const statusStore = resolved.store;
+      const session = statusStore
+        .getOperation()
+        .callSessions.find((item) => item.callSid === callSid);
+      if (session && callStatus)
+        statusStore.updateCallSession(
+          session.id,
+          mapTwilioStatus(callStatus as Parameters<typeof mapTwilioStatus>[0])
+        );
+    } catch (error) {
+      console.error("[twilio] status context could not be resolved:", error);
+    }
     response.sendStatus(204);
   });
 
@@ -519,15 +601,28 @@ export function attachTelephonyWebSockets(
   dependencies: TelephonyDependencies
 ): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
+  const dependenciesBySocket = new WeakMap<WebSocket, TelephonyDependencies>();
 
   server.on("upgrade", (request, socket, head) => {
-    const { pathname } = new URL(request.url ?? "/", "http://localhost");
+    const url = new URL(request.url ?? "/", "http://localhost");
+    const { pathname } = url;
     if (pathname !== MEDIA_STREAM_PATH && pathname !== SUPERVISOR_STREAM_PATH) {
       socket.destroy();
       return;
     }
-    wss.handleUpgrade(request, socket, head, (client) => {
-      wss.emit("connection", client, request);
+
+    void (async () => {
+      const resolved =
+        pathname === MEDIA_STREAM_PATH
+          ? await resolveCallDependencies(dependencies, callContextFromUrl(url))
+          : dependencies;
+      wss.handleUpgrade(request, socket, head, (client) => {
+        dependenciesBySocket.set(client, resolved);
+        wss.emit("connection", client, request);
+      });
+    })().catch((error: unknown) => {
+      console.error("[twilio] media context could not be resolved:", error);
+      socket.destroy();
     });
   });
 
@@ -540,9 +635,10 @@ export function attachTelephonyWebSockets(
     }
 
     console.log("[twilio] media stream connected");
+    const callDependencies = dependenciesBySocket.get(client) ?? dependencies;
     openMediaStreamSession(
       toRelaySocket(client, { label: "twilio" }),
-      dependencies
+      callDependencies
     );
   });
 
@@ -789,7 +885,9 @@ function openMediaStreamSession(
     twilio: twilioSocket,
     realtime,
     onStart: ({ streamSid, callSid }) => {
-      const carrier = callSid ? dialled.get(callSid) : undefined;
+      const carrier =
+        dependencies.callContext?.carrier ??
+        (callSid ? dialled.get(callSid) : undefined);
 
       // The switchboard for this call. Holding the carrier's socket here is
       // what lets a supervisor be routed in later without touching the leg.
