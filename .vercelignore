@@ -1,0 +1,9 @@
+node_modules
+.npm-cache
+.worktrees
+.next
+coverage
+dist
+.env*
+*.log
+*.tsbuildinfo
