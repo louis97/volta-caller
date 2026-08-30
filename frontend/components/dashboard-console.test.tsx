@@ -25,16 +25,11 @@ function openNavigationItem(name: string) {
 }
 
 describe("DashboardConsole", () => {
-  it("navigates between the four dispatch views", async () => {
+  it("navigates between mandate creation and approvals", async () => {
     render(<DashboardConsole />);
 
     expect(
-      screen.getByRole("heading", { name: "Operations", level: 1 })
-    ).toBeInTheDocument();
-
-    openNavigationItem("Call floor");
-    expect(
-      await screen.findByRole("heading", { name: "Call floor", level: 1 })
+      screen.getByRole("heading", { name: "New mandate", level: 1 })
     ).toBeInTheDocument();
 
     openNavigationItem("Approvals");
@@ -52,7 +47,7 @@ describe("DashboardConsole", () => {
     });
     expect(
       within(copilot).getByText(
-        "I can explain every shipment, negotiation, call, transcript, exception, and the next safe action."
+        "Backend agent grounded in operational records. Every factual answer links to its evidence; actions wait for your approval."
       )
     ).toBeInTheDocument();
   });
@@ -142,7 +137,6 @@ describe("DashboardConsole", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    openNavigationItem("New mandate");
     await screen.findByRole("button", { name: "Launch mandate" });
 
     const expectedManifestFields = [
@@ -165,6 +159,30 @@ describe("DashboardConsole", () => {
       container.querySelectorAll("input[name], select[name]")
     ).toHaveLength(expectedManifestFields.length);
 
+    fireEvent.change(screen.getByRole("combobox", { name: "Type of content" }), {
+      target: { value: "textiles" }
+    });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Weight KG" }), {
+      target: { value: "18400" }
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "Measures" }), {
+      target: { value: "120 × 100 × 110 cm" }
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "Pickup address" }), {
+      target: { value: "Terminal de Contenedores, Manzanillo, Colima" }
+    });
+    fireEvent.change(screen.getByLabelText("Pickup date & time"), {
+      target: { value: "2026-09-03T10:00" }
+    });
+    fireEvent.change(screen.getByLabelText("Destination date & time"), {
+      target: { value: "2026-09-03T18:00" }
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "Destination place" }), {
+      target: { value: "Textiles Pacífico, Guadalajara, Jalisco" }
+    });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Budget cap MXN" }), {
+      target: { value: "9000" }
+    });
     fireEvent.click(screen.getByRole("button", { name: "Launch mandate" }));
 
     await vi.waitFor(() => {
@@ -186,10 +204,6 @@ describe("DashboardConsole", () => {
     expect(
       await screen.findByText("Mandate operation-mandate-1 created")
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Open operation" }));
-    expect(
-      await screen.findByRole("heading", { name: "Operations", level: 1 })
-    ).toBeInTheDocument();
   });
 
   it("keeps the mandate unsaved when the API rejects it", async () => {
@@ -199,10 +213,31 @@ describe("DashboardConsole", () => {
       vi.fn().mockResolvedValue({ ok: false, json: async () => ({}) })
     );
 
-    openNavigationItem("New mandate");
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Launch mandate" })
-    );
+    fireEvent.change(screen.getByRole("combobox", { name: "Type of content" }), {
+      target: { value: "textiles" }
+    });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Weight KG" }), {
+      target: { value: "18400" }
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "Measures" }), {
+      target: { value: "120 × 100 × 110 cm" }
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "Pickup address" }), {
+      target: { value: "Terminal de Contenedores, Manzanillo, Colima" }
+    });
+    fireEvent.change(screen.getByLabelText("Pickup date & time"), {
+      target: { value: "2026-09-03T10:00" }
+    });
+    fireEvent.change(screen.getByLabelText("Destination date & time"), {
+      target: { value: "2026-09-03T18:00" }
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "Destination place" }), {
+      target: { value: "Textiles Pacífico, Guadalajara, Jalisco" }
+    });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Budget cap MXN" }), {
+      target: { value: "9000" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Launch mandate" }));
 
     expect(
       await screen.findByText(/Volta could not save this mandate/)

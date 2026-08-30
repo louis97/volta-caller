@@ -250,21 +250,6 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
-  app.post("/api/demo/close-approved-deal", async (request, response) => {
-    if (env.VOLTA_MODE !== "mock") {
-      response.status(409).json({ error: "demo_requires_mock_mode" });
-      return;
-    }
-    const committed = await scenario.closeApprovedDeal();
-    if (!committed) {
-      response.status(409).json({ error: "closing_authorization_required" });
-      return;
-    }
-    const context = contextFromRequest(request, response);
-    if (context) await persistCurrentOperation(context);
-    response.status(202).json(scenario.store.getOperation());
-  });
-
   app.post("/api/mandates", async (request, response) => {
     try {
       response
@@ -517,25 +502,6 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
-  app.post("/api/demo/run", async (request, response) => {
-    if (env.VOLTA_MODE !== "mock") {
-      response.status(409).json({ error: "demo_requires_mock_mode" });
-      return;
-    }
-    scenario = createMockScenario(publish);
-    await scenario.run();
-    const context = contextFromRequest(request, response);
-    if (context) {
-      await persistCurrentOperation(context);
-      await seedMockKnowledge(
-        repository,
-        context,
-        scenario.store.getOperation().id
-      );
-    }
-    response.sendStatus(202);
-  });
-
   app.get("/api/events", (request: Request, response: Response) => {
     response.status(200).set({
       "Cache-Control": "no-cache",
@@ -596,71 +562,6 @@ function authorizeInternalRequest(request: Request, response: Response) {
 function storageFailure(response: Response, error: unknown) {
   console.error("Volta storage request failed", error);
   response.status(503).json({ error: "agent_storage_unavailable" });
-}
-
-async function seedMockKnowledge(
-  repository: AgentRepository,
-  context: OrganizationContext,
-  operationId: string
-) {
-  const occurredAt = "2026-09-01T15:00:00.000Z";
-  await repository.addShipmentEvent({
-    id: `event-${operationId}-at-origin`,
-    organizationId: context.organizationId,
-    operationId,
-    type: "at_origin",
-    label: "Carga en origen mientras se coordina el transporte",
-    location: "Terminal de Contenedores, Manzanillo, Colima",
-    source: "volta_demo",
-    occurredAt,
-    receivedAt: occurredAt
-  });
-  const transcripts = [
-    [
-      "mock-quote-costa-pacifico-001",
-      "Transportes Costa Pacífico",
-      8750,
-      "La unidad estaría disponible noventa minutos después."
-    ],
-    [
-      "mock-quote-ruta-occidente-001",
-      "Ruta Occidente",
-      8500,
-      "Podemos respetar la recolección del jueves a las diez."
-    ],
-    [
-      "mock-quote-logistica-manzanillo-001",
-      "Logística Manzanillo",
-      8640,
-      "La confirmación de unidad tarda ochenta minutos."
-    ]
-  ] as const;
-  await repository.addTranscriptSegments(
-    transcripts.flatMap(([callId, carrier, price, objection], index) => [
-      {
-        id: `${callId}-agent`,
-        organizationId: context.organizationId,
-        operationId,
-        callId,
-        speaker: "agent" as const,
-        text: "Volta solicita tarifa y disponibilidad para Manzanillo a Guadalajara con pickup jueves 10:00.",
-        startMs: 0,
-        endMs: 8200,
-        createdAt: occurredAt
-      },
-      {
-        id: `${callId}-carrier`,
-        organizationId: context.organizationId,
-        operationId,
-        callId,
-        speaker: "carrier" as const,
-        text: `${carrier} cotiza MXN ${price}. ${objection}`,
-        startMs: 8300 + index * 100,
-        endMs: 18_000 + index * 100,
-        createdAt: occurredAt
-      }
-    ])
-  );
 }
 
 export function isMainModule(moduleUrl: string, entrypoint?: string): boolean {
