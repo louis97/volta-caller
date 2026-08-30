@@ -44,14 +44,15 @@ import {
 } from "./core/confirmation";
 import { createMockScenario, type MockScenario } from "./mocks/callScenario";
 import { createMockTelephonyGateway } from "./mocks/telephony";
-import { createOperationFromMandate } from "./core/seed";
+import { createOperationFromMandate, seedOperation } from "./core/seed";
 import { derivePipelineStage } from "./core/pipeline";
 import { fanOutCalls } from "./telephony/orchestrator";
 import { PostgresAgentRepository } from "./storage/postgres";
 import {
   attachTelephonyWebSockets,
   createLiveTelephonyGateway,
-  mountTelephonyRoutes
+  mountTelephonyRoutes,
+  telephonyContext
 } from "./telephony/routes";
 
 const approvalDecisionSchema = z.object({
@@ -154,7 +155,6 @@ export function createApp(options: CreateAppOptions = {}) {
   const app = express();
   const eventClients = new Set<EventClient>();
   let activeOrganizationId = env.VOLTA_DEFAULT_ORGANIZATION_ID;
-  const dialled = new Map<string, { id: string; name: string }>();
   const injectedStore = options.store ?? options.scenario?.store;
   const scenario: MockScenario = options.scenario
     ? {
@@ -169,6 +169,10 @@ export function createApp(options: CreateAppOptions = {}) {
           closeApprovedDeal: async () => false
         }
       : createMockScenario();
+  // One map, resolved from the store: the routes, the WebSocket handler and a
+  // mandate's fan-out all have to agree on which carrier a call sid belongs
+  // to, or the agent is talking to "unknown".
+  const dialled = telephonyContext(scenario.store).dialled;
   // A client's quote selection is what authorises the closing call; this
   // places it.
   const confirmationCoordinator =
@@ -383,18 +387,46 @@ export function createApp(options: CreateAppOptions = {}) {
         mandate,
         `operation-${mandate.id}`
       );
-      operation.candidates = carriers
+      const active = carriers
         .filter((carrier) => carrier.active)
         .map(({ id, name, phone }) => ({ id, name, phone }));
+
+      // An empty directory would dial nobody and look like the mandate simply
+      // did nothing, so the seeded pool stands in and says so.
+      if (active.length === 0) {
+        console.warn(
+          "[mandates] no active carriers in the directory; falling back to the seeded pool"
+        );
+      }
+      operation.candidates =
+        active.length > 0 ? active : seedOperation().candidates;
+
       scenario.store.replaceOperation(operation);
       await persistCurrentOperation(context);
+
+      // A new mandate opens a new market: the round's quotes must not inherit
+      // the previous one, and each leg has to be attributable to its carrier
+      // or get_leverage has nothing real to cite.
+      const telephony = telephonyContext(scenario.store);
+      telephony.resetAuction();
+
+      console.log(
+        `[mandates] dialling ${operation.candidates.length}: ${operation.candidates
+          .map((candidate) => candidate.name)
+          .join(", ")}`
+      );
+
       await fanOutCalls({
         store: scenario.store,
         mode: env.VOLTA_MODE,
         publicBaseUrl: env.PUBLIC_BASE_URL,
         from: env.TWILIO_FROM_NUMBER,
         gateway:
-          env.VOLTA_MODE === "live" ? createLiveTelephonyGateway() : undefined
+          env.VOLTA_MODE === "live" ? createLiveTelephonyGateway() : undefined,
+        onDialled: (callId, carrier) => {
+          telephony.dialled.set(callId, carrier);
+          telephony.auction.startCall(carrier.id, callId);
+        }
       });
       await persistCallSessions(context);
       await persistCurrentOperation(context);
