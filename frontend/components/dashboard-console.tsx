@@ -8,6 +8,7 @@ import type {
   CreateMandateRequest,
   Operation,
   OperationReadModel,
+  PipelineStage,
   ProposedAction,
   Quote
 } from "@volta/contracts";
@@ -18,20 +19,27 @@ import {
   domMax
 } from "motion/react";
 import * as m from "motion/react-m";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
+  AlertIcon,
   ApprovalIcon,
   ArrowIcon,
+  BoxIcon,
   ChevronIcon,
   ClockIcon,
+  LinkIcon,
+  MoonIcon,
   OperationsIcon,
   PhoneIcon,
   PlusIcon,
-  RouteIcon
+  RouteIcon,
+  SunIcon
 } from "./icons";
 
 type View =
   "new-mandate" | "call-floor" | "pipeline" | "carriers" | "approvals";
+
+type Tone = "signal" | "brass" | "commit" | "halt" | "idle";
 
 type MandateSaveState =
   | { status: "idle" }
@@ -55,17 +63,198 @@ const navItems: Array<{
   { id: "approvals", label: "Approvals", icon: ApprovalIcon }
 ];
 
-function Status({
-  children,
-  tone
-}: {
-  children: React.ReactNode;
-  tone: "blue" | "green" | "amber" | "red" | "neutral";
-}) {
-  return <m.span className={`status status--${tone}`}>{children}</m.span>;
+/* -------------------------------------------------------------- store ---- */
+
+/**
+ * The rail and the console strip have to answer "is Volta waiting on me?"
+ * from every screen. Rather than issue a second poll from the shell, whichever
+ * view has just loaded the operation publishes this digest of it. Only the
+ * pipeline read model carries a stage, so the field stays optional.
+ */
+type ConsoleSnapshot = {
+  id: string;
+  origin: string;
+  destination: string;
+  stage?: PipelineStage;
+  liveLines: number;
+  waiting: number;
+};
+
+let operationSnapshot: ConsoleSnapshot | null = null;
+const snapshotListeners = new Set<() => void>();
+
+function publishOperation(operation: Operation | OperationReadModel) {
+  operationSnapshot = {
+    id: operation.id,
+    origin: operation.origin,
+    destination: operation.destination,
+    stage: "pipelineStage" in operation ? operation.pipelineStage : undefined,
+    liveLines: operation.callSessions.filter(isLiveCall).length,
+    waiting: operation.approvals.filter((item) => item.status === "pending")
+      .length
+  };
+  snapshotListeners.forEach((listener) => listener());
 }
 
-function Topbar({
+function subscribeOperation(listener: () => void) {
+  snapshotListeners.add(listener);
+  return () => {
+    snapshotListeners.delete(listener);
+  };
+}
+
+function useOperationSnapshot() {
+  return useSyncExternalStore(
+    subscribeOperation,
+    () => operationSnapshot,
+    () => null
+  );
+}
+
+function useLiveOperation() {
+  const [operation, setOperation] = useState<OperationReadModel | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const response = await fetch("/api/operation");
+        if (!response.ok || cancelled) return;
+        const next = (await response.json()) as OperationReadModel;
+        if (cancelled) return;
+        setOperation(next);
+        publishOperation(next);
+      } catch {
+        // The console keeps the last known state; the strip shows it is stale.
+      }
+    };
+
+    void refresh();
+    if (typeof EventSource === "undefined")
+      return () => {
+        cancelled = true;
+      };
+
+    const events = new EventSource("/api/events");
+    const sync = () => void refresh();
+    [
+      "mandate.created",
+      "call.started",
+      "call.updated",
+      "quote.registered",
+      "approval.requested",
+      "approval.resolved",
+      "commitment.finalized"
+    ].forEach((name) => events.addEventListener(name, sync));
+    return () => {
+      cancelled = true;
+      events.close();
+    };
+  }, []);
+
+  return operation;
+}
+
+/** Re-render once a second, but only while something is actually running. */
+function useTicker(active: boolean) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setTick((value) => value + 1), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+}
+
+/* ------------------------------------------------------------ helpers ---- */
+
+function formatMxn(value: number) {
+  return new Intl.NumberFormat("en-MX", {
+    style: "currency",
+    currency: "MXN",
+    maximumFractionDigits: 0
+  }).format(value);
+}
+
+function formatPickup(value: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "America/Mexico_City"
+  }).format(new Date(value));
+}
+
+function formatDraftStamp(value?: string) {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "—";
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(parsed);
+}
+
+function titleCase(value?: string) {
+  if (!value) return "—";
+  return value
+    .split("-")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function callDuration(session: CallSession): string {
+  const start = Date.parse(session.startedAt);
+  const end = Date.parse(session.endedAt ?? new Date().toISOString());
+  const seconds = Math.max(0, Math.floor((end - start) / 1000));
+  return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function callTone(status: CallSession["status"]): Tone {
+  if (status === "completed") return "commit";
+  if (status === "failed") return "halt";
+  if (status === "pending") return "brass";
+  return "signal";
+}
+
+function isLiveCall(session: CallSession) {
+  return session.status === "in_progress";
+}
+
+function selectedQuotes(
+  operation: Operation,
+  approval: ApprovalRequest
+): Quote[] {
+  return operation.quotes.filter((quote) =>
+    approval.quoteIds.includes(quote.id)
+  );
+}
+
+function bestQuote(quotes: Quote[]): Quote | undefined {
+  return quotes
+    .slice()
+    .sort((left, right) => left.priceMxn - right.priceMxn)[0];
+}
+
+/* --------------------------------------------------------- primitives ---- */
+
+function Tag({ children, tone }: { children: React.ReactNode; tone: Tone }) {
+  return <span className={`tag tag--${tone}`}>{children}</span>;
+}
+
+function Waveform({ live }: { live: boolean }) {
+  return (
+    <div className="wave" data-live={live} aria-hidden>
+      {Array.from({ length: 22 }, (_, index) => (
+        <i key={index} style={{ "--i": index } as React.CSSProperties} />
+      ))}
+    </div>
+  );
+}
+
+function PageHead({
   title,
   description,
   eyebrow,
@@ -73,25 +262,170 @@ function Topbar({
 }: {
   title: string;
   description: string;
-  eyebrow?: string;
+  eyebrow: string;
   action?: React.ReactNode;
 }) {
   return (
-    <header className="topbar">
+    <header className="page-head">
       <div>
-        <p className="eyebrow">{eyebrow ?? "Dispatch overview"}</p>
+        <p className="kicker">{eyebrow}</p>
         <h1>{title}</h1>
-        <p>{description}</p>
+        <p className="page-head__lede">{description}</p>
       </div>
       {action}
     </header>
   );
 }
 
+function Stat({
+  label,
+  value,
+  note,
+  tone
+}: {
+  label: string;
+  value: string;
+  note: string;
+  tone?: Tone;
+}) {
+  return (
+    <div className={tone ? `stat stat--${tone}` : "stat"}>
+      <p className="ml">{label}</p>
+      <span className="stat__value">{value}</span>
+      <p className="stat__note">{note}</p>
+    </div>
+  );
+}
+
+function EmptyState({
+  mark,
+  eyebrow,
+  title,
+  body,
+  tone,
+  action
+}: {
+  mark: React.ReactNode;
+  eyebrow: string;
+  title: string;
+  body?: string;
+  tone?: "commit" | "brass" | "halt";
+  action?: React.ReactNode;
+}) {
+  return (
+    <section className={tone ? `card empty empty--${tone}` : "card empty"}>
+      <span className="empty__mark">{mark}</span>
+      <p className="ml">{eyebrow}</p>
+      <h2>{title}</h2>
+      {body && <p>{body}</p>}
+      {action}
+    </section>
+  );
+}
+
+/* --------------------------------------------------------------- shell ---- */
+
+function ThemeToggle() {
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+
+  useEffect(() => {
+    let stored: string | null = null;
+    try {
+      stored = window.localStorage.getItem("volta-theme");
+    } catch {
+      stored = null;
+    }
+    if (stored === "dark" || stored === "light") {
+      setTheme(stored);
+      return;
+    }
+    const prefersDark =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches;
+    setTheme(prefersDark ? "dark" : "light");
+  }, []);
+
+  function apply(next: "light" | "dark") {
+    setTheme(next);
+    document.documentElement.dataset.theme = next;
+    try {
+      window.localStorage.setItem("volta-theme", next);
+    } catch {
+      // A blocked store only costs the preference on the next visit.
+    }
+  }
+
+  return (
+    <button
+      aria-label={theme === "dark" ? "Use light theme" : "Use dark theme"}
+      className="rail__theme"
+      onClick={() => apply(theme === "dark" ? "light" : "dark")}
+      type="button"
+    >
+      {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+    </button>
+  );
+}
+
+function ConsoleStrip() {
+  const operation = useOperationSnapshot();
+  const liveLines = operation?.liveLines ?? 0;
+  const waiting = operation?.waiting ?? 0;
+
+  return (
+    <div className="console" aria-label="Operation status">
+      <span
+        className={
+          liveLines > 0 ? "console__item console__item--live" : "console__item"
+        }
+      >
+        {liveLines > 0 && <i className="pulse" />}
+        <b>{liveLines}</b> {liveLines === 1 ? "line open" : "lines open"}
+      </span>
+      <span
+        className={
+          waiting > 0 ? "console__item console__item--wait" : "console__item"
+        }
+      >
+        <b>{waiting}</b> waiting on you
+      </span>
+      {operation ? (
+        <>
+          <span className="console__item">
+            <b>{operation.id}</b>
+          </span>
+          <span className="console__item">
+            {operation.origin} → {operation.destination}
+          </span>
+          {operation.stage && (
+            <span className="console__item">
+              stage <b>{operation.stage.replace(/_/g, " ")}</b>
+            </span>
+          )}
+        </>
+      ) : (
+        <span className="console__item">no operation loaded</span>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------- new mandate ----- */
+
 function NewMandateView({ onCreated }: { onCreated: () => void }) {
   const [saveState, setSaveState] = useState<MandateSaveState>({
     status: "idle"
   });
+  const [draft, setDraft] = useState<Record<string, string>>({});
+
+  function captureDraft(form: HTMLFormElement) {
+    const data = new FormData(form);
+    const next: Record<string, string> = {};
+    data.forEach((value, key) => {
+      next[key] = typeof value === "string" ? value : "";
+    });
+    setDraft(next);
+  }
 
   async function submitMandate(form: HTMLFormElement) {
     const data = new FormData(form);
@@ -121,15 +455,19 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
     setSaveState({ status: "saved", operationId: operation.id });
   }
 
+  const budget = Number(draft.budget_cap);
+  const weight = Number(draft.weight);
+
   return (
     <>
-      <Topbar
+      <PageHead
         title="New mandate"
         eyebrow="Create operation"
         description="Define the boundaries Volta must obey before it speaks to a carrier."
       />
       <form
-        className="mandate-layout"
+        className="mandate"
+        onChange={(event) => captureDraft(event.currentTarget)}
         onSubmit={async (event) => {
           event.preventDefault();
           setSaveState({ status: "saving" });
@@ -146,147 +484,212 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
           }
         }}
       >
-        <section className="panel form-panel">
-          <div className="step-heading">
-            <span>01</span>
-            <div>
-              <h2>Cargo manifest</h2>
-              <p>The physical load the carrier must be able to move.</p>
-            </div>
-          </div>
-          <div className="form-grid">
-            <label>
-              Type of content
-              <select name="type_of_content" defaultValue="" required>
-                <option value="" disabled>
-                  Select content type
-                </option>
-                <option value="textiles">Textiles</option>
-                <option value="general-cargo">General cargo</option>
-                <option value="food-grade">Food-grade cargo</option>
-                <option value="hazardous-material">Hazardous material</option>
-              </select>
-            </label>
-            <label>
-              Weight
-              <div className="unit-input">
-                <input
-                  name="weight"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  required
-                />
-                <span>KG</span>
+        <div className="mandate__col">
+          <section className="card">
+            <div className="card__body">
+              <div className="section-head">
+                <span className="section-head__mark">
+                  <BoxIcon />
+                </span>
+                <div>
+                  <h2>Cargo manifest</h2>
+                  <p>The physical load the carrier must be able to move.</p>
+                </div>
               </div>
-            </label>
-            <label className="span-2">
-              Measures
-              <input className="mono" name="measures" required />
-            </label>
-          </div>
-        </section>
-        <section className="panel form-panel">
-          <div className="step-heading">
-            <span>02</span>
-            <div>
-              <h2>Route &amp; binding limit</h2>
-              <p>Where, when, and how far Volta is authorized to go.</p>
-            </div>
-          </div>
-          <div className="form-grid">
-            <label className="span-2">
-              Pickup address
-              <input name="pickup_address" required />
-            </label>
-            <label>
-              Pickup date &amp; time
-              <input
-                className="mono"
-                name="pickup_datetime"
-                type="datetime-local"
-                required
-              />
-            </label>
-            <label>
-              Destination date &amp; time
-              <input
-                className="mono"
-                name="destination_datetime"
-                type="datetime-local"
-                required
-              />
-            </label>
-            <label className="span-2">
-              Destination place
-              <input name="destination_place" required />
-            </label>
-            <label className="span-2">
-              Budget cap
-              <div className="money-input">
-                <span>MXN</span>
-                <input
-                  name="budget_cap"
-                  type="number"
-                  min="0"
-                  step="1"
-                  required
-                />
+              <div className="fields">
+                <label>
+                  Type of content
+                  <select name="type_of_content" defaultValue="" required>
+                    <option value="" disabled>
+                      Select content type
+                    </option>
+                    <option value="textiles">Textiles</option>
+                    <option value="general-cargo">General cargo</option>
+                    <option value="food-grade">Food-grade cargo</option>
+                    <option value="hazardous-material">
+                      Hazardous material
+                    </option>
+                  </select>
+                </label>
+                <label>
+                  Weight
+                  <div className="affix affix--trail">
+                    <input
+                      name="weight"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      required
+                    />
+                    <span>KG</span>
+                  </div>
+                </label>
+                <label className="span-2">
+                  Measures
+                  <input
+                    className="mono"
+                    name="measures"
+                    placeholder="120 × 100 × 110 cm"
+                    required
+                  />
+                </label>
               </div>
-            </label>
-          </div>
-          <div className="constraint-note">
-            <ApprovalIcon />
-            <div>
-              <b>This mandate is binding</b>
-              <p>
-                The agent cannot exceed the authorized budget or change either
-                datetime without human approval.
+            </div>
+          </section>
+
+          <section className="card">
+            <div className="card__body">
+              <div className="section-head">
+                <span className="section-head__mark">
+                  <RouteIcon />
+                </span>
+                <div>
+                  <h2>Route &amp; binding limit</h2>
+                  <p>Where, when, and how far Volta is authorized to go.</p>
+                </div>
+              </div>
+              <div className="fields">
+                <label className="span-2">
+                  Pickup address
+                  <input name="pickup_address" required />
+                </label>
+                <label>
+                  Pickup date &amp; time
+                  <input
+                    className="mono"
+                    name="pickup_datetime"
+                    type="datetime-local"
+                    required
+                  />
+                </label>
+                <label>
+                  Destination date &amp; time
+                  <input
+                    className="mono"
+                    name="destination_datetime"
+                    type="datetime-local"
+                    required
+                  />
+                </label>
+                <label className="span-2">
+                  Destination place
+                  <input name="destination_place" required />
+                </label>
+                <label className="span-2">
+                  Budget cap
+                  <div className="affix affix--lead">
+                    <span>MXN</span>
+                    <input
+                      name="budget_cap"
+                      type="number"
+                      min="0"
+                      step="1"
+                      required
+                    />
+                  </div>
+                </label>
+              </div>
+              <div className="note note--brass" style={{ marginTop: 20 }}>
+                <ApprovalIcon />
+                <div>
+                  <b>This mandate is binding</b>
+                  <p>
+                    The agent cannot exceed the authorized budget or change
+                    either datetime without human approval.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <aside className="card mandate__aside">
+          <div className="card__body">
+            <p className="ml">Mandate preview</p>
+            <h2 style={{ margin: "8px 0 20px", fontSize: 19 }}>
+              Review before launch
+            </h2>
+
+            <div className="preview__budget">
+              <p className="ml">Authorized ceiling</p>
+              <span
+                className="figure"
+                data-empty={!(Number.isFinite(budget) && budget > 0)}
+              >
+                {Number.isFinite(budget) && budget > 0
+                  ? formatMxn(budget)
+                  : "—"}
+              </span>
+              <p className="stat__note">
+                Volta may not agree to a peso above this.
               </p>
             </div>
-          </div>
-        </section>
-        <aside className="panel mandate-summary">
-          <p className="section-label">Mandate preview</p>
-          <h2>Review before launch</h2>
-          <p className="summary-copy">
-            Complete the mandate details. Volta may negotiate only within the
-            budget and schedule you authorize.
-          </p>
-          {saveState.status === "saved" ? (
-            <div className="saved-message">
-              <i /> Mandate {saveState.operationId} created
+
+            <div className="preview__route">
+              <div className="preview__stop">
+                <i aria-hidden />
+                <b>{draft.pickup_address || "Pickup address"}</b>
+                <span>{formatDraftStamp(draft.pickup_datetime)}</span>
+              </div>
+              <div className="preview__stop preview__stop--end">
+                <i aria-hidden />
+                <b>{draft.destination_place || "Destination place"}</b>
+                <span>{formatDraftStamp(draft.destination_datetime)}</span>
+              </div>
             </div>
-          ) : (
-            <m.button
-              className="button button--primary full"
-              type="submit"
-              disabled={saveState.status === "saving"}
-              whileFocus={{ outlineOffset: 3 }}
-              whileTap={{ scale: 0.98 }}
-            >
-              {saveState.status === "saving"
-                ? "Saving mandate…"
-                : "Launch mandate"}
-              <ArrowIcon />
-            </m.button>
-          )}
-          {saveState.status === "error" && (
-            <p className="form-error" role="alert">
-              {saveState.message}
-            </p>
-          )}
-          {saveState.status === "saved" && (
-            <m.button
-              className="button button--secondary full"
-              type="button"
-              onClick={onCreated}
-              whileFocus={{ outlineOffset: 3 }}
-              whileTap={{ scale: 0.98 }}
-            >
-              Open operation
-            </m.button>
-          )}
+
+            <dl className="spec">
+              <div>
+                <dt>Content</dt>
+                <dd>{titleCase(draft.type_of_content)}</dd>
+              </div>
+              <div>
+                <dt>Weight</dt>
+                <dd>
+                  {Number.isFinite(weight) && weight > 0
+                    ? `${weight.toLocaleString("en-MX")} kg`
+                    : "—"}
+                </dd>
+              </div>
+              <div>
+                <dt>Measures</dt>
+                <dd>{draft.measures || "—"}</dd>
+              </div>
+            </dl>
+
+            {saveState.status === "saved" ? (
+              <div className="saved">
+                <i /> Mandate {saveState.operationId} created
+              </div>
+            ) : (
+              <m.button
+                className="btn btn--primary btn--block"
+                type="submit"
+                disabled={saveState.status === "saving"}
+                whileTap={{ scale: 0.985 }}
+              >
+                {saveState.status === "saving"
+                  ? "Saving mandate…"
+                  : "Launch mandate"}
+                <ArrowIcon />
+              </m.button>
+            )}
+            {saveState.status === "error" && (
+              <p className="form-error" role="alert">
+                {saveState.message}
+              </p>
+            )}
+            {saveState.status === "saved" && (
+              <m.button
+                className="btn btn--secondary btn--block"
+                type="button"
+                onClick={onCreated}
+                whileTap={{ scale: 0.985 }}
+              >
+                Open operation
+              </m.button>
+            )}
+          </div>
         </aside>
       </form>
     </>
@@ -301,33 +704,490 @@ function toOffsetDatetime(value: FormDataEntryValue | null): string {
   return `${value}:00${MANDATE_TIMEZONE_OFFSET}`;
 }
 
-type ApprovalLoadState = "loading" | "ready" | "error";
+/* ---------------------------------------------------------- call floor ---- */
 
-function formatMxn(value: number) {
-  return new Intl.NumberFormat("en-MX", {
-    style: "currency",
-    currency: "MXN",
-    maximumFractionDigits: 0
-  }).format(value);
-}
+function CallFloorView({ onNavigate }: { onNavigate: (view: View) => void }) {
+  const operation = useLiveOperation();
+  const sessions = operation?.callSessions ?? [];
+  const liveLines = sessions.filter(isLiveCall);
+  useTicker(liveLines.length > 0);
 
-function formatPickup(value: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    weekday: "short",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZone: "America/Mexico_City"
-  }).format(new Date(value));
-}
+  const quotes = operation?.quotes ?? [];
+  const best = bestQuote(quotes);
+  const cap = operation?.mandate.budgetCapMxn;
+  const headroom = cap && best ? cap - best.priceMxn : undefined;
 
-function selectedQuotes(
-  operation: Operation,
-  approval: ApprovalRequest
-): Quote[] {
-  return operation.quotes.filter((quote) =>
-    approval.quoteIds.includes(quote.id)
+  return (
+    <>
+      <PageHead
+        title="Call floor"
+        eyebrow="Live negotiation"
+        description="Every carrier leg is visible from dial through quote and outcome."
+        action={
+          liveLines.length > 0 ? (
+            <Tag tone="signal">
+              <i className="pulse" />
+              {liveLines.length} on the line
+            </Tag>
+          ) : undefined
+        }
+      />
+
+      {sessions.length > 0 && (
+        <div className="stats">
+          <Stat
+            label="Lines open"
+            value={String(liveLines.length)}
+            note={`${sessions.length} carriers dialed`}
+            tone={liveLines.length > 0 ? "signal" : undefined}
+          />
+          <Stat
+            label="Quotes in"
+            value={String(quotes.length)}
+            note="Market intelligence, not bookings"
+          />
+          <Stat
+            label="Best rate"
+            value={best ? formatMxn(best.priceMxn) : "—"}
+            note={
+              best
+                ? `${best.carrierName} · ${best.etaMinutes} min ETA`
+                : "Awaiting the first quote"
+            }
+            tone={best ? "commit" : undefined}
+          />
+          <Stat
+            label="Budget headroom"
+            value={headroom === undefined ? "—" : formatMxn(headroom)}
+            note={cap ? `Cap ${formatMxn(cap)}` : "No mandate cap loaded"}
+          />
+        </div>
+      )}
+
+      <section className="calls">
+        {sessions.map((session) => {
+          const quote = quotes.find(
+            (item) => item.id === session.quoteId || item.callId === session.id
+          );
+          const live = isLiveCall(session);
+          const carrier =
+            session.driverName ??
+            operation?.candidates.find((item) => item.id === session.carrierId)
+              ?.name ??
+            "Carrier";
+
+          return (
+            <article
+              className={live ? "card call call--live" : "card call"}
+              key={session.id}
+            >
+              <div className="call__head">
+                <Tag tone={callTone(session.status)}>
+                  {live && <i className="pulse" />}
+                  {session.status.replace(/_/g, " ")}
+                </Tag>
+                <span className="call__timer">
+                  <ClockIcon /> {callDuration(session)}
+                </span>
+              </div>
+              <div>
+                <p className="call__ref">{session.callSid ?? session.id}</p>
+                <h2>{carrier}</h2>
+              </div>
+              <p className="call__route">
+                <RouteIcon /> {operation?.origin} → {operation?.destination}
+              </p>
+              <Waveform live={live} />
+              <div className="call__foot">
+                {quote ? (
+                  <>
+                    <span className="call__price">
+                      {formatMxn(quote.priceMxn)}
+                    </span>
+                    <span className="call__eta">
+                      {quote.etaMinutes} MIN ETA
+                    </span>
+                  </>
+                ) : (
+                  <span className="call__pending">
+                    {session.endedReason ?? "Awaiting quote"}
+                  </span>
+                )}
+              </div>
+            </article>
+          );
+        })}
+      </section>
+
+      {sessions.length === 0 && (
+        <EmptyState
+          mark={<PhoneIcon />}
+          eyebrow="No active calls"
+          title="Launch a mandate to open the carrier floor."
+          body="Volta dials the active carrier pool as soon as an operation has a binding budget and schedule."
+          action={
+            <button
+              className="btn btn--primary"
+              onClick={() => onNavigate("new-mandate")}
+              type="button"
+            >
+              Create a mandate <ArrowIcon />
+            </button>
+          }
+        />
+      )}
+    </>
   );
 }
+
+/* ------------------------------------------------------------ pipeline ---- */
+
+const PIPELINE_STEPS: Array<{ id: PipelineStage; label: string }> = [
+  { id: "open", label: "Mandate open" },
+  { id: "calling", label: "Calling carriers" },
+  { id: "quoting", label: "Quotes in" },
+  { id: "awaiting_approval", label: "Waiting on you" },
+  { id: "closing", label: "Closing call" },
+  { id: "committed", label: "Booked" }
+];
+
+function PipelineView({ onNavigate }: { onNavigate: (view: View) => void }) {
+  const operation = useLiveOperation();
+  const sessions = operation?.callSessions ?? [];
+  useTicker(sessions.some(isLiveCall));
+
+  if (!operation) {
+    return (
+      <>
+        <PageHead
+          title="Pipeline"
+          eyebrow="Operation progress"
+          description="Persisted stages and live call outcomes for the active operation."
+        />
+        <EmptyState
+          mark={<OperationsIcon />}
+          eyebrow="No operation loaded"
+          title="Nothing is moving through the pipeline yet."
+          body="Create a mandate and Volta will record every stage from dial to booking."
+          action={
+            <button
+              className="btn btn--primary"
+              onClick={() => onNavigate("new-mandate")}
+              type="button"
+            >
+              Create a mandate <ArrowIcon />
+            </button>
+          }
+        />
+      </>
+    );
+  }
+
+  const stage = operation.pipelineStage;
+  const halted = stage === "escalated" || stage === "failed";
+  const steps = halted
+    ? [
+        ...PIPELINE_STEPS.slice(0, 4),
+        {
+          id: stage,
+          label: stage === "escalated" ? "Escalated to human" : "Failed"
+        }
+      ]
+    : PIPELINE_STEPS;
+  const currentIndex = halted
+    ? steps.length - 1
+    : Math.max(
+        0,
+        steps.findIndex((step) => step.id === stage)
+      );
+
+  const completed = sessions.filter(
+    (item) => item.status === "completed"
+  ).length;
+  const best = bestQuote(operation.quotes);
+
+  return (
+    <>
+      <PageHead
+        title="Pipeline"
+        eyebrow="Operation progress"
+        description="Persisted stages and live call outcomes for the active operation."
+        action={
+          <Tag tone={halted ? "halt" : "signal"}>
+            {stage.replace(/_/g, " ")}
+          </Tag>
+        }
+      />
+
+      <div className="stats">
+        <Stat
+          label="Calls completed"
+          value={`${completed}/${sessions.length}`}
+          note="Legs that reached an outcome"
+        />
+        <Stat
+          label="Quotes on record"
+          value={String(operation.quotes.length)}
+          note="Each one linked to its call"
+        />
+        <Stat
+          label="Best rate"
+          value={best ? formatMxn(best.priceMxn) : "—"}
+          note={best ? best.carrierName : "No quote yet"}
+          tone={best ? "commit" : undefined}
+        />
+        <Stat
+          label="Budget cap"
+          value={formatMxn(operation.mandate.budgetCapMxn)}
+          note="Authorized by the dispatcher"
+        />
+      </div>
+
+      <section className="card">
+        <div className="card__head">
+          <div>
+            <p className="ml">Stage</p>
+            <h2>
+              {operation.origin} → {operation.destination}
+            </h2>
+          </div>
+          <span className="ledger__ref">{operation.id}</span>
+        </div>
+        <div className="track">
+          {steps.map((step, index) => (
+            <div
+              className="track__step"
+              data-state={
+                halted && index === steps.length - 1
+                  ? "halted"
+                  : index < currentIndex
+                    ? "done"
+                    : index === currentIndex
+                      ? "current"
+                      : "ahead"
+              }
+              key={step.id}
+            >
+              <span>{String(index + 1).padStart(2, "0")}</span>
+              <b>{step.label}</b>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="card__head">
+          <h2>Call log</h2>
+          <span className="ml">{sessions.length} legs</span>
+        </div>
+        {sessions.length > 0 ? (
+          <div className="ledger">
+            {sessions.map((session) => {
+              const quote = operation.quotes.find(
+                (item) =>
+                  item.id === session.quoteId || item.callId === session.id
+              );
+              return (
+                <div className="ledger__row" key={session.id}>
+                  <span className="ledger__cell">
+                    <span className="ledger__ref">
+                      {session.callSid ?? session.id}
+                    </span>
+                    <b>
+                      {session.driverName ??
+                        operation.candidates.find(
+                          (item) => item.id === session.carrierId
+                        )?.name ??
+                        "Carrier"}
+                    </b>
+                  </span>
+                  <span className="ledger__cell">
+                    <span className="ml">Duration</span>
+                    <span className="ledger__value mono">
+                      {callDuration(session)}
+                      {session.endedReason ? ` · ${session.endedReason}` : ""}
+                    </span>
+                  </span>
+                  <Tag tone={callTone(session.status)}>
+                    {isLiveCall(session) && <i className="pulse" />}
+                    {session.status.replace(/_/g, " ")}
+                  </Tag>
+                  <span className="ledger__figure">
+                    {quote ? formatMxn(quote.priceMxn) : "—"}
+                  </span>
+                  <ChevronIcon className="ledger__chev" />
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="card__body">
+            <p className="stat__note">
+              No carrier has been dialed for this operation yet.
+            </p>
+          </div>
+        )}
+      </section>
+    </>
+  );
+}
+
+/* ------------------------------------------------------------ carriers ---- */
+
+type CarrierRow = {
+  id: string;
+  name: string;
+  phone: string;
+  lanes: string[];
+  active: boolean;
+};
+
+function CarriersView() {
+  const [carriers, setCarriers] = useState<CarrierRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = async () => {
+    try {
+      const response = await fetch("/api/carriers");
+      if (response.ok) setCarriers((await response.json()) as CarrierRow[]);
+    } catch {
+      setError("The carrier directory is unavailable. Retry in a moment.");
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  const active = carriers.filter((carrier) => carrier.active).length;
+
+  return (
+    <>
+      <PageHead
+        title="Carriers"
+        eyebrow="Network directory"
+        description="Maintain the active carrier pool used for the next mandate fan-out."
+        action={
+          carriers.length > 0 ? (
+            <Tag tone={active > 0 ? "commit" : "idle"}>
+              {active} of {carriers.length} active
+            </Tag>
+          ) : undefined
+        }
+      />
+
+      <form
+        className="card"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          const form = event.currentTarget;
+          const data = new FormData(form);
+          setError(null);
+          try {
+            const response = await fetch("/api/carriers", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                name: data.get("name"),
+                phone: data.get("phone"),
+                lanes: String(data.get("lanes") ?? "")
+                  .split(",")
+                  .map((item) => item.trim())
+                  .filter(Boolean)
+              })
+            });
+            if (!response.ok) throw new Error("carrier_rejected");
+            form.reset();
+            await refresh();
+          } catch {
+            setError(
+              "Volta could not add this carrier. Check the phone number and try again."
+            );
+          }
+        }}
+      >
+        <div className="card__body">
+          <div className="section-head">
+            <span className="section-head__mark">
+              <PlusIcon />
+            </span>
+            <div>
+              <h2>Add carrier</h2>
+              <p>Only active carriers receive new call rounds.</p>
+            </div>
+          </div>
+          <div className="fields">
+            <label>
+              Name
+              <input name="name" required />
+            </label>
+            <label>
+              Phone
+              <input name="phone" type="tel" required />
+            </label>
+            <label className="span-2">
+              Lanes
+              <input name="lanes" placeholder="Manzanillo → Guadalajara" />
+            </label>
+          </div>
+          {error && (
+            <p className="form-error" role="alert">
+              {error}
+            </p>
+          )}
+        </div>
+        <div className="card__foot">
+          <button className="btn btn--primary" type="submit">
+            Add carrier <PlusIcon />
+          </button>
+        </div>
+      </form>
+
+      <section className="card">
+        <div className="card__head">
+          <h2>Carrier pool</h2>
+          <span className="ml">{carriers.length} listed</span>
+        </div>
+        {carriers.length > 0 ? (
+          <div className="ledger">
+            {carriers.map((carrier) => (
+              <div className="ledger__row" key={carrier.id}>
+                <span className="ledger__cell">
+                  <span className="ledger__ref">{carrier.phone}</span>
+                  <b>{carrier.name}</b>
+                </span>
+                <span className="ledger__cell">
+                  <span className="ml">Lanes</span>
+                  <span className="ledger__value">
+                    {carrier.lanes.join(", ") || "All lanes"}
+                  </span>
+                </span>
+                <Tag tone={carrier.active ? "commit" : "idle"}>
+                  {carrier.active ? "active" : "inactive"}
+                </Tag>
+                <span className="ledger__figure">
+                  {String(carrier.lanes.length).padStart(2, "0")}
+                </span>
+                <RouteIcon className="ledger__chev" />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="card__body">
+            <p className="stat__note">
+              No carriers yet. The first one you add becomes the first call of
+              the next mandate.
+            </p>
+          </div>
+        )}
+      </section>
+    </>
+  );
+}
+
+/* ----------------------------------------------------------- approvals ---- */
+
+type ApprovalLoadState = "loading" | "ready" | "error";
 
 function ApprovalsView() {
   const [operation, setOperation] = useState<Operation | null>(null);
@@ -336,11 +1196,16 @@ function ApprovalsView() {
   const [decisionError, setDecisionError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  function adopt(next: Operation) {
+    setOperation(next);
+    publishOperation(next);
+  }
+
   async function refresh() {
     try {
       const response = await fetch("/api/operation");
       if (!response.ok) throw new Error("operation_unavailable");
-      setOperation((await response.json()) as Operation);
+      adopt((await response.json()) as Operation);
       setLoadState("ready");
     } catch {
       setLoadState("error");
@@ -396,7 +1261,7 @@ function ApprovalsView() {
       });
       if (!response.ok) throw new Error("decision_rejected");
       const payload = (await response.json()) as { operation: Operation };
-      setOperation(payload.operation);
+      adopt(payload.operation);
     } catch {
       setDecisionError("Volta could not record this decision. Try again.");
     } finally {
@@ -420,7 +1285,7 @@ function ApprovalsView() {
       if (!response.ok) throw new Error("undo_rejected");
       const payload = (await response.json()) as { operation: Operation };
       setSelectedQuoteId(null);
-      setOperation(payload.operation);
+      adopt(payload.operation);
     } catch {
       setDecisionError(
         "Volta could not undo this decision. A confirmed booking cannot be reversed here."
@@ -432,53 +1297,78 @@ function ApprovalsView() {
 
   return (
     <>
-      <Topbar
+      <PageHead
         title="Approvals"
         eyebrow="Human decisions"
         description="Choose who Volta may call back to close the deal. Quotes never become bookings without you."
+        action={
+          approval ? (
+            <Tag tone="brass">
+              <i className="pulse" />
+              waiting on you
+            </Tag>
+          ) : undefined
+        }
       />
+
       {loadState === "loading" && (
-        <section className="panel decision-complete">
-          <p className="section-label">Loading live queue</p>
-          <h2>Checking Volta’s active rounds…</h2>
+        <section className="card" aria-busy="true">
+          <div className="card__head">
+            <h2>Checking Volta’s active rounds…</h2>
+          </div>
+          <div className="skeleton">
+            <i />
+            <i />
+            <i />
+          </div>
         </section>
       )}
+
       {loadState === "error" && (
-        <section className="panel decision-complete">
-          <span className="decline-ring">!</span>
-          <p className="section-label">Connection unavailable</p>
-          <h2>Approvals are served by the dispatch API.</h2>
-          <button
-            className="button button--secondary"
-            onClick={() => void refresh()}
-          >
-            Retry connection
-          </button>
-        </section>
+        <EmptyState
+          mark={<AlertIcon />}
+          tone="halt"
+          eyebrow="Connection unavailable"
+          title="Approvals are served by the dispatch API."
+          body="Nothing was decided while the connection was down. Reconnect to see the live queue."
+          action={
+            <button
+              className="btn btn--secondary"
+              onClick={() => void refresh()}
+              type="button"
+            >
+              Retry connection
+            </button>
+          }
+        />
       )}
+
       {loadState === "ready" && !approval && operation?.commitment && (
-        <section className="panel decision-complete">
-          <span className="success-ring">✓</span>
-          <p className="section-label">Closing call completed</p>
-          <h2>
-            {operation.commitment.finalPriceMxn && "Carrier booking confirmed"}
-          </h2>
-          <p>
-            {formatMxn(operation.commitment.finalPriceMxn)} was recapped by SMS
-            and linked to its recorded agreement.
-          </p>
-          <a
-            className="button button--secondary"
-            href={operation.commitment.audioTimestampUrl}
-          >
-            Open audio evidence
-          </a>
-        </section>
+        <EmptyState
+          mark="✓"
+          tone="commit"
+          eyebrow="Closing call completed"
+          title={
+            operation.commitment.finalPriceMxn
+              ? "Carrier booking confirmed"
+              : ""
+          }
+          body={`${formatMxn(operation.commitment.finalPriceMxn)} was recapped by SMS and linked to its recorded agreement.`}
+          action={
+            <a
+              className="btn btn--secondary"
+              href={operation.commitment.audioTimestampUrl}
+            >
+              Open audio evidence
+            </a>
+          }
+        />
       )}
+
       {loadState === "ready" && !approval && closingApproval && operation && (
-        <section className="panel decision-complete">
-          <span className="success-ring">✓</span>
-          <p className="section-label">Closing call authorized</p>
+        <section className="card empty empty--commit">
+          <span className="empty__mark">✓</span>
+          <p className="ml">Closing call authorized</p>
           <h2>
             Volta may now call{" "}
             {operation.candidates.find(
@@ -494,144 +1384,162 @@ function ApprovalsView() {
             undo this authorization until the booking is confirmed.
           </p>
           {decisionError && (
-            <p className="form-error approval-error" role="alert">
+            <p className="form-error" role="alert">
               {decisionError}
             </p>
           )}
-          <div className="approval-actions decision-complete-actions">
-            <m.button
-              className="button button--secondary"
-              disabled={isSubmitting}
-              onClick={() => void undoDecision()}
-              whileFocus={{ outlineOffset: 3 }}
-              whileTap={{ scale: 0.98 }}
-            >
-              Undo decision
-            </m.button>
-          </div>
+          <m.button
+            className="btn btn--secondary"
+            disabled={isSubmitting}
+            onClick={() => void undoDecision()}
+            whileTap={{ scale: 0.985 }}
+          >
+            Undo decision
+          </m.button>
         </section>
       )}
+
       {loadState === "ready" &&
         !approval &&
         !operation?.commitment &&
         !closingApproval && (
-          <section className="panel decision-complete">
-            <span className="success-ring">✓</span>
-            <p className="section-label">No decisions waiting</p>
-            <h2>Volta will alert you after the quote round closes.</h2>
-            <p>
-              Keep this panel open to receive the next request in real time.
-            </p>
-          </section>
+          <EmptyState
+            mark={<ApprovalIcon />}
+            tone="commit"
+            eyebrow="No decisions waiting"
+            title="Volta will alert you after the quote round closes."
+            body="Keep this panel open to receive the next request in real time."
+          />
         )}
+
       {loadState === "ready" && operation && approval && (
-        <section className="approval-layout">
-          <article className="panel approval-main">
-            <div className="approval-alert">
-              <span>!</span>
+        <section className="approval">
+          <article className="card approval__main">
+            <div className="alert">
+              <span className="alert__mark">
+                <AlertIcon />
+              </span>
               <div>
-                <p className="section-label">Human decision required</p>
+                <p className="ml">Human decision required</p>
                 <h2>
                   {isSelectionApproval
                     ? `${quotes.length} carrier quotes are ready to compare`
                     : "Carrier changed the approved terms"}
                 </h2>
               </div>
-              <Status tone="amber">Waiting</Status>
+              <Tag tone="brass">Waiting</Tag>
             </div>
-            <p className="approval-lead">
-              {isSelectionApproval
-                ? "Volta has completed the first calls. Choose the one carrier it may call back to confirm the quoted terms; this is not a booking yet."
-                : "The carrier did not repeat the terms you authorized. Volta is waiting for a new instruction before it can continue."}
-            </p>
-            <div className="comparison-grid">
-              <div>
-                <span>Binding pickup</span>
-                <b>{formatPickup(operation.mandate.pickupDatetime)}</b>
-                <p>Must be confirmed on the closing call.</p>
+
+            <div className="card__body">
+              <p className="approval__lead">
+                {isSelectionApproval
+                  ? "Volta has completed the first calls. Choose the one carrier it may call back to confirm the quoted terms; this is not a booking yet."
+                  : "The carrier did not repeat the terms you authorized. Volta is waiting for a new instruction before it can continue."}
+              </p>
+
+              <div className="facts">
+                <div>
+                  <p className="ml">Binding pickup</p>
+                  <b>{formatPickup(operation.mandate.pickupDatetime)}</b>
+                  <p>Must be confirmed on the closing call.</p>
+                </div>
+                <div className="is-pick">
+                  <p className="ml">Volta recommends</p>
+                  <b>
+                    {quotes.find(
+                      (quote) => quote.id === approval.recommendedQuoteId
+                    )?.carrierName ?? "Review revised terms"}
+                  </b>
+                  <p>
+                    The recommendation is advisory; your selection is required.
+                  </p>
+                </div>
               </div>
-              <div className="recommended">
-                <span>Volta recommends</span>
-                <b>
-                  {quotes.find(
-                    (quote) => quote.id === approval.recommendedQuoteId
-                  )?.carrierName ?? "Review revised terms"}
-                </b>
+
+              {isSelectionApproval ? (
+                <fieldset className="quotes" aria-label="Carrier quotes">
+                  <legend>Choose a carrier for the closing call</legend>
+                  {quotes.map((quote) => (
+                    <label
+                      className="quote"
+                      data-selected={selectedQuoteId === quote.id}
+                      key={quote.id}
+                    >
+                      <input
+                        checked={selectedQuoteId === quote.id}
+                        name="carrier-quote"
+                        onChange={() => setSelectedQuoteId(quote.id)}
+                        type="radio"
+                        value={quote.id}
+                      />
+                      <span className="quote__carrier">
+                        <b>{quote.carrierName}</b>
+                        {quote.id === approval.recommendedQuoteId && (
+                          <Tag tone="signal">Volta pick</Tag>
+                        )}
+                      </span>
+                      <span className="quote__price">
+                        {formatMxn(quote.priceMxn)}
+                      </span>
+                      <span className="quote__meta">
+                        {formatPickup(quote.pickupTime)}
+                      </span>
+                      <span className="quote__meta">
+                        {quote.etaMinutes} min ETA
+                      </span>
+                    </label>
+                  ))}
+                </fieldset>
+              ) : (
+                <div className="terms">
+                  <div>
+                    <p className="ml">Carrier</p>
+                    <b>{quotes[0]?.carrierName}</b>
+                  </div>
+                  <div>
+                    <p className="ml">Previous quote</p>
+                    <b>{quotes[0] && formatMxn(quotes[0].priceMxn)}</b>
+                  </div>
+                  <div className="is-new">
+                    <p className="ml">New terms</p>
+                    <b>
+                      {approval.proposedTerms &&
+                        formatMxn(approval.proposedTerms.finalPriceMxn)}
+                    </b>
+                  </div>
+                </div>
+              )}
+
+              <div className="whisper">
+                <span>VOLTA</span>
                 <p>
-                  The recommendation is advisory; your selection is required.
+                  {isSelectionApproval
+                    ? "I have the market. Tell me who may receive the closing call, and I will only confirm the exact terms you authorize."
+                    : "The terms changed on the call. I will not continue without your new approval."}
                 </p>
               </div>
+
+              {decisionError && (
+                <p className="form-error" role="alert">
+                  {decisionError}
+                </p>
+              )}
             </div>
-            {isSelectionApproval ? (
-              <fieldset className="quote-selection" aria-label="Carrier quotes">
-                <legend>Choose a carrier for the closing call</legend>
-                {quotes.map((quote) => (
-                  <label
-                    className={
-                      selectedQuoteId === quote.id
-                        ? "quote-option selected"
-                        : "quote-option"
-                    }
-                    key={quote.id}
-                  >
-                    <input
-                      checked={selectedQuoteId === quote.id}
-                      name="carrier-quote"
-                      onChange={() => setSelectedQuoteId(quote.id)}
-                      type="radio"
-                      value={quote.id}
-                    />
-                    <span className="quote-carrier">
-                      <b>{quote.carrierName}</b>
-                      {quote.id === approval.recommendedQuoteId && (
-                        <small>VOLTA PICK</small>
-                      )}
-                    </span>
-                    <strong>{formatMxn(quote.priceMxn)}</strong>
-                    <span>{formatPickup(quote.pickupTime)}</span>
-                    <span>{quote.etaMinutes} min ETA</span>
-                  </label>
-                ))}
-              </fieldset>
-            ) : (
-              <section className="quote-block">
-                <div>
-                  <span>Carrier</span>
-                  <b>{quotes[0]?.carrierName}</b>
-                </div>
-                <div>
-                  <span>Previous quote</span>
-                  <b>{quotes[0] && formatMxn(quotes[0].priceMxn)}</b>
-                </div>
-                <div>
-                  <span>New terms</span>
-                  <b>
-                    {approval.proposedTerms &&
-                      formatMxn(approval.proposedTerms.finalPriceMxn)}
-                  </b>
-                </div>
-              </section>
-            )}
-            <div className="whisper">
-              <span>VOLTA</span>
-              <p>
-                {isSelectionApproval
-                  ? "I have the market. Tell me who may receive the closing call, and I will only confirm the exact terms you authorize."
-                  : "The terms changed on the call. I will not continue without your new approval."}
-              </p>
-            </div>
-            {decisionError && (
-              <p className="form-error approval-error" role="alert">
-                {decisionError}
-              </p>
-            )}
-            <div className="approval-actions">
+
+            <div className="card__foot">
               <m.button
-                className="button button--primary"
+                className="btn btn--danger"
+                disabled={isSubmitting}
+                onClick={() => void submitDecision("decline")}
+                whileTap={{ scale: 0.985 }}
+              >
+                Decline
+              </m.button>
+              <m.button
+                className="btn btn--primary"
                 disabled={isSubmitting}
                 onClick={() => void submitDecision("approve")}
-                whileFocus={{ outlineOffset: 3 }}
-                whileTap={{ scale: 0.98 }}
+                whileTap={{ scale: 0.985 }}
               >
                 {isSubmitting
                   ? "Calling carrier…"
@@ -639,44 +1547,41 @@ function ApprovalsView() {
                     ? "Authorize closing call"
                     : "Authorize revised terms"}
               </m.button>
-              <m.button
-                className="button button--destructive"
-                disabled={isSubmitting}
-                onClick={() => void submitDecision("decline")}
-                whileFocus={{ outlineOffset: 3 }}
-                whileTap={{ scale: 0.98 }}
-              >
-                Decline
-              </m.button>
             </div>
           </article>
-          <aside className="panel mandate-card">
-            <p className="section-label">Binding mandate</p>
-            <h2>{operation.id}</h2>
-            <dl>
-              <div>
-                <dt>Budget cap</dt>
-                <dd>{formatMxn(operation.mandate.budgetCapMxn)}</dd>
-              </div>
-              <div>
-                <dt>Pickup</dt>
-                <dd>{formatPickup(operation.mandate.pickupDatetime)}</dd>
-              </div>
-              <div>
-                <dt>Route</dt>
-                <dd>
-                  {operation.origin} → {operation.destination}
-                </dd>
-              </div>
-              <div>
-                <dt>Container</dt>
-                <dd>{operation.containerId}</dd>
-              </div>
-            </dl>
-            <p className="audit-note">
-              Your authorization is attached to the operation audit. Volta must
-              repeat the same terms on the closing call before it can commit.
-            </p>
+
+          <aside className="card approval__aside">
+            <div className="card__body">
+              <p className="ml">Binding mandate</p>
+              <h2 style={{ margin: "8px 0 4px", fontSize: 18 }}>
+                {operation.id}
+              </h2>
+              <dl className="spec">
+                <div>
+                  <dt>Budget cap</dt>
+                  <dd>{formatMxn(operation.mandate.budgetCapMxn)}</dd>
+                </div>
+                <div>
+                  <dt>Pickup</dt>
+                  <dd>{formatPickup(operation.mandate.pickupDatetime)}</dd>
+                </div>
+                <div>
+                  <dt>Route</dt>
+                  <dd>
+                    {operation.origin} → {operation.destination}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Container</dt>
+                  <dd>{operation.containerId}</dd>
+                </div>
+              </dl>
+              <p className="audit">
+                Your authorization is attached to the operation audit. Volta
+                must repeat the same terms on the closing call before it can
+                commit.
+              </p>
+            </div>
           </aside>
         </section>
       )}
@@ -684,284 +1589,14 @@ function ApprovalsView() {
   );
 }
 
-function useLiveOperation() {
-  const [operation, setOperation] = useState<OperationReadModel | null>(null);
-  useEffect(() => {
-    const refresh = async () => {
-      const response = await fetch("/api/operation");
-      if (response.ok) {
-        setOperation((await response.json()) as OperationReadModel);
-      }
-    };
-    void refresh();
-    if (typeof EventSource === "undefined") return;
-    const events = new EventSource("/api/events");
-    const sync = () => void refresh();
-    [
-      "mandate.created",
-      "call.started",
-      "call.updated",
-      "quote.registered",
-      "approval.requested",
-      "approval.resolved",
-      "commitment.finalized"
-    ].forEach((name) => events.addEventListener(name, sync));
-    return () => events.close();
-  }, []);
-  return operation;
-}
+/* --------------------------------------------------------------- agent ---- */
 
-function callDuration(session: CallSession): string {
-  const start = Date.parse(session.startedAt);
-  const end = Date.parse(session.endedAt ?? new Date().toISOString());
-  const seconds = Math.max(0, Math.floor((end - start) / 1000));
-  return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
-function callTone(
-  status: CallSession["status"]
-): "blue" | "green" | "amber" | "red" | "neutral" {
-  if (status === "completed") return "green";
-  if (status === "failed") return "red";
-  if (status === "pending") return "amber";
-  return "blue";
-}
-
-function CallFloorView() {
-  const operation = useLiveOperation();
-  return (
-    <>
-      <Topbar
-        title="Call floor"
-        eyebrow="Live negotiation"
-        description="Every carrier leg is visible from dial through quote and outcome."
-        action={
-          <span className="floor-live">
-            <i /> LIVE
-          </span>
-        }
-      />
-      <section className="call-grid">
-        {(operation?.callSessions ?? []).map((session) => {
-          const quote = operation?.quotes.find(
-            (item) => item.id === session.quoteId || item.callId === session.id
-          );
-          return (
-            <article className="panel call-card" key={session.id}>
-              <div className="call-card-head">
-                <Status tone={callTone(session.status)}>
-                  {session.status.replace("_", " ")}
-                </Status>
-                <time>
-                  <ClockIcon /> {callDuration(session)}
-                </time>
-              </div>
-              <p className="machine-ref">{session.callSid ?? session.id}</p>
-              <h2>
-                {session.driverName ??
-                  operation?.candidates.find(
-                    (item) => item.id === session.carrierId
-                  )?.name ??
-                  "Carrier"}
-              </h2>
-              <p>
-                <RouteIcon /> {operation?.origin} → {operation?.destination}
-              </p>
-              <div className="waveform waveform--blue">
-                {Array.from({ length: 16 }, (_, index) => (
-                  <i key={index} />
-                ))}
-              </div>
-              <div className="call-actions">
-                {quote ? (
-                  <strong>
-                    {formatMxn(quote.priceMxn)} · {quote.etaMinutes} min
-                  </strong>
-                ) : (
-                  <span>
-                    {session.endedReason
-                      ? `✕ ${session.endedReason}`
-                      : "Awaiting quote"}
-                  </span>
-                )}
-              </div>
-            </article>
-          );
-        })}
-      </section>
-      {!operation?.callSessions.length && (
-        <section className="panel decision-complete">
-          <PhoneIcon />
-          <p className="section-label">No active calls</p>
-          <h2>Launch a mandate to open the carrier floor.</h2>
-        </section>
-      )}
-    </>
-  );
-}
-
-function PipelineView() {
-  const operation = useLiveOperation();
-  const [expanded, setExpanded] = useState(false);
-  const completed =
-    operation?.callSessions.filter((item) => item.status === "completed")
-      .length ?? 0;
-  const best = operation?.quotes
-    .slice()
-    .sort((left, right) => left.priceMxn - right.priceMxn)[0];
-  return (
-    <>
-      <Topbar
-        title="Pipeline"
-        eyebrow="Operation progress"
-        description="Persisted stages and live call outcomes for the active operation."
-      />
-      {operation && (
-        <section className="panel activity-card">
-          <button
-            className="operation-row"
-            onClick={() => setExpanded((value) => !value)}
-            aria-expanded={expanded}
-          >
-            <div>
-              <span className="machine-ref">{operation.id}</span>
-              <b>
-                {operation.origin} → {operation.destination}
-              </b>
-            </div>
-            <div>
-              <span>Stage</span>
-              <Status tone="blue">
-                {operation.pipelineStage.replace("_", " ")}
-              </Status>
-            </div>
-            <span>
-              {completed}/{operation.callSessions.length} calls
-            </span>
-            <strong>{best ? formatMxn(best.priceMxn) : "—"}</strong>
-            <ChevronIcon />
-          </button>
-          {expanded && (
-            <ul className="timeline">
-              {operation.callSessions.map((session) => (
-                <li key={session.id}>
-                  <i
-                    className={`timeline-mark ${session.status === "completed" ? "green" : "blue"}`}
-                  />
-                  <div>
-                    <b>
-                      {session.driverName ?? session.carrierId ?? "Carrier"}
-                    </b>
-                    <time>{callDuration(session)}</time>
-                    <p>
-                      {session.status}
-                      {session.endedReason ? ` · ${session.endedReason}` : ""}
-                    </p>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      )}
-    </>
-  );
-}
-
-function CarriersView() {
-  const [carriers, setCarriers] = useState<
-    Array<{
-      id: string;
-      name: string;
-      phone: string;
-      lanes: string[];
-      active: boolean;
-    }>
-  >([]);
-  const refresh = async () => {
-    const response = await fetch("/api/carriers");
-    if (response.ok) setCarriers(await response.json());
-  };
-  useEffect(() => {
-    void refresh();
-  }, []);
-  return (
-    <>
-      <Topbar
-        title="Carriers"
-        eyebrow="Network directory"
-        description="Maintain the active carrier pool used for the next mandate fan-out."
-      />
-      <form
-        className="panel form-panel"
-        onSubmit={async (event) => {
-          event.preventDefault();
-          const data = new FormData(event.currentTarget);
-          const response = await fetch("/api/carriers", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              name: data.get("name"),
-              phone: data.get("phone"),
-              lanes: String(data.get("lanes") ?? "")
-                .split(",")
-                .map((item) => item.trim())
-                .filter(Boolean)
-            })
-          });
-          if (response.ok) {
-            event.currentTarget.reset();
-            await refresh();
-          }
-        }}
-      >
-        <div className="step-heading">
-          <span>+</span>
-          <div>
-            <h2>Add carrier</h2>
-            <p>Only active carriers receive new call rounds.</p>
-          </div>
-        </div>
-        <div className="form-grid">
-          <label>
-            Name
-            <input name="name" required />
-          </label>
-          <label>
-            Phone
-            <input name="phone" type="tel" required />
-          </label>
-          <label className="span-2">
-            Lanes
-            <input name="lanes" placeholder="Manzanillo → Guadalajara" />
-          </label>
-        </div>
-        <button className="button button--primary" type="submit">
-          Add carrier <PlusIcon />
-        </button>
-      </form>
-      <section className="panel activity-card">
-        {carriers.map((carrier) => (
-          <div className="operation-row" key={carrier.id}>
-            <div>
-              <span className="machine-ref">{carrier.phone}</span>
-              <b>{carrier.name}</b>
-            </div>
-            <div>
-              <span>Lanes</span>
-              <b>{carrier.lanes.join(", ") || "All lanes"}</b>
-            </div>
-            <span />
-            <Status tone={carrier.active ? "green" : "neutral"}>
-              {carrier.active ? "active" : "inactive"}
-            </Status>
-            <RouteIcon />
-          </div>
-        ))}
-      </section>
-    </>
-  );
-}
+const QUICK_PROMPTS = [
+  "Where is the shipment?",
+  "Why is this waiting on me?",
+  "What did the carrier say?",
+  "Which quote is cheapest?"
+];
 
 function localMessage(
   id: string,
@@ -1025,11 +1660,17 @@ function DispatchCopilot() {
     )
   ]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const threadRef = useRef<HTMLDivElement>(null);
   const historyRestoredRef = useRef(false);
 
   useEffect(() => {
     if (isOpen) inputRef.current?.focus();
   }, [isOpen]);
+
+  useEffect(() => {
+    const thread = threadRef.current;
+    if (thread) thread.scrollTop = thread.scrollHeight;
+  }, [messages, isSending]);
 
   useEffect(() => {
     if (!isOpen || conversationId || historyRestoredRef.current) return;
@@ -1154,11 +1795,11 @@ function DispatchCopilot() {
         aria-controls="dispatch-copilot"
         aria-expanded={isOpen}
         aria-label="Ask Volta"
-        className="copilot-launcher"
+        className="agent-launcher"
         onClick={() => setIsOpen(true)}
         whileTap={{ scale: 0.98 }}
       >
-        <span className="copilot-launcher-mark">V/</span>
+        <span className="agent-launcher__mark">V/</span>
         Ask Volta
       </m.button>
       <AnimatePresence>
@@ -1166,7 +1807,7 @@ function DispatchCopilot() {
           <>
             <m.button
               aria-label="Close Volta Copilot"
-              className="copilot-backdrop"
+              className="agent-scrim"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
@@ -1174,38 +1815,56 @@ function DispatchCopilot() {
             />
             <m.aside
               aria-label="Volta Copilot"
-              className="copilot-panel"
+              className="agent"
               exit={{ opacity: 0, x: 24 }}
               id="dispatch-copilot"
               initial={{ opacity: 0, x: 32 }}
               animate={{ opacity: 1, x: 0 }}
             >
-              <header className="copilot-header">
+              <header className="agent__head">
                 <div>
-                  <p className="section-label">Process copilot</p>
+                  <p className="ml">Process copilot</p>
                   <h2>Ask Volta</h2>
                 </div>
                 <button
                   aria-label="Close Volta Copilot"
-                  className="copilot-close"
+                  className="agent__close"
                   onClick={() => setIsOpen(false)}
                   type="button"
                 >
                   ×
                 </button>
               </header>
-              <p className="copilot-context">
+              <p className="agent__context">
                 Backend agent grounded in operational records. Every factual
                 answer links to its evidence; actions wait for your approval.
               </p>
-              <section className="copilot-thread" aria-live="polite">
+              {messages.length === 1 && (
+                <div className="agent__prompts">
+                  {QUICK_PROMPTS.map((prompt) => (
+                    <button
+                      key={prompt}
+                      onClick={() => {
+                        setQuestion(prompt);
+                        inputRef.current?.focus();
+                      }}
+                      type="button"
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <section
+                className="agent__thread"
+                aria-live="polite"
+                ref={threadRef}
+              >
                 <AnimatePresence initial={false}>
                   {messages.map((message) => (
                     <m.article
                       animate={{ opacity: 1, y: 0 }}
-                      className={
-                        "copilot-message copilot-message--" + message.role
-                      }
+                      className={"agent__msg agent__msg--" + message.role}
                       exit={{ opacity: 0, y: -4 }}
                       initial={{ opacity: 0, y: 8 }}
                       key={message.id}
@@ -1213,27 +1872,30 @@ function DispatchCopilot() {
                       <b>{message.role === "assistant" ? "VOLTA" : "YOU"}</b>
                       <p>{message.content}</p>
                       {message.citations.length > 0 && (
-                        <ol className="copilot-citations" aria-label="Evidence">
+                        <ol className="agent__cites" aria-label="Evidence">
                           {message.citations.map((citation) => (
                             <li key={citation.id}>
                               <a href={citation.href} target="_blank">
+                                <LinkIcon />
                                 {citation.title}
                               </a>
                               <time dateTime={citation.occurredAt}>
-                                {new Date(citation.occurredAt).toLocaleString()}
+                                {new Date(
+                                  citation.occurredAt
+                                ).toLocaleDateString()}
                               </time>
                             </li>
                           ))}
                         </ol>
                       )}
                       {message.proposedActions.map((action) => (
-                        <section className="copilot-action" key={action.id}>
-                          <span>Human approval required</span>
+                        <section className="agent__action" key={action.id}>
+                          <p className="ml">Human approval required</p>
                           <p>{action.summary}</p>
                           {action.status === "pending" ? (
                             <div>
                               <button
-                                className="button button--primary"
+                                className="btn btn--primary btn--sm"
                                 onClick={() =>
                                   void decideAction(action, "approve")
                                 }
@@ -1242,7 +1904,7 @@ function DispatchCopilot() {
                                 Approve action
                               </button>
                               <button
-                                className="button button--secondary"
+                                className="btn btn--secondary btn--sm"
                                 onClick={() =>
                                   void decideAction(action, "decline")
                                 }
@@ -1260,13 +1922,13 @@ function DispatchCopilot() {
                   ))}
                 </AnimatePresence>
                 {isSending && (
-                  <div className="copilot-thinking">
-                    <i />
-                    Volta is reviewing the operation
+                  <div className="agent__thinking">
+                    <i className="pulse" />
+                    Volta is reading the record
                   </div>
                 )}
               </section>
-              <form className="copilot-composer" onSubmit={askCopilot}>
+              <form className="agent__composer" onSubmit={askCopilot}>
                 <label htmlFor="copilot-question">
                   Ask across operational history
                 </label>
@@ -1278,7 +1940,7 @@ function DispatchCopilot() {
                   value={question}
                 />
                 <m.button
-                  className="button button--primary"
+                  className="btn btn--signal"
                   disabled={!question.trim() || isSending || isRestoring}
                   type="submit"
                   whileTap={{ scale: 0.98 }}
@@ -1299,21 +1961,40 @@ function DispatchCopilot() {
   );
 }
 
+/* --------------------------------------------------------------- entry ---- */
+
 export function DashboardConsole() {
   const [view, setView] = useState<View>("new-mandate");
+  const snapshot = useOperationSnapshot();
+
+  const liveLines = snapshot?.liveLines ?? 0;
+  const waiting = snapshot?.waiting ?? 0;
+
+  function badgeFor(id: View) {
+    if (id === "call-floor" && liveLines > 0) {
+      return (
+        <span className="rail__count rail__count--signal">{liveLines}</span>
+      );
+    }
+    if (id === "approvals" && waiting > 0) {
+      return <span className="rail__count rail__count--brass">{waiting}</span>;
+    }
+    return null;
+  }
+
   return (
     <LazyMotion features={domMax} strict>
       <MotionConfig
         reducedMotion="user"
         transition={{ duration: 0.18, ease: "easeOut" }}
       >
-        <div className="app-shell">
-          <aside className="nav-rail">
-            <div className="brand">
-              <span>V</span>
+        <div className="shell">
+          <aside className="rail">
+            <div className="rail__brand">
+              <span className="rail__mark">V/</span>
               <div>
                 <b>Volta</b>
-                <small>DISPATCH BLUE V1.0</small>
+                <small>DISPATCH CONSOLE</small>
               </div>
             </div>
             <nav aria-label="Primary navigation">
@@ -1322,45 +2003,50 @@ export function DashboardConsole() {
                 return (
                   <m.button
                     key={item.id}
-                    className={view === item.id ? "active" : ""}
+                    className={view === item.id ? "is-active" : ""}
                     aria-current={view === item.id ? "page" : undefined}
                     onClick={() => setView(item.id)}
-                    whileFocus={{ outlineOffset: 3 }}
                     whileTap={{ scale: 0.98 }}
                   >
                     <Icon />
                     <span>{item.label}</span>
+                    {badgeFor(item.id)}
                   </m.button>
                 );
               })}
             </nav>
-            <div className="rail-footer">
-              <span className="operator-avatar">O</span>
+            <div className="rail__foot">
+              <span className="rail__avatar">OP</span>
               <div>
                 <b>Operator</b>
                 <small>Dispatcher</small>
               </div>
-              <button aria-label="Open operator menu">•••</button>
+              <ThemeToggle />
             </div>
           </aside>
-          <main>
-            <AnimatePresence initial={false} mode="wait">
-              <m.div
-                animate={{ opacity: 1, y: 0 }}
-                className="view-stage"
-                exit={{ opacity: 0, y: -4 }}
-                initial={{ opacity: 0, y: 8 }}
-                key={view}
-              >
-                {view === "new-mandate" && (
-                  <NewMandateView onCreated={() => setView("call-floor")} />
-                )}
-                {view === "call-floor" && <CallFloorView />}
-                {view === "pipeline" && <PipelineView />}
-                {view === "carriers" && <CarriersView />}
-                {view === "approvals" && <ApprovalsView />}
-              </m.div>
-            </AnimatePresence>
+          <main className="stage">
+            <ConsoleStrip />
+            <div className="stage__body">
+              <AnimatePresence initial={false} mode="wait">
+                <m.div
+                  animate={{ opacity: 1, y: 0 }}
+                  className="view"
+                  exit={{ opacity: 0, y: -4 }}
+                  initial={{ opacity: 0, y: 8 }}
+                  key={view}
+                >
+                  {view === "new-mandate" && (
+                    <NewMandateView onCreated={() => setView("call-floor")} />
+                  )}
+                  {view === "call-floor" && (
+                    <CallFloorView onNavigate={setView} />
+                  )}
+                  {view === "pipeline" && <PipelineView onNavigate={setView} />}
+                  {view === "carriers" && <CarriersView />}
+                  {view === "approvals" && <ApprovalsView />}
+                </m.div>
+              </AnimatePresence>
+            </div>
           </main>
           <DispatchCopilot />
         </div>
