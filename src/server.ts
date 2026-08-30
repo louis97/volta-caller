@@ -554,13 +554,21 @@ export function createApp(options: CreateAppOptions = {}) {
 
 function createDefaultMandatesRepository(): MandatesRepository {
   if (env.VOLTA_MODE !== "live") return createMemoryMandatesRepository();
+
   const supabaseKey =
     env.SUPABASE_SERVICE_ROLE_KEY ?? env.SUPABASE_PUBLISHABLE_KEY;
+
+  // VOLTA_MODE=live carries two independent meanings: real telephony and real
+  // persistence. Refusing to boot without Supabase blocks all voice work on a
+  // dependency the call path never touches, so an unconfigured mandate store
+  // degrades loudly to memory instead of taking the process down.
   if (!env.SUPABASE_URL || !supabaseKey) {
-    throw new Error(
-      "SUPABASE_URL and either SUPABASE_PUBLISHABLE_KEY or SUPABASE_SERVICE_ROLE_KEY are required in live mode"
+    console.warn(
+      "[mandates] live mode without Supabase; mandates are in memory and will not survive a restart"
     );
+    return createMemoryMandatesRepository();
   }
+
   return createSupabaseMandatesRepositoryFromConfig(
     env.SUPABASE_URL,
     supabaseKey
