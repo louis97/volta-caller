@@ -399,7 +399,7 @@ export function mountTelephonyRoutes(
       createCallReference: dependencies.createCallReference,
       timeLimitSeconds: env.CALL_TIME_LIMIT_SECONDS,
       record: env.TWILIO_RECORD_CALLS,
-      detectAnsweringMachine: true,
+      detectAnsweringMachine: env.TWILIO_HANGUP_ON_MACHINE,
       onDialled: (callId, carrier) => {
         dialled.set(callId, carrier);
         context.auction.startCall(carrier.id, callId);

@@ -848,7 +848,7 @@ export function createApp(options: CreateAppOptions = {}) {
         createCallReference: createTelephonyCallReference,
         timeLimitSeconds: env.CALL_TIME_LIMIT_SECONDS,
         record: env.TWILIO_RECORD_CALLS,
-        detectAnsweringMachine: true,
+        detectAnsweringMachine: env.TWILIO_HANGUP_ON_MACHINE,
         onDialled: (callId, carrier) => {
           telephony.dialled.set(callId, carrier);
           telephony.auction.startCall(carrier.id, callId);

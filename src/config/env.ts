@@ -55,6 +55,18 @@ const envSchema = z
      * was agreed. Trial accounts cannot use it: Twilio rejects the whole
      * request with "trial accounts have limited parameter access".
      */
+    /**
+     * Hang up when Twilio reports an answering machine.
+     *
+     * Off by default: detection misfires on a real person answering with a
+     * short greeting — "¿Aló?" then a pause reads as machine_start — and
+     * dropping live calls is far worse than the voicemail minutes it saves.
+     * CALL_TIME_LIMIT_SECONDS already caps that waste.
+     */
+    TWILIO_HANGUP_ON_MACHINE: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
     TWILIO_RECORD_CALLS: z
       .enum(["true", "false"])
       .default("false")
