@@ -31,9 +31,11 @@ const createMandateSchema = z
 
 export class InvalidMandateError extends Error {
   readonly code = "invalid_mandate";
+  readonly fieldErrors: Record<string, string[]>;
 
-  constructor() {
+  constructor(fieldErrors: Record<string, string[]> = {}) {
     super("The mandate payload is invalid");
+    this.fieldErrors = fieldErrors;
   }
 }
 
@@ -42,7 +44,9 @@ export async function createMandate(
   input: unknown
 ): Promise<MandateRecord> {
   const parsed = createMandateSchema.safeParse(input);
-  if (!parsed.success) throw new InvalidMandateError();
+  if (!parsed.success) {
+    throw new InvalidMandateError(parsed.error.flatten().fieldErrors);
+  }
   return repository.create(parsed.data satisfies CreateMandateRequest);
 }
 

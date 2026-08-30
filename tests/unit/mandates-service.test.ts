@@ -5,6 +5,7 @@ import {
   getMandate,
   listMandates
 } from "../../src/core/mandates/service";
+import type { InvalidMandateError } from "../../src/core/mandates/service";
 import type {
   MandateRecord,
   MandatesRepository
@@ -62,6 +63,11 @@ describe("mandates service", () => {
         ...request,
         pickup_datetime: request.destination_datetime
       })
-    ).rejects.toMatchObject({ code: "invalid_mandate" });
+    ).rejects.toMatchObject({
+      code: "invalid_mandate",
+      fieldErrors: {
+        pickup_datetime: ["pickup_datetime must be before destination_datetime"]
+      }
+    } satisfies Partial<InvalidMandateError>);
   });
 });

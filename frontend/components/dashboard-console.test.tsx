@@ -666,16 +666,22 @@ describe("DashboardConsole", () => {
         expect.objectContaining({ method: "POST" })
       );
     });
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+    const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(payload).toMatchObject({
       budget_cap: 9000,
-      destination_datetime: "2026-09-03T18:00:00-06:00",
       destination_place: "Textiles Pacífico, Guadalajara, Jalisco",
       type_of_content: "textiles",
       weight: 18400,
       measures: "120 × 100 × 110 cm",
-      pickup_address: "Terminal de Contenedores, Manzanillo, Colima",
-      pickup_datetime: "2026-09-03T10:00:00-06:00"
+      pickup_address: "Terminal de Contenedores, Manzanillo, Colima"
     });
+    expect(payload.pickup_datetime).toMatch(/^2026-09-03T\d{2}:00:00\.000Z$/);
+    expect(payload.destination_datetime).toMatch(
+      /^2026-09-03T\d{2}:00:00\.000Z$/
+    );
+    expect(Date.parse(payload.pickup_datetime)).toBeLessThan(
+      Date.parse(payload.destination_datetime)
+    );
     expect(
       await screen.findByText("Mandate operation-mandate-1 created")
     ).toBeInTheDocument();

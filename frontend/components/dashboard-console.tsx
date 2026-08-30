@@ -55,8 +55,6 @@ type MandateSaveState =
   | { status: "saved"; operationId: string }
   | { status: "error"; message: string };
 
-const MANDATE_TIMEZONE_OFFSET = "-06:00";
-
 const navItems: Array<{
   id: View;
   label: string;
@@ -1242,8 +1240,7 @@ function TestingCarriers() {
 }
 
 const MANDATE_ERROR_MESSAGE: Record<string, string> = {
-  invalid_mandate:
-    "Check every field: pickup date & time must be before the destination date & time, and none can be empty.",
+  invalid_mandate: "Check the mandate fields and try again.",
   mandate_persistence_failed:
     "Volta could not save this mandate right now — try again in a moment.",
   authentication_required:
@@ -1252,7 +1249,12 @@ const MANDATE_ERROR_MESSAGE: Record<string, string> = {
 
 async function mandateErrorMessage(response: Response): Promise<string> {
   try {
-    const body = (await response.json()) as { error?: string };
+    const body = (await response.json()) as {
+      error?: string;
+      fieldErrors?: Record<string, string[] | undefined>;
+    };
+    const fieldMessages = formatMandateFieldErrors(body.fieldErrors);
+    if (fieldMessages.length > 0) return fieldMessages.join(" ");
     if (body.error) {
       return (
         MANDATE_ERROR_MESSAGE[body.error] ??
@@ -1265,12 +1267,41 @@ async function mandateErrorMessage(response: Response): Promise<string> {
   return `Volta could not save this mandate (HTTP ${response.status}).`;
 }
 
+function formatMandateFieldErrors(
+  errors: Record<string, string[] | undefined> | undefined
+): string[] {
+  if (!errors) return [];
+  const labels: Record<string, string> = {
+    budget_cap: "Budget cap",
+    destination_datetime: "Destination date & time",
+    destination_place: "Destination place",
+    measures: "Measures",
+    pickup_address: "Pickup address",
+    pickup_datetime: "Pickup date & time",
+    type_of_content: "Type of content",
+    weight: "Weight"
+  };
+
+  return Object.entries(errors).flatMap(([field, messages]) => {
+    const message = messages?.[0];
+    return message ? [`${labels[field] ?? field}: ${message}.`] : [];
+  });
+}
+
 function toOffsetDatetime(value: FormDataEntryValue | null): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new Error("A mandate datetime is required.");
   }
 
-  return `${value}:00${MANDATE_TIMEZONE_OFFSET}`;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error("A mandate datetime is invalid.");
+  }
+
+  // `datetime-local` represents the dispatcher's local wall-clock time. The
+  // browser resolves that zone; serialising as UTC avoids the former fixed
+  // -06:00 offset and always gives the API a complete ISO 8601 timestamp.
+  return parsed.toISOString();
 }
 
 /* ---------------------------------------------------------- call floor ---- */

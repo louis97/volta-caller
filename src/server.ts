@@ -1119,7 +1119,10 @@ export function createApp(options: CreateAppOptions = {}) {
       response.status(201).json(operationReadModel(operation));
     } catch (error) {
       if (error instanceof InvalidMandateError) {
-        response.status(400).json({ error: error.code });
+        response.status(400).json({
+          error: error.code,
+          fieldErrors: error.fieldErrors
+        });
         return;
       }
       console.error("Mandate creation failed", error);
