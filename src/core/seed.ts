@@ -37,6 +37,11 @@ export function seedOperation(): Operation {
         id: "carrier-logistica-manzanillo",
         name: "Logística Manzanillo",
         phone: "+573208643487"
+      },
+      {
+        id: "carrier-fletes-bajio",
+        name: "Fletes del Bajío",
+        phone: "+573224118118"
       }
     ],
     quotes: [],

@@ -5,12 +5,14 @@ import {
 } from "../../src/core/seed";
 import { expect, it } from "vitest";
 
-it("seeds three carrier candidates under one Textiles Pacífico operation", () => {
+it("seeds a market of carrier candidates under one Textiles Pacífico operation", () => {
   const operation = seedOperation();
 
   expect(operation.containerId).toBe("MSCU-TP-001");
   expect(operation.mandate.budgetCapMxn).toBe(9000);
-  expect(operation.candidates).toHaveLength(3);
+  // The challenge requires negotiating at least three carriers in parallel;
+  // the exact roster changes with the handsets available to demo with.
+  expect(operation.candidates.length).toBeGreaterThanOrEqual(3);
   expect(operation.mandate.pickupDatetime).toBe(THURSDAY_PICKUP);
 });
 
