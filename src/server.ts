@@ -28,7 +28,7 @@ import {
 import { env, missingTelephonyConfig } from "./config/env";
 import { createMemoryMandatesRepository } from "./core/mandates/memory-repository";
 import {
-  createMandate,
+  createMandate as persistMandate,
   getMandate,
   InvalidMandateError,
   listMandates
@@ -490,22 +490,6 @@ export function createApp(options: CreateAppOptions = {}) {
   app.locals.saveCallSession = (
     session: import("@volta/contracts").CallSession
   ) => repository.saveCallSession(activeOrganizationId, session);
-  const agent = createOperationalAgent({
-    repository,
-    answerer,
-    getCurrentOperation: () => scenario.store.getOperation(),
-    executeCloseApprovedDeal: () => scenario.closeApprovedDeal(),
-    resolveCarrierSelection: (input) => {
-      scenario.store.resolveApproval({
-        approvalId: input.approvalId,
-        action: "approve",
-        selectedQuoteId: input.selectedQuoteId,
-        decidedBy: input.decidedBy,
-        decidedAt: input.decidedAt
-      });
-      return true;
-    }
-  });
   const persistCurrentOperation = (context: OrganizationContext) =>
     repository.syncOperation(
       context.organizationId,
@@ -521,6 +505,78 @@ export function createApp(options: CreateAppOptions = {}) {
         )
     );
   };
+
+  const launchMandate = async (
+    context: OrganizationContext,
+    input: unknown
+  ) => {
+    const mandate = await persistMandate(mandatesRepository, input);
+    activeOrganizationId = context.organizationId;
+    const carriers = await repository.listCarriers(context.organizationId);
+    const operation = createOperationFromMandate(
+      mandate,
+      `operation-${mandate.id}`
+    );
+    const active = carriers
+      .filter((carrier) => carrier.active)
+      .map(({ id, name, phone }) => ({ id, name, phone }));
+    if (active.length === 0) {
+      console.warn(
+        "[mandates] no active carriers in the directory; falling back to the seeded pool"
+      );
+    }
+    operation.candidates =
+      active.length > 0 ? active : seedOperation().candidates;
+    scenario.store.replaceOperation(operation);
+    await persistCurrentOperation(context);
+    const telephony = telephonyContext(scenario.store);
+    telephony.resetAuction();
+    console.log(
+      `[mandates] dialling ${operation.candidates.length}: ${operation.candidates
+        .map((candidate) => candidate.name)
+        .join(", ")}`
+    );
+    await fanOutCalls({
+      store: scenario.store,
+      mode: env.VOLTA_MODE,
+      publicBaseUrl: env.PUBLIC_BASE_URL,
+      from: env.TWILIO_FROM_NUMBER,
+      gateway:
+        env.VOLTA_MODE === "live" ? createLiveTelephonyGateway() : undefined,
+      timeLimitSeconds: env.CALL_TIME_LIMIT_SECONDS,
+      record: env.TWILIO_RECORD_CALLS,
+      detectAnsweringMachine: true,
+      onDialled: (callId, carrier) => {
+        telephony.dialled.set(callId, carrier);
+        telephony.auction.startCall(carrier.id, callId);
+      },
+      onRoundReviewed: publishQuotesReady
+    });
+    await persistCallSessions(context);
+    await persistCurrentOperation(context);
+    return scenario.store.getOperation();
+  };
+
+  const agent = createOperationalAgent({
+    repository,
+    answerer,
+    getCurrentOperation: () => scenario.store.getOperation(),
+    executeCreateMandate: async (input, context) => {
+      await launchMandate(context, input);
+      return true;
+    },
+    executeCloseApprovedDeal: () => scenario.closeApprovedDeal(),
+    resolveCarrierSelection: (input) => {
+      scenario.store.resolveApproval({
+        approvalId: input.approvalId,
+        action: "approve",
+        selectedQuoteId: input.selectedQuoteId,
+        decidedBy: input.decidedBy,
+        decidedAt: input.decidedAt
+      });
+      return true;
+    }
+  });
 
   app.get("/health", (_request, response) => {
     response.status(200).json({ status: "ok", mode: env.VOLTA_MODE });
@@ -625,65 +681,10 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.post("/api/mandates", async (request, response) => {
     try {
-      const mandate = await createMandate(mandatesRepository, request.body);
       const context = contextFromRequest(request, response);
       if (!context) return;
-      activeOrganizationId = context.organizationId;
-      const carriers = await repository.listCarriers(context.organizationId);
-      const operation = createOperationFromMandate(
-        mandate,
-        `operation-${mandate.id}`
-      );
-      const active = carriers
-        .filter((carrier) => carrier.active)
-        .map(({ id, name, phone }) => ({ id, name, phone }));
-
-      // An empty directory would dial nobody and look like the mandate simply
-      // did nothing, so the seeded pool stands in and says so.
-      if (active.length === 0) {
-        console.warn(
-          "[mandates] no active carriers in the directory; falling back to the seeded pool"
-        );
-      }
-      operation.candidates =
-        active.length > 0 ? active : seedOperation().candidates;
-
-      scenario.store.replaceOperation(operation);
-      await persistCurrentOperation(context);
-
-      // A new mandate opens a new market: the round's quotes must not inherit
-      // the previous one, and each leg has to be attributable to its carrier
-      // or get_leverage has nothing real to cite.
-      const telephony = telephonyContext(scenario.store);
-      telephony.resetAuction();
-
-      console.log(
-        `[mandates] dialling ${operation.candidates.length}: ${operation.candidates
-          .map((candidate) => candidate.name)
-          .join(", ")}`
-      );
-
-      await fanOutCalls({
-        store: scenario.store,
-        mode: env.VOLTA_MODE,
-        publicBaseUrl: env.PUBLIC_BASE_URL,
-        from: env.TWILIO_FROM_NUMBER,
-        gateway:
-          env.VOLTA_MODE === "live" ? createLiveTelephonyGateway() : undefined,
-        timeLimitSeconds: env.CALL_TIME_LIMIT_SECONDS,
-        record: env.TWILIO_RECORD_CALLS,
-        detectAnsweringMachine: true,
-        onDialled: (callId, carrier) => {
-          telephony.dialled.set(callId, carrier);
-          telephony.auction.startCall(carrier.id, callId);
-        },
-        onRoundReviewed: publishQuotesReady
-      });
-      await persistCallSessions(context);
-      await persistCurrentOperation(context);
-      response
-        .status(201)
-        .json(operationReadModel(scenario.store.getOperation()));
+      const operation = await launchMandate(context, request.body);
+      response.status(201).json(operationReadModel(operation));
     } catch (error) {
       if (error instanceof InvalidMandateError) {
         response.status(400).json({ error: error.code });

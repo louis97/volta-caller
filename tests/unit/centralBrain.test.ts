@@ -159,6 +159,7 @@ describe("central brain tools", () => {
       repository,
       answerer: new DeterministicAgentAnswerer(),
       getCurrentOperation: () => store.getOperation(),
+      executeCreateMandate: async () => false,
       executeCloseApprovedDeal: async () => false,
       resolveCarrierSelection: (input) => {
         store.resolveApproval({ ...input, action: "approve" });
@@ -207,6 +208,7 @@ describe("central brain tools", () => {
       repository,
       answerer: new DeterministicAgentAnswerer(),
       getCurrentOperation: () => store.getOperation(),
+      executeCreateMandate: async () => false,
       executeCloseApprovedDeal: async () => false,
       resolveCarrierSelection: () => true,
       now: () => NOW
@@ -223,6 +225,87 @@ describe("central brain tools", () => {
       failureReason: "operation_changed"
     });
     expect(store.getOperation().approvals[0].status).toBe("pending");
+  });
+
+  it("proposes a complete mandate and executes it only after approval", async () => {
+    const operation = quoteRound();
+    const repository = new MemoryAgentRepository();
+    await repository.syncOperation(context.organizationId, operation);
+    const conversation = await repository.createConversation(context);
+    const tools = createCentralBrainTools({
+      context,
+      conversationId: conversation.id,
+      repository,
+      getCurrentOperation: () => operation,
+      now: () => NOW
+    });
+    const mandate = {
+      budget_cap: 40000000,
+      destination_datetime: "2026-09-01T17:00:00-05:00",
+      destination_place: "Calle 87B #6-10, Medellín",
+      type_of_content: "Carga general no frágil",
+      weight: 20000,
+      measures: "Contenedor de 20 pies",
+      pickup_address: "Sociedad Portuaria de Santa Marta",
+      pickup_datetime: "2026-08-31T08:00:00-05:00"
+    };
+
+    const proposal = await tool(tools, "propose_create_mandate").execute(
+      mandate
+    );
+    expect(proposal.proposedAction).toMatchObject({
+      type: "create_mandate",
+      status: "pending",
+      payload: mandate
+    });
+
+    let executedPayload: typeof mandate | undefined;
+    const agent = createOperationalAgent({
+      repository,
+      answerer: new DeterministicAgentAnswerer(),
+      getCurrentOperation: () => operation,
+      executeCreateMandate: async (input) => {
+        executedPayload = input;
+        return true;
+      },
+      executeCloseApprovedDeal: async () => false,
+      resolveCarrierSelection: () => false,
+      now: () => NOW
+    });
+    const decided = await agent.decideAction(
+      context,
+      proposal.proposedAction?.id ?? "missing",
+      "approve"
+    );
+
+    expect(decided.status).toBe("executed");
+    expect(executedPayload).toEqual(mandate);
+  });
+
+  it("rejects ambiguous or inverted mandate dates before proposing", async () => {
+    const operation = quoteRound();
+    const repository = new MemoryAgentRepository();
+    const tools = createCentralBrainTools({
+      context,
+      conversationId: "conversation-001",
+      repository,
+      getCurrentOperation: () => operation,
+      now: () => NOW
+    });
+
+    const result = await tool(tools, "propose_create_mandate").execute({
+      budget_cap: 40000000,
+      destination_datetime: "2026-08-31T07:00:00-05:00",
+      destination_place: "Medellín",
+      type_of_content: "Carga general",
+      weight: 20000,
+      measures: "20 pies",
+      pickup_address: "Santa Marta",
+      pickup_datetime: "2026-08-31T08:00:00-05:00"
+    });
+
+    expect(result.output).toEqual({ error: "invalid_arguments" });
+    expect(result.proposedAction).toBeUndefined();
   });
 });
 

@@ -3,6 +3,7 @@ import type {
   AgentActivity,
   AgentConversation,
   AgentMessage,
+  CreateMandateRequest,
   EvidenceCitation,
   Operation,
   ProposedAction
@@ -39,7 +40,9 @@ export const CENTRAL_BRAIN_INSTRUCTIONS = [
   "Cuando el usuario esté creando un mandato, recoge exactamente estos ocho campos del contrato CreateMandateRequest: presupuesto máximo en MXN, fecha y hora de entrega, lugar de entrega, tipo de contenido, peso en kg, medidas, dirección de recolección, y fecha y hora de recolección.",
   "Para un mandato no exijas BL, booking, DO, liberación, naviera, NIT, contactos, slot, seguro, devolución de vacío ni datos adicionales; esos datos no forman parte del contrato vigente.",
   "Conserva los valores ya confirmados en el historial y pregunta solo por campos faltantes o ambiguos, máximo tres por respuesta. Nunca repitas una pregunta ya resuelta.",
-  "Si los ocho campos están completos, resume el mandato con esos ocho valores. No afirmes que lo creaste o que pediste cotizaciones porque todavía no tienes una tool para crear mandatos.",
+  "No conviertas monedas silenciosamente. budget_cap solo acepta MXN: si el usuario da USD u otra moneda, pide el tope en MXN o una autorización explícita con la tasa que debe usarse.",
+  "Convierte expresiones relativas como hoy, mañana o pasado mañana a fechas exactas usando la fecha actual provista. Si no se indica otra zona horaria, usa America/Bogota (-05:00). Confirma cualquier ambigüedad antes de proponer.",
+  "Si los ocho campos están completos, explícitos y sin ambigüedad, llama propose_create_mandate con fechas ISO 8601 con zona, peso en kg y presupuesto en MXN. Explica que queda pendiente de aprobación humana en Volta; no afirmes que se creó ni que se pidieron cotizaciones hasta que la acción se ejecute.",
   "Sé concreto y útil para un dispatcher."
 ].join("\n");
 
@@ -54,6 +57,7 @@ export type AnswerRequest = {
   question: string;
   history: AgentMessage[];
   currentOperation: Operation;
+  currentDateTime: string;
   tools: CentralBrainTool[];
   onActivity?: (activity: AgentActivity) => void;
 };
@@ -118,7 +122,7 @@ export class OpenAIAgentAnswerer implements AgentAnswerer {
         model: this.model,
         store: false,
         include: ["reasoning.encrypted_content"],
-        instructions: CENTRAL_BRAIN_INSTRUCTIONS,
+        instructions: `${CENTRAL_BRAIN_INSTRUCTIONS}\nFecha y hora actual del servidor: ${request.currentDateTime}.`,
         input,
         parallel_tool_calls: false,
         tool_choice: allowTools ? "auto" : "none",
@@ -259,6 +263,10 @@ export type OperationalAgentDependencies = {
   repository: AgentRepository;
   answerer: AgentAnswerer;
   getCurrentOperation(): Operation;
+  executeCreateMandate(
+    input: CreateMandateRequest,
+    context: OrganizationContext
+  ): Promise<boolean>;
   executeCloseApprovedDeal(): Promise<boolean>;
   resolveCarrierSelection(input: {
     approvalId: string;
@@ -273,6 +281,7 @@ export function createOperationalAgent({
   repository,
   answerer,
   getCurrentOperation,
+  executeCreateMandate,
   executeCloseApprovedDeal,
   resolveCarrierSelection,
   now = () => new Date().toISOString()
@@ -343,6 +352,7 @@ export function createOperationalAgent({
         question,
         history: [...conversation.messages, userMessage],
         currentOperation: operation,
+        currentDateTime: createdAt,
         tools,
         onActivity
       });
@@ -410,14 +420,16 @@ export function createOperationalAgent({
       await repository.updateAction(approved);
       try {
         const executed =
-          approved.type === "close_approved_deal"
-            ? await executeCloseApprovedDeal()
-            : await resolveCarrierSelection({
-                approvalId: approved.payload.approvalId,
-                selectedQuoteId: approved.payload.selectedQuoteId,
-                decidedBy: context.userId,
-                decidedAt
-              });
+          approved.type === "create_mandate"
+            ? await executeCreateMandate(approved.payload, context)
+            : approved.type === "close_approved_deal"
+              ? await executeCloseApprovedDeal()
+              : await resolveCarrierSelection({
+                  approvalId: approved.payload.approvalId,
+                  selectedQuoteId: approved.payload.selectedQuoteId,
+                  decidedBy: context.userId,
+                  decidedAt
+                });
         const result: ProposedAction = {
           ...approved,
           status: executed ? "executed" : "failed",

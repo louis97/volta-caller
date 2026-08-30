@@ -410,6 +410,10 @@ type ProposedActionBase = {
 export type ProposedAction = ProposedActionBase &
   (
     | {
+        type: "create_mandate";
+        payload: CreateMandateRequest;
+      }
+    | {
         type: "close_approved_deal";
         payload: Record<string, never>;
       }

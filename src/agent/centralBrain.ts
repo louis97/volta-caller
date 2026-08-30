@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   AgentActivity,
+  CreateMandateRequest,
   EvidenceCitation,
   Operation,
   ProposedAction
@@ -43,6 +44,45 @@ const selectionSchema = z.object({
   selectedQuoteId: z.string().trim().min(1),
   rationale: z.string().trim().min(1).max(500).nullable()
 });
+const mandateSchema = z
+  .object({
+    budget_cap: z
+      .number()
+      .finite()
+      .positive()
+      .describe("Presupuesto máximo expresado exclusivamente en MXN"),
+    destination_datetime: z
+      .string()
+      .datetime({ offset: true })
+      .describe("Fecha y hora exacta de entrega en ISO 8601 con zona horaria"),
+    destination_place: z.string().trim().min(1),
+    type_of_content: z.string().trim().min(1),
+    weight: z
+      .number()
+      .finite()
+      .positive()
+      .describe("Peso total expresado en kilogramos"),
+    measures: z.string().trim().min(1),
+    pickup_address: z.string().trim().min(1),
+    pickup_datetime: z
+      .string()
+      .datetime({ offset: true })
+      .describe(
+        "Fecha y hora exacta de recolección en ISO 8601 con zona horaria"
+      )
+  })
+  .superRefine((value, context) => {
+    if (
+      Date.parse(value.pickup_datetime) >=
+      Date.parse(value.destination_datetime)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "pickup_datetime must be before destination_datetime",
+        path: ["pickup_datetime"]
+      });
+    }
+  });
 const noArgumentsSchema = z.object({});
 
 export type CentralBrainToolResult = {
@@ -57,6 +97,7 @@ export type CentralBrainTool = {
     | "get_operation_snapshot"
     | "list_attention_items"
     | "compare_quotes"
+    | "propose_create_mandate"
     | "propose_carrier_selection"
     | "propose_close_approved_deal";
   description: string;
@@ -223,6 +264,46 @@ export function createCentralBrainTools({
             evidenceId: citationByQuote.get(quote.id)?.id
           })),
           citations
+        };
+      }
+    },
+    {
+      name: "propose_create_mandate",
+      description:
+        "Prepara para aprobación humana un mandato completo con exactamente los ocho campos de CreateMandateRequest. El presupuesto debe estar confirmado en MXN, el peso en kg y las fechas deben ser ISO 8601 exactas con zona horaria. Nunca crea la operación por sí sola.",
+      parameters: mandateSchema,
+      activity: {
+        stage: "preparing_action",
+        label: "Preparing mandate creation"
+      },
+      async execute(argumentsValue) {
+        const parsed = mandateSchema.safeParse(argumentsValue);
+        if (!parsed.success) return invalidArguments();
+        const operation = getCurrentOperation();
+        const payload: CreateMandateRequest = parsed.data;
+        const action: ProposedAction = {
+          id: randomUUID(),
+          organizationId: context.organizationId,
+          conversationId,
+          operationId: operation.id,
+          type: "create_mandate",
+          payload,
+          status: "pending",
+          summary: `Crear mandato ${payload.pickup_address} → ${payload.destination_place}, retiro ${payload.pickup_datetime}, entrega ${payload.destination_datetime}, tope MXN ${payload.budget_cap}.`,
+          expectedOperationVersion: operationVersion(operation),
+          requestedBy: context.userId,
+          createdAt: now()
+        };
+        await repository.saveAction(action);
+        return {
+          output: {
+            status: "approval_required",
+            actionId: action.id,
+            summary: action.summary,
+            mandate: payload
+          },
+          citations: [],
+          proposedAction: action
         };
       }
     },

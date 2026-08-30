@@ -5,7 +5,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { CreateMandateRequest, ShipmentEvent } from "@volta/contracts";
 
 import { createApp } from "../../src/server";
-import { DeterministicAgentAnswerer } from "../../src/agent/operationalAgent";
+import {
+  DeterministicAgentAnswerer,
+  type AgentAnswerer
+} from "../../src/agent/operationalAgent";
 import { MemoryAgentRepository } from "../../src/agent/repository";
 import type {
   MandateRecord,
@@ -277,6 +280,99 @@ it("sanitizes agent failures before streaming them to the browser", async () => 
   expect(stream).toContain('"error":"agent_request_failed"');
   expect(stream).toContain("No action was taken");
   expect(stream).not.toContain("private upstream detail");
+});
+
+it("creates the mandate and starts the quote round only after agent approval", async () => {
+  const mandatesRepository = new MemoryRepository();
+  const answerer: AgentAnswerer = {
+    async answer(request) {
+      const createTool = request.tools.find(
+        (tool) => tool.name === "propose_create_mandate"
+      );
+      if (!createTool) throw new Error("missing_create_mandate_tool");
+      const proposal = await createTool.execute(mandate);
+      return {
+        answer: "El mandato quedó pendiente de aprobación humana en Volta.",
+        citationIds: [],
+        evidence: [],
+        proposedActions: proposal.proposedAction
+          ? [proposal.proposedAction]
+          : []
+      };
+    }
+  };
+  const app = createApp({
+    mandatesRepository,
+    repository: new MemoryAgentRepository(),
+    answerer
+  });
+  const carrierResponse = await request(app, "/api/carriers", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      name: "Transportes Norte",
+      phone: "+525511111111",
+      lanes: ["Manzanillo → Guadalajara"]
+    })
+  });
+  expect(carrierResponse.status).toBe(201);
+  const conversationResponse = await request(app, "/api/agent/conversations", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title: "Nuevo mandato" })
+  });
+  const conversation = (await conversationResponse.json()) as { id: string };
+  const messageResponse = await request(
+    app,
+    `/api/agent/conversations/${conversation.id}/messages`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ question: "Crea este mandato" })
+    }
+  );
+  const events = await messageResponse.text();
+  const finalData = events
+    .split("\n")
+    .filter((line) => line.startsWith("data: "))
+    .at(-1);
+  if (!finalData) throw new Error("missing_final_agent_event");
+  const message = JSON.parse(finalData.slice(6)) as {
+    proposedActions: Array<{ id: string; status: string }>;
+  };
+  expect(message.proposedActions).toEqual([
+    expect.objectContaining({ status: "pending" })
+  ]);
+  await expect(mandatesRepository.list()).resolves.toHaveLength(0);
+
+  const decisionResponse = await request(
+    app,
+    `/api/agent/actions/${message.proposedActions[0].id}/decision`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve" })
+    }
+  );
+  const decision = (await decisionResponse.json()) as {
+    action: { status: string };
+    operation: {
+      id: string;
+      mandate: { budgetCapMxn: number };
+      callSessions: unknown[];
+    };
+  };
+
+  expect(decisionResponse.status).toBe(200);
+  expect(decision.action.status).toBe("executed");
+  expect(decision.operation).toMatchObject({
+    id: "operation-mandate-1",
+    mandate: { budgetCapMxn: mandate.budget_cap }
+  });
+  expect(decision.operation.callSessions).toHaveLength(1);
+  await expect(mandatesRepository.list()).resolves.toEqual([
+    expect.objectContaining(mandate)
+  ]);
 });
 
 class MemoryRepository implements MandatesRepository {

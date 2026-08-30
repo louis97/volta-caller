@@ -767,16 +767,27 @@ function actionFromRow(row: ActionRow): ProposedAction {
     executedAt: row.executed_at ? iso(row.executed_at) : undefined,
     failureReason: row.failure_reason ?? undefined
   };
-  return row.type === "close_approved_deal"
-    ? { ...common, type: row.type, payload: {} }
-    : {
-        ...common,
-        type: row.type,
-        payload: row.payload as Extract<
-          ProposedAction,
-          { type: "resolve_carrier_selection" }
-        >["payload"]
-      };
+  if (row.type === "close_approved_deal") {
+    return { ...common, type: row.type, payload: {} };
+  }
+  if (row.type === "create_mandate") {
+    return {
+      ...common,
+      type: row.type,
+      payload: row.payload as Extract<
+        ProposedAction,
+        { type: "create_mandate" }
+      >["payload"]
+    };
+  }
+  return {
+    ...common,
+    type: row.type,
+    payload: row.payload as Extract<
+      ProposedAction,
+      { type: "resolve_carrier_selection" }
+    >["payload"]
+  };
 }
 
 function carrierFromRow(row: CarrierRow): Carrier {
