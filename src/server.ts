@@ -49,6 +49,14 @@ import { derivePipelineStage } from "./core/pipeline";
 import { fanOutCalls } from "./telephony/orchestrator";
 import { PostgresAgentRepository } from "./storage/postgres";
 import {
+  createKapsoMessenger,
+  inboundTextMessage,
+  receivedKapsoMessages,
+  verifyKapsoSignature,
+  type KapsoMessenger,
+  type KapsoWebhookPayload
+} from "./whatsapp/kapso";
+import {
   attachTelephonyWebSockets,
   createLiveTelephonyGateway,
   mountTelephonyRoutes,
@@ -137,6 +145,8 @@ export type CreateAppOptions = {
   repository?: AgentRepository;
   answerer?: AgentAnswerer;
   mandatesRepository?: MandatesRepository;
+  kapsoMessenger?: KapsoMessenger;
+  kapsoWebhookSecret?: string;
 };
 
 type EventClient = { response: Response; organizationId: string };
@@ -196,6 +206,76 @@ export function createApp(options: CreateAppOptions = {}) {
       : env.VOLTA_MODE === "mock"
         ? new DeterministicAgentAnswerer()
         : new UnavailableAgentAnswerer());
+  const kapsoMessenger =
+    options.kapsoMessenger ??
+    (env.KAPSO_API_KEY && env.KAPSO_PHONE_NUMBER_ID
+      ? createKapsoMessenger({
+          apiKey: env.KAPSO_API_KEY,
+          phoneNumberId: env.KAPSO_PHONE_NUMBER_ID
+        })
+      : undefined);
+  const kapsoWebhookSecret =
+    options.kapsoWebhookSecret ?? env.KAPSO_WEBHOOK_SECRET;
+  const processedKapsoEvents = new Set<string>();
+
+  app.post(
+    "/webhooks/kapso/whatsapp",
+    express.raw({ type: "application/json", limit: "1mb" }),
+    async (request, response) => {
+      if (!kapsoMessenger || !kapsoWebhookSecret) {
+        response.status(503).json({ error: "kapso_not_configured" });
+        return;
+      }
+      const signature = request.header("x-webhook-signature") ?? undefined;
+      if (!verifyKapsoSignature(request.body, signature, kapsoWebhookSecret)) {
+        response.status(401).json({ error: "invalid_kapso_signature" });
+        return;
+      }
+      if (request.header("x-webhook-event") !== "whatsapp.message.received") {
+        response.status(200).json({ ignored: true });
+        return;
+      }
+      const idempotencyKey = request.header("x-idempotency-key");
+      if (idempotencyKey && processedKapsoEvents.has(idempotencyKey)) {
+        response.status(200).json({ duplicate: true });
+        return;
+      }
+      let payload: KapsoWebhookPayload;
+      try {
+        payload = JSON.parse(
+          request.body.toString("utf8")
+        ) as KapsoWebhookPayload;
+      } catch {
+        response.status(400).json({ error: "invalid_kapso_payload" });
+        return;
+      }
+      if (idempotencyKey) processedKapsoEvents.add(idempotencyKey);
+      try {
+        for (const item of receivedKapsoMessages(payload)) {
+          const inbound = inboundTextMessage(item);
+          if (!inbound) continue;
+          const context: OrganizationContext = {
+            organizationId: env.VOLTA_DEFAULT_ORGANIZATION_ID,
+            userId: `whatsapp:${inbound.from}`
+          };
+          const title = `WhatsApp · ${inbound.from}`;
+          const conversation =
+            (await agent.listConversations(context)).find(
+              (item) => item.title === title
+            ) ?? (await agent.createConversation(context, title));
+          const reply = inbound.content
+            ? (await agent.ask(context, conversation.id, inbound.content))
+                .content
+            : "Por ahora puedo responder mensajes de texto. Envíame tu consulta por escrito.";
+          await kapsoMessenger.sendText({ to: inbound.from, text: reply });
+        }
+        response.status(200).json({ received: true });
+      } catch (error) {
+        console.error("Kapso WhatsApp webhook failed", error);
+        response.status(500).json({ error: "kapso_webhook_processing_failed" });
+      }
+    }
+  );
 
   app.use(express.json({ limit: "1mb" }));
   app.use("/api", (request, response, next) => {
