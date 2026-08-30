@@ -8,6 +8,7 @@ import type { TelephonyGateway } from "./twilio";
 
 export type FanoutDependencies = {
   store: OperationStore;
+  organizationId?: string;
   gateway?: TelephonyGateway;
   mode: "mock" | "live";
   publicBaseUrl?: string;
@@ -62,13 +63,24 @@ export async function fanOutCalls(
       startedAt: now()
     });
     try {
+      const callContext = {
+        operationId: operation.id,
+        carrierId: candidate.id,
+        organizationId: dependencies.organizationId
+      };
       const created = await gateway.createOutboundCall({
         operationId: operation.id,
         carrierId: candidate.id,
         to: candidate.phone,
         from: dependencies.from ?? "",
-        twimlUrl: `${(dependencies.publicBaseUrl ?? "").replace(/\/$/, "")}/twiml/outbound`,
-        statusCallbackUrl: `${(dependencies.publicBaseUrl ?? "").replace(/\/$/, "")}/twiml/status`,
+        twimlUrl: withCallContext(
+          `${(dependencies.publicBaseUrl ?? "").replace(/\/$/, "")}/twiml/outbound`,
+          callContext
+        ),
+        statusCallbackUrl: withCallContext(
+          `${(dependencies.publicBaseUrl ?? "").replace(/\/$/, "")}/twiml/status`,
+          callContext
+        ),
         // A round never carried these, so a call that reached voicemail ran
         // the agent against a recording for minutes with no ceiling.
         ...(dependencies.timeLimitSeconds
@@ -170,6 +182,28 @@ export async function fanOutCalls(
       });
     }
   }
+}
+
+export type OutboundCallContext = {
+  operationId: string;
+  carrierId?: string;
+  organizationId?: string;
+};
+
+/**
+ * Twilio may fetch TwiML and open the media WebSocket on another process. The
+ * durable identifiers therefore travel with every callback instead of relying
+ * on the process-local `dialled` map.
+ */
+export function withCallContext(
+  url: string,
+  context: OutboundCallContext
+): string {
+  const query = new URLSearchParams({ operationId: context.operationId });
+  if (context.carrierId) query.set("carrierId", context.carrierId);
+  if (context.organizationId)
+    query.set("organizationId", context.organizationId);
+  return `${url}${url.includes("?") ? "&" : "?"}${query.toString()}`;
 }
 
 function mockQuote(

@@ -40,6 +40,7 @@ export const CENTRAL_BRAIN_INSTRUCTIONS = [
   "Cuando el usuario esté creando un mandato, recoge exactamente estos ocho campos del contrato CreateMandateRequest: presupuesto máximo en MXN, fecha y hora de entrega, lugar de entrega, tipo de contenido, peso en kg, medidas, dirección de recolección, y fecha y hora de recolección.",
   "Para un mandato no exijas BL, booking, DO, liberación, naviera, NIT, contactos, slot, seguro, devolución de vacío ni datos adicionales; esos datos no forman parte del contrato vigente.",
   "Conserva los valores ya confirmados en el historial y pregunta solo por campos faltantes o ambiguos, máximo tres por respuesta. Nunca repitas una pregunta ya resuelta.",
+  "Si el usuario menciona una dirección de calle (carrera, calle, avenida, diagonal o transversal), no la resumas a una ciudad ni la descartes: aclara si corresponde a pickup o delivery y consérvala en el campo correcto.",
   "No conviertas monedas silenciosamente. budget_cap solo acepta MXN: si el usuario da USD u otra moneda, pide el tope en MXN o una autorización explícita con la tasa que debe usarse.",
   "Nunca uses un valor mínimo, estimado o de relleno para budget_cap. El usuario debe escribir o decir un monto numérico explícito acompañado por MXN o pesos mexicanos; sin esa evidencia no llames propose_create_mandate.",
   "Convierte expresiones relativas como hoy, mañana o pasado mañana a fechas exactas usando la fecha actual provista. Si no se indica otra zona horaria, usa America/Bogota (-05:00). Confirma cualquier ambigüedad antes de proponer.",

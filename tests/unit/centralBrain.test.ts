@@ -291,6 +291,100 @@ describe("central brain tools", () => {
     expect(executedPayload).toEqual(mandate);
   });
 
+  it("accepts an exact MXN budget spoken in Spanish words", async () => {
+    const operation = quoteRound();
+    const repository = new MemoryAgentRepository();
+    const conversation = await repository.createConversation(context);
+    await repository.appendMessage(context, {
+      id: "message-spoken-budget",
+      conversationId: conversation.id,
+      role: "user",
+      content:
+        "Mi budget es de cinco mil pesos mexicanos para moverlo de Santa Marta a Medellín.",
+      citations: [],
+      proposedActions: [],
+      createdAt: NOW
+    });
+    const tools = createCentralBrainTools({
+      context,
+      conversationId: conversation.id,
+      repository,
+      getCurrentOperation: () => operation,
+      now: () => NOW
+    });
+
+    const result = await tool(tools, "propose_create_mandate").execute({
+      budget_cap: 5000,
+      destination_datetime: "2026-09-03T17:00:00-05:00",
+      destination_place: "Carrera 87 B #6-10, Medellín",
+      type_of_content: "contenedor frágil",
+      weight: 40000,
+      measures: "20 cm x 20 cm x 10 cm",
+      pickup_address: "Puerto de Santa Marta",
+      pickup_datetime: "2026-08-31T05:00:00-05:00"
+    });
+
+    expect(result.proposedAction).toMatchObject({
+      type: "create_mandate",
+      payload: { budget_cap: 5000 }
+    });
+
+    const inventedLowerAmount = await tool(
+      tools,
+      "propose_create_mandate"
+    ).execute({
+      budget_cap: 1000,
+      destination_datetime: "2026-09-03T17:00:00-05:00",
+      destination_place: "Carrera 87 B #6-10, Medellín",
+      type_of_content: "contenedor frágil",
+      weight: 40000,
+      measures: "20 cm x 20 cm x 10 cm",
+      pickup_address: "Puerto de Santa Marta",
+      pickup_datetime: "2026-08-31T05:00:00-05:00"
+    });
+    expect(inventedLowerAmount.output).toMatchObject({
+      error: "budget_not_confirmed"
+    });
+    expect(inventedLowerAmount.proposedAction).toBeUndefined();
+  });
+
+  it("rejects a mandate that drops a street address from the user's intake", async () => {
+    const operation = quoteRound();
+    const repository = new MemoryAgentRepository();
+    const conversation = await repository.createConversation(context);
+    await repository.appendMessage(context, {
+      id: "message-address",
+      conversationId: conversation.id,
+      role: "user",
+      content:
+        "Mi budget es 5000 pesos mexicanos. Debe llegar a Medellín, Carrera 87 B número 6 de 10, el 3 de septiembre.",
+      citations: [],
+      proposedActions: [],
+      createdAt: NOW
+    });
+    const tools = createCentralBrainTools({
+      context,
+      conversationId: conversation.id,
+      repository,
+      getCurrentOperation: () => operation,
+      now: () => NOW
+    });
+
+    const result = await tool(tools, "propose_create_mandate").execute({
+      budget_cap: 5000,
+      destination_datetime: "2026-09-03T17:00:00-05:00",
+      destination_place: "Medellín",
+      type_of_content: "contenedor frágil",
+      weight: 40000,
+      measures: "20 cm x 20 cm x 10 cm",
+      pickup_address: "Puerto de Santa Marta",
+      pickup_datetime: "2026-08-31T05:00:00-05:00"
+    });
+
+    expect(result.output).toMatchObject({ error: "address_not_preserved" });
+    expect(result.proposedAction).toBeUndefined();
+  });
+
   it("rejects a model-invented minimum budget without user evidence", async () => {
     const operation = quoteRound();
     const repository = new MemoryAgentRepository();

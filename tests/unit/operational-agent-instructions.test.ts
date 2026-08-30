@@ -31,6 +31,9 @@ describe("central brain mandate intake", () => {
       "Nunca uses un valor mínimo, estimado o de relleno"
     );
     expect(CENTRAL_BRAIN_INSTRUCTIONS).toContain("America/Bogota (-05:00)");
+    expect(CENTRAL_BRAIN_INSTRUCTIONS).toContain(
+      "no la resumas a una ciudad ni la descartes"
+    );
   });
 
   it("retains enough conversation turns to finish a voice intake", () => {

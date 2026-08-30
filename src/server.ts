@@ -37,7 +37,7 @@ import {
 } from "./core/mandates/service";
 import { createSupabaseMandatesRepositoryFromConfig } from "./core/mandates/supabase-repository";
 import type { MandatesRepository } from "./core/mandates/types";
-import type { OperationStore } from "./core/state";
+import { createOperationStore, type OperationStore } from "./core/state";
 import type { TelephonyGateway } from "./telephony/twilio";
 import {
   ConfirmationCoordinatorError,
@@ -48,7 +48,10 @@ import { createMockScenario, type MockScenario } from "./mocks/callScenario";
 import { createMockTelephonyGateway } from "./mocks/telephony";
 import { createOperationFromMandate, seedOperation } from "./core/seed";
 import { derivePipelineStage } from "./core/pipeline";
-import { fanOutCalls } from "./telephony/orchestrator";
+import {
+  fanOutCalls,
+  type OutboundCallContext
+} from "./telephony/orchestrator";
 import { PostgresAgentRepository } from "./storage/postgres";
 import {
   createKapsoMessenger,
@@ -679,8 +682,76 @@ export function createApp(options: CreateAppOptions = {}) {
       );
   };
   app.locals.saveCallSession = (
-    session: import("@volta/contracts").CallSession
-  ) => repository.saveCallSession(activeOrganizationId, session);
+    session: import("@volta/contracts").CallSession,
+    organizationId = activeOrganizationId
+  ) => repository.saveCallSession(organizationId, session);
+  const persistedCallStores = new Map<
+    string,
+    Promise<OperationStore | undefined>
+  >();
+  const resolveTelephonyCallContext = async (
+    reference: OutboundCallContext
+  ) => {
+    const organizationId = reference.organizationId ?? activeOrganizationId;
+    const current = scenario.store.getOperation();
+    if (
+      current.id === reference.operationId &&
+      organizationId === activeOrganizationId
+    ) {
+      return {
+        store: scenario.store,
+        organizationId,
+        carrier: reference.carrierId
+          ? current.candidates.find(
+              (candidate) => candidate.id === reference.carrierId
+            )
+          : undefined
+      };
+    }
+
+    const key = `${organizationId}:${reference.operationId}`;
+    let pending = persistedCallStores.get(key);
+    if (!pending) {
+      pending = (async () => {
+        const operation = await repository.getOperation(
+          { organizationId, userId: "twilio" },
+          reference.operationId
+        );
+        if (!operation) return undefined;
+        const callStore = createOperationStore(operation);
+        let persistence = Promise.resolve();
+        callStore.subscribe((event) => {
+          if (event.type === "transcript.appended") return;
+          persistence = persistence
+            .then(() =>
+              repository.syncOperation(organizationId, callStore.getOperation())
+            )
+            .catch((error: unknown) =>
+              console.error("[twilio] operation persistence failed:", error)
+            );
+        });
+        return callStore;
+      })();
+      persistedCallStores.set(key, pending);
+    }
+
+    const callStore = await pending;
+    if (!callStore) {
+      persistedCallStores.delete(key);
+      return undefined;
+    }
+    const operation = callStore.getOperation();
+    return {
+      store: callStore,
+      organizationId,
+      carrier: reference.carrierId
+        ? operation.candidates.find(
+            (candidate) => candidate.id === reference.carrierId
+          )
+        : undefined
+    };
+  };
+  app.locals.resolveTelephonyCallContext = resolveTelephonyCallContext;
   const persistCurrentOperation = (context: OrganizationContext) =>
     repository.syncOperation(
       context.organizationId,
@@ -730,6 +801,7 @@ export function createApp(options: CreateAppOptions = {}) {
       );
       await fanOutCalls({
         store: scenario.store,
+        organizationId: context.organizationId,
         mode: env.VOLTA_MODE,
         publicBaseUrl: env.PUBLIC_BASE_URL,
         from: env.TWILIO_FROM_NUMBER,
@@ -1288,14 +1360,18 @@ export function createApp(options: CreateAppOptions = {}) {
     store: scenario.store,
     dialled,
     organizationId: activeOrganizationId,
-    onCallSessionChanged: (session) =>
-      void repository.saveCallSession(activeOrganizationId, session),
+    onCallSessionChanged: (session, organizationId) =>
+      void repository.saveCallSession(
+        organizationId ?? activeOrganizationId,
+        session
+      ),
     onTranscriptAppended: (segment) =>
       app.locals.saveTranscriptSegment(segment),
     // The console's carrier directory is what a round dials.
     listActiveCarriers: () => app.locals.listActiveCarriers(),
     listTranscript: (callId?: string) =>
-      repository.listTranscript(activeOrganizationId, callId)
+      repository.listTranscript(activeOrganizationId, callId),
+    resolveCallContext: resolveTelephonyCallContext
   });
 
   return app;
@@ -1455,12 +1531,15 @@ if (isMainModule(import.meta.url, process.argv[1])) {
   attachTelephonyWebSockets(server, {
     store: app.locals.operationStore,
     dialled: app.locals.telephonyDialled,
-    onCallSessionChanged: (session) => void app.locals.saveCallSession(session),
+    onCallSessionChanged: (session, organizationId) =>
+      void app.locals.saveCallSession(session, organizationId),
     onTranscriptAppended: (segment) =>
       app.locals.saveTranscriptSegment(segment),
     // The console's carrier directory is what a round dials.
     listActiveCarriers: () => app.locals.listActiveCarriers(),
-    listTranscript: (callId?: string) => app.locals.listTranscript(callId)
+    listTranscript: (callId?: string) => app.locals.listTranscript(callId),
+    resolveCallContext: (reference) =>
+      app.locals.resolveTelephonyCallContext(reference)
   });
 
   void app.locals.ensureCarrierDirectory?.();
