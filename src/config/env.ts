@@ -24,12 +24,21 @@ const envSchema = z
      * Dual-channel recording is what lets a commitment link to the moment it
      * was agreed. Trial accounts cannot use it: Twilio rejects the whole
      * request with "trial accounts have limited parameter access".
-     * Turn this on after upgrading.
      */
     TWILIO_RECORD_CALLS: z
       .enum(["true", "false"])
       .default("false")
-      .transform((value) => value === "true")
+      .transform((value) => value === "true"),
+    SUPABASE_URL: z.string().url().optional(),
+    SUPABASE_PUBLISHABLE_KEY: z.string().min(1).optional(),
+    SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
+    VOLTA_COPILOT_MODEL: z.string().min(1).default("gpt-5"),
+    DATABASE_URL: z.string().url().optional(),
+    VOLTA_DEFAULT_ORGANIZATION_ID: z
+      .string()
+      .min(1)
+      .default("textiles-pacifico"),
+    VOLTA_INTERNAL_API_KEY: z.string().min(16).optional()
   })
   .superRefine((value, context) => {
     if (
@@ -42,25 +51,15 @@ const envSchema = z
       });
     }
 
-    if (value.VOLTA_MODE !== "live") return;
-
-    // Fail loudly at boot instead of mid-call: a missing var here surfaces as a
-    // dead WebSocket at 3am otherwise.
-    const requiredForLive = [
-      "TWILIO_ACCOUNT_SID",
-      "TWILIO_AUTH_TOKEN",
-      "TWILIO_FROM_NUMBER",
-      "OPENAI_API_KEY",
-      "PUBLIC_WS_URL"
-    ] as const;
-
-    for (const key of requiredForLive) {
-      if (!value[key]) {
-        context.addIssue({
-          code: "custom",
-          message: `${key} is required when VOLTA_MODE=live`
-        });
-      }
+    const hasSupabaseKey = Boolean(
+      value.SUPABASE_PUBLISHABLE_KEY || value.SUPABASE_SERVICE_ROLE_KEY
+    );
+    if (Boolean(value.SUPABASE_URL) !== hasSupabaseKey) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "SUPABASE_URL and either SUPABASE_PUBLISHABLE_KEY or SUPABASE_SERVICE_ROLE_KEY must be provided together"
+      });
     }
   });
 
@@ -71,3 +70,23 @@ export function loadEnv(values: NodeJS.ProcessEnv = process.env): Env {
 }
 
 export const env = loadEnv();
+
+/**
+ * Variables placing a real call needs. Reported as a boot warning rather than
+ * a schema failure: live mode is also used for work that never touches
+ * telephony, but a missing one of these otherwise surfaces much later as a
+ * dead WebSocket mid-call.
+ */
+export function missingTelephonyConfig(value: Env = env): string[] {
+  if (value.VOLTA_MODE !== "live") return [];
+
+  return (
+    [
+      "TWILIO_ACCOUNT_SID",
+      "TWILIO_AUTH_TOKEN",
+      "TWILIO_FROM_NUMBER",
+      "OPENAI_API_KEY",
+      "PUBLIC_WS_URL"
+    ] as const
+  ).filter((key) => !value[key]);
+}

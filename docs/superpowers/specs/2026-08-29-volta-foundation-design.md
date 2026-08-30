@@ -37,7 +37,39 @@ Shared contracts define the following models:
 - `CallBrief`: structured post-call summary of prices, objections, actions, and outcome.
 - `Escalation`: reason, attempted terms, call context, and human hand-off state.
 
-The API is the sole authority for operation state. Agent tools request actions but cannot mutate state without successful mandate validation. A commitment cannot be marked final until it has an audio timestamp reference and a written-recap record.
+The API is the **sole authority** for operation state and mandate data. The dashboard may collect a
+dispatcher’s input and render API read models, but it must not treat form state, local storage, or
+an optimistic client object as an operational record. Agent tools request actions but cannot mutate
+state without successful mandate validation. A commitment cannot be marked final until it has an
+audio timestamp reference and a written-recap record.
+
+### Mandate ingress and ownership
+
+`POST /api/mandates` is the only ingress for a dispatcher-created mandate. It accepts this exact
+dashboard payload, validates it at the HTTP boundary, and maps it to the canonical `Mandate` owned
+by the API:
+
+```json
+{
+  "budget_cap": 9000,
+  "destination_datetime": "2026-09-03T18:00:00-06:00",
+  "destination_place": "Textiles Pacífico, Guadalajara, Jalisco",
+  "type_of_content": "Textiles",
+  "weight": 18400,
+  "measures": "120 × 100 × 110 cm",
+  "pickup_address": "Terminal de Contenedores, Manzanillo, Colima",
+  "pickup_datetime": "2026-09-03T10:00:00-06:00"
+}
+```
+
+Both datetime fields require ISO 8601 offsets; the interface must provide an offset-preserving
+adapter before it posts its `datetime-local` values. The dashboard posts the shared
+`CreateMandateRequest` contract to its relative `/api/mandates` route; Next.js rewrites that route
+to `VOLTA_API_URL` (localhost:3001 by default), so the browser never embeds an API host. It waits
+for the HTTP 201 canonical operation before it confirms creation and displays an explicit save
+error otherwise. The API returns the canonical operation as the read model and publishes
+`mandate.created`. Until durable storage is introduced, this authority is an in-memory operation
+store; a process restart clears it, but the browser is never an alternative source of truth.
 
 ## Runtime Flow
 
@@ -65,7 +97,10 @@ All adapters report typed failures. A failed external operation cannot convert a
 
 ## Mandate and Escalation
 
-The mandate evaluator returns one of `APPROVED`, `REJECTED`, or `REQUIRES_ESCALATION`. It approves only prices at or below 9,000 MXN and the explicitly authorized Thursday 10:00 AM pickup window. It escalates requests to exceed the cap, shift to an unapproved day or time, or bypass the mandate through claimed verbal approval.
+The mandate evaluator returns one of `APPROVED`, `REJECTED`, or `REQUIRES_ESCALATION`. It reads the
+canonical backend `budgetCapMxn` and `pickupDatetime`, approves only prices at or below the cap and
+the explicitly authorized pickup window, and escalates requests to exceed the cap, shift to an
+unapproved day or time, or bypass the mandate through claimed verbal approval.
 
 Agent tools are `check_mandate`, `register_quote`, `commit_deal`, and `trigger_escalation`. `commit_deal` repeats mandate validation immediately before recording a booking. Escalation creates a call brief and invokes the telephony transfer adapter without hanging up the call.
 

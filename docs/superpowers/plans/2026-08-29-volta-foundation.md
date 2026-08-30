@@ -14,7 +14,9 @@
 
 - The default run mode is local and mock-first; no Twilio or OpenAI credential is required for unit tests or the dashboard demo.
 - The mandate is inviolable: price must be at or below 9,000 MXN and pickup must be Thursday at 10:00 AM.
-- Only the API may mutate operation state; tool requests validate through the mandate evaluator before state changes.
+- Only the API may mutate operation state or retain a mandate. The dashboard submits a mandate only
+  through `POST /api/mandates` and then reads the canonical operation back from the API; local form
+  state, local storage, and optimistic UI are never sources of truth.
 - A final commitment requires both an audio timestamp reference and a written-recap record.
 - Unavailable services, invalid events, conflicting terms, and recap failures must result in explicit recoverable state and a call-brief entry.
 - Real Twilio/OpenAI smoke tests remain opt-in and are excluded from default CI.
@@ -367,7 +369,8 @@ git commit -m "feat: add auditable commitment recaps"
 
 **Consumes:** Tasks 2–6.
 
-**Produces:** `GET /health`, `GET /api/operation`, `POST /api/demo/run`, and `GET /api/events`.
+**Produces:** `GET /health`, `GET /api/operation`, `POST /api/mandates`, `POST /api/demo/run`, and
+`GET /api/events`.
 
 - [ ] **Step 1: Write the failing end-to-end mock-demo test**
 
@@ -400,6 +403,15 @@ export const env = z.object({
 ```
 
 `POST /api/demo/run` must emit deterministic carrier outcomes of 8,500 MXN, 9,200 MXN, and unavailable; only the 8,500 MXN quote is finalized. `GET /api/events` serializes `OperationEvent` values as server-sent events.
+
+`POST /api/mandates` accepts the eight dashboard fields `budget_cap`, `destination_datetime`,
+`destination_place`, `type_of_content`, `weight`, `measures`, `pickup_address`, and
+`pickup_datetime`. It validates the complete payload before replacing the active in-memory
+operation, returns HTTP 201 with the canonical read model, and emits `mandate.created`. Invalid
+payloads return HTTP 400 and must leave the authoritative operation unchanged. The dashboard
+submits the shared request contract to `/api/mandates`; its Next.js rewrite targets
+`VOLTA_API_URL`, defaulting to `http://localhost:3001` for local work. The UI only confirms a
+mandate after the HTTP 201 response.
 
 - [ ] **Step 4: Verify the complete backend suite**
 

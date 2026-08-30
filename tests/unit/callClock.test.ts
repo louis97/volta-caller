@@ -60,6 +60,42 @@ describe("call clock", () => {
   it("anchors a commitment to the call clock, not to model input", async () => {
     const store = createOperationStore(seedOperation());
     const booked: Array<{ timestampMs: number }> = [];
+    const dependencies = {
+      store,
+      finalizeBooking: (intent: { timestampMs: number }) => {
+        booked.push(intent);
+      },
+      callContext: { callId: "CA1", callClockMs: () => 94_200 }
+    };
+
+    // Committing requires a human-approved closing authorization first.
+    await executeToolCall(
+      {
+        name: "register_quote",
+        arguments: {
+          carrierId: "carrier-costa-pacifico",
+          carrierName: "Transportes Costa Pacífico",
+          priceMxn: 8500,
+          etaMinutes: 90,
+          pickupTime: THURSDAY_PICKUP
+        }
+      },
+      dependencies
+    );
+    const quoteId = store.getOperation().quotes[0]!.id;
+    const approval = store.requestCarrierSelectionApproval({
+      id: "approval-1",
+      quoteIds: [quoteId],
+      recommendedQuoteId: quoteId,
+      createdAt: "2026-08-29T23:00:00.000Z"
+    });
+    store.resolveApproval({
+      approvalId: approval.id,
+      action: "approve",
+      selectedQuoteId: quoteId,
+      decidedBy: "tester",
+      decidedAt: "2026-08-29T23:00:01.000Z"
+    });
 
     await executeToolCall(
       {
@@ -72,16 +108,7 @@ describe("call clock", () => {
           timestampMs: 999_999
         }
       },
-      {
-        store,
-        finalizeBooking: (intent) => {
-          booked.push(intent);
-        },
-        callContext: {
-          callId: "CA1",
-          callClockMs: () => 94_200
-        }
-      }
+      dependencies
     );
 
     expect(booked).toHaveLength(1);

@@ -1,4 +1,6 @@
 node_modules/
+.npm-cache/
+.worktrees/
 .next/
 coverage/
 dist/
@@ -6,3 +8,4 @@ dist/
 .env.local
 *.log
 *.tsbuildinfo
+.vercel

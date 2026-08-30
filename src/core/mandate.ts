@@ -16,11 +16,11 @@ export function evaluateMandate(
     return { status: "REJECTED", reason: "invalid_price" };
   }
 
-  if (terms.price > mandate.maxPriceMxn) {
+  if (terms.price > mandate.budgetCapMxn) {
     return { status: "REQUIRES_ESCALATION", reason: "price_cap_exceeded" };
   }
 
-  if (terms.pickupTime !== mandate.pickupTime) {
+  if (terms.pickupTime !== mandate.pickupDatetime) {
     return {
       status: "REQUIRES_ESCALATION",
       reason: "pickup_window_unapproved"

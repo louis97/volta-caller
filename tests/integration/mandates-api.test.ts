@@ -1,0 +1,87 @@
+import { once } from "node:events";
+import type { AddressInfo } from "node:net";
+
+import type { CreateMandateRequest } from "@volta/contracts";
+import { afterEach, expect, it } from "vitest";
+
+import { createApp } from "../../src/server";
+import type {
+  MandateRecord,
+  MandatesRepository
+} from "../../src/core/mandates/types";
+
+const servers: ReturnType<ReturnType<typeof createApp>["listen"]>[] = [];
+
+const mandate: CreateMandateRequest = {
+  budget_cap: 8700.5,
+  destination_datetime: "2026-09-03T18:00:00-06:00",
+  destination_place: "Guadalajara",
+  type_of_content: "Textiles",
+  weight: 18400,
+  measures: "120 x 100 x 110 cm",
+  pickup_address: "Manzanillo",
+  pickup_datetime: "2026-09-03T10:00:00-06:00"
+};
+
+afterEach(async () => {
+  await Promise.all(
+    servers.splice(0).map(async (server) => {
+      server.close();
+      await once(server, "close");
+    })
+  );
+});
+
+it("creates, gets, and lists mandates without changing the operation store", async () => {
+  const app = createApp({ mandatesRepository: new MemoryRepository() });
+  const createResponse = await request(app, "/api/mandates", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(mandate)
+  });
+
+  expect(createResponse.status).toBe(201);
+  const created = (await createResponse.json()) as MandateRecord;
+  expect(created).toMatchObject({ id: "mandate-1", budget_cap: 8700.5 });
+
+  const oneResponse = await request(app, `/api/mandates/${created.id}`);
+  await expect(oneResponse.json()).resolves.toEqual(created);
+
+  const listResponse = await request(app, "/api/mandates");
+  await expect(listResponse.json()).resolves.toEqual([created]);
+});
+
+class MemoryRepository implements MandatesRepository {
+  private readonly records: MandateRecord[] = [];
+
+  async create(input: CreateMandateRequest): Promise<MandateRecord> {
+    const record: MandateRecord = {
+      id: `mandate-${this.records.length + 1}`,
+      ...input,
+      created_at: "2026-09-01T15:00:00.000Z",
+      updated_at: "2026-09-01T15:00:00.000Z"
+    };
+    this.records.push(record);
+    return record;
+  }
+
+  async findById(id: string): Promise<MandateRecord | null> {
+    return this.records.find((record) => record.id === id) ?? null;
+  }
+
+  async list(): Promise<MandateRecord[]> {
+    return [...this.records];
+  }
+}
+
+async function request(
+  app: ReturnType<typeof createApp>,
+  path: string,
+  init?: RequestInit
+): Promise<Response> {
+  const server = app.listen(0);
+  servers.push(server);
+  await once(server, "listening");
+  const { port } = server.address() as AddressInfo;
+  return fetch(`http://127.0.0.1:${port}${path}`, init);
+}

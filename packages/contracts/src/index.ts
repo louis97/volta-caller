@@ -1,6 +1,32 @@
+/**
+ * Exact payload accepted from the dashboard when a dispatcher creates a mandate.
+ * The API owns the conversion to the canonical `Mandate` model below.
+ */
+export type CreateMandateRequest = {
+  budget_cap: number;
+  destination_datetime: string;
+  destination_place: string;
+  type_of_content: string;
+  weight: number;
+  measures: string;
+  pickup_address: string;
+  pickup_datetime: string;
+};
+
+/**
+ * Canonical operational mandate. This is the only mandate representation that
+ * agent tools, state transitions, and read models may consume.
+ */
 export type Mandate = {
-  maxPriceMxn: number;
-  pickupTime: string;
+  budgetCapMxn: number;
+  destinationDatetime: string;
+  destinationPlace: string;
+  typeOfContent: string;
+  weightKg: number;
+  measures: string;
+  pickupAddress: string;
+  pickupDatetime: string;
+  /** System routing detail; it is not supplied by the dashboard manifest. */
   escalationPhone: string;
 };
 
@@ -19,6 +45,47 @@ export type Quote = {
   pickupTime: string;
   callId: string;
   createdAt: string;
+};
+
+/**
+ * A dispatcher-owned authorization for Volta to place the second, closing
+ * call. Quotes are market intelligence; this record is the only authority to
+ * turn one of them into a booking attempt.
+ */
+export type ApprovalRequest = {
+  id: string;
+  operationId: string;
+  type: "carrier_selection" | "revised_terms";
+  status: "pending" | "approved" | "declined";
+  quoteIds: string[];
+  recommendedQuoteId?: string;
+  selectedQuoteId?: string;
+  proposedTerms?: {
+    carrierId: string;
+    finalPriceMxn: number;
+    pickupTime: string;
+  };
+  decidedBy?: string;
+  createdAt: string;
+  decidedAt?: string;
+  decisionHistory?: Array<{
+    action: "approve" | "decline";
+    selectedQuoteId?: string;
+    decidedBy: string;
+    decidedAt: string;
+    undoneBy?: string;
+    undoneAt?: string;
+  }>;
+};
+
+export type ClosingAuthorization = {
+  approvalId: string;
+  quoteId: string;
+  carrierId: string;
+  finalPriceMxn: number;
+  pickupTime: string;
+  authorizedBy: string;
+  authorizedAt: string;
 };
 
 export type CallSession = {
@@ -77,10 +144,18 @@ export type Operation = {
   shipper: string;
   origin: string;
   destination: string;
-  status: "open" | "negotiating" | "committed" | "escalated" | "failed";
+  status:
+    | "open"
+    | "negotiating"
+    | "awaiting_approval"
+    | "committed"
+    | "escalated"
+    | "failed";
   mandate: Mandate;
   candidates: CarrierCandidate[];
   quotes: Quote[];
+  approvals: ApprovalRequest[];
+  closingAuthorization?: ClosingAuthorization;
   selectedCarrierId?: string;
   commitment?: Commitment;
   callBriefs: CallBrief[];
@@ -88,7 +163,23 @@ export type Operation = {
 };
 
 export type OperationEvent =
+  | { type: "mandate.created"; operationId: string; mandate: Mandate }
   | { type: "quote.registered"; operationId: string; quote: Quote }
+  | {
+      type: "approval.requested";
+      operationId: string;
+      approval: ApprovalRequest;
+    }
+  | {
+      type: "approval.resolved";
+      operationId: string;
+      approval: ApprovalRequest;
+    }
+  | {
+      type: "approval.reopened";
+      operationId: string;
+      approval: ApprovalRequest;
+    }
   | {
       type: "commitment.finalized";
       operationId: string;
@@ -99,3 +190,95 @@ export type OperationEvent =
       operationId: string;
       escalation: Escalation;
     };
+
+export type EvidenceSourceType =
+  | "operation"
+  | "shipment_event"
+  | "quote"
+  | "approval"
+  | "call"
+  | "transcript"
+  | "commitment"
+  | "escalation";
+
+export type EvidenceCitation = {
+  id: string;
+  sourceType: EvidenceSourceType;
+  sourceId: string;
+  operationId: string;
+  title: string;
+  excerpt: string;
+  occurredAt: string;
+  href: string;
+};
+
+export type ShipmentEvent = {
+  id: string;
+  organizationId: string;
+  operationId: string;
+  type:
+    | "created"
+    | "pickup_scheduled"
+    | "at_origin"
+    | "picked_up"
+    | "in_transit"
+    | "checkpoint"
+    | "delivered"
+    | "exception";
+  label: string;
+  location?: string;
+  source: string;
+  occurredAt: string;
+  receivedAt: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type TranscriptSegment = {
+  id: string;
+  organizationId: string;
+  operationId: string;
+  callId: string;
+  speaker: "agent" | "carrier" | "dispatcher" | "unknown";
+  text: string;
+  startMs: number;
+  endMs: number;
+  createdAt: string;
+};
+
+export type ProposedAction = {
+  id: string;
+  organizationId: string;
+  conversationId: string;
+  operationId: string;
+  type: "close_approved_deal";
+  status:
+    "pending" | "approved" | "declined" | "executed" | "failed" | "expired";
+  summary: string;
+  expectedOperationVersion: string;
+  requestedBy: string;
+  decidedBy?: string;
+  createdAt: string;
+  decidedAt?: string;
+  executedAt?: string;
+  failureReason?: string;
+};
+
+export type AgentMessage = {
+  id: string;
+  conversationId: string;
+  role: "assistant" | "user";
+  content: string;
+  citations: EvidenceCitation[];
+  proposedActions: ProposedAction[];
+  createdAt: string;
+};
+
+export type AgentConversation = {
+  id: string;
+  organizationId: string;
+  createdBy: string;
+  title: string;
+  messages: AgentMessage[];
+  createdAt: string;
+  updatedAt: string;
+};

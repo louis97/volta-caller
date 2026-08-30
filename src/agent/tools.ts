@@ -38,6 +38,11 @@ export const commitDealSchema = z.object({
   plate: z.string().optional()
 });
 
+export const requestQuoteApprovalSchema = z.object({
+  quoteIds: z.array(z.string().min(1)).min(1),
+  recommendedQuoteId: z.string().min(1).optional()
+});
+
 export const triggerEscalationSchema = z.object({
   reason: z.string().min(1),
   current_price_offered: z.number().nonnegative(),
@@ -47,7 +52,11 @@ export const triggerEscalationSchema = z.object({
 type AgentToolDefinition = {
   type: "function";
   name:
-    "check_mandate" | "register_quote" | "commit_deal" | "trigger_escalation";
+    | "check_mandate"
+    | "register_quote"
+    | "request_quote_approval"
+    | "commit_deal"
+    | "trigger_escalation";
   description: string;
   parameters: Record<string, unknown>;
 };
@@ -84,6 +93,11 @@ export const agentToolDefinitions: AgentToolDefinition[] = [
     "register_quote",
     "Registra una cotización completa de un transportista.",
     registerQuoteModelSchema
+  ),
+  defineTool(
+    "request_quote_approval",
+    "Envía la ronda de cotizaciones al dispatcher para que autorice una llamada de cierre.",
+    requestQuoteApprovalSchema
   ),
   defineTool(
     "commit_deal",
