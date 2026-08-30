@@ -84,6 +84,11 @@ export function createOperationStore(
         (candidate) => candidate.id === quoteId
       );
       if (!quote) throw new Error("quote_not_found");
+      if (
+        operation.reviewedDeals.some((deal) => deal.callId === quote.callId)
+      ) {
+        throw new Error("call_already_reviewed");
+      }
       const decision = evaluateMandate(operation.mandate, {
         price: quote.priceMxn,
         pickupTime: quote.pickupTime
@@ -159,6 +164,9 @@ export function createOperationStore(
       operation = { ...operation, status: "confirming_selected_carrier" };
     },
     failConfirmation: (reason, callId) => {
+      if (operation.status !== "confirming_selected_carrier") {
+        throw new Error("confirmation_not_allowed");
+      }
       void callId;
       operation = { ...operation, status: "confirmation_failed" };
       publish({

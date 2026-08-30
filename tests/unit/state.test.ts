@@ -111,6 +111,28 @@ describe("createOperationStore", () => {
     expect(store.getOperation().status).toBe("awaiting_client_selection");
   });
 
+  it("rejects a second reviewed deal from the same discovery call", () => {
+    const operation = seedOperation();
+    operation.status = "negotiating";
+    operation.quotes = [
+      quote,
+      { ...quote, id: "quote-same-call", priceMxn: 8700 }
+    ];
+    const store = createOperationStore(operation);
+    store.reviewDeal({
+      quoteId: quote.id,
+      reviewedAt: "2026-09-01T15:01:00.000Z"
+    });
+
+    expect(() =>
+      store.reviewDeal({
+        quoteId: "quote-same-call",
+        reviewedAt: "2026-09-01T15:02:00.000Z"
+      })
+    ).toThrow("call_already_reviewed");
+    expect(store.getOperation().reviewedDeals).toHaveLength(1);
+  });
+
   it("selects only an approved reviewed quote before destination expiry", () => {
     const operation = seedOperation();
     operation.status = "awaiting_client_selection";
@@ -218,6 +240,49 @@ describe("createOperationStore", () => {
       "incident.updated",
       "dashboard.notification.created"
     ]);
+  });
+
+  it("rejects confirmation failure outside an active confirmation", () => {
+    const store = createOperationStore(seedOperation());
+    const before = store.getOperation();
+
+    expect(() =>
+      store.failConfirmation("caller_unverified", "call-001")
+    ).toThrow("confirmation_not_allowed");
+    expect(store.getOperation()).toEqual(before);
+  });
+
+  it("does not let listeners mutate newly emitted payloads", () => {
+    const operation = seedOperation();
+    operation.status = "negotiating";
+    operation.quotes = [quote];
+    const store = createOperationStore(operation);
+    const received: OperationEvent[] = [];
+    store.subscribe((event) => {
+      received.push(event);
+      if (event.type === "deal.reviewed") event.reviewedDeal.callId = "mutated";
+      if (event.type === "incident.updated") event.incident.issue = "mutated";
+      if (event.type === "dashboard.notification.created")
+        event.notification.message = "mutated";
+    });
+
+    store.reviewDeal({
+      quoteId: quote.id,
+      reviewedAt: "2026-09-01T15:01:00.000Z"
+    });
+    store.recordIncident(incident);
+    store.notifyDashboard({
+      operationId: incident.operationId,
+      incidentId: incident.id,
+      message: "Delay recorded",
+      createdAt: incident.createdAt
+    });
+
+    expect(store.getOperation().reviewedDeals[0].callId).toBe(quote.callId);
+    expect(store.getOperation().incidents[0].issue).toBe(incident.issue);
+    expect(store.getOperation().dashboardNotifications[0].message).toBe(
+      "Delay recorded"
+    );
   });
   it("publishes a quote event and retains the quote", () => {
     const store = createOperationStore(seedOperation());
