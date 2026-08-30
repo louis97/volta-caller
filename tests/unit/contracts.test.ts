@@ -40,3 +40,13 @@ it("maps the dashboard manifest into the canonical operation mandate", () => {
     }
   });
 });
+
+it("models a reviewed candidate, selected quote, and exception state", () => {
+  const operation = seedOperation();
+
+  expect(operation.status).toBe("open");
+  expect(operation.reviewedDeals).toEqual([]);
+  expect(operation.selection).toBeUndefined();
+  expect(operation.incidents).toEqual([]);
+  expect(operation.dashboardNotifications).toEqual([]);
+});

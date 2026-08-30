@@ -40,7 +40,10 @@ export function seedOperation(): Operation {
     ],
     quotes: [],
     callBriefs: [],
-    escalations: []
+    escalations: [],
+    reviewedDeals: [],
+    incidents: [],
+    dashboardNotifications: []
   };
 }
 
@@ -69,6 +72,9 @@ export function createOperationFromMandate(
     candidates: [],
     quotes: [],
     callBriefs: [],
-    escalations: []
+    escalations: [],
+    reviewedDeals: [],
+    incidents: [],
+    dashboardNotifications: []
   };
 }

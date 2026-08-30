@@ -97,13 +97,62 @@ export type Escalation = {
   requestedAt: string;
 };
 
+export type OperationStatus =
+  | "open"
+  | "negotiating"
+  | "awaiting_client_selection"
+  | "carrier_selected"
+  | "confirming_selected_carrier"
+  | "committed"
+  | "selection_expired"
+  | "confirmation_failed"
+  | "incident_monitoring"
+  | "escalated"
+  | "failed";
+
+export type ClientSelection = {
+  quoteId: string;
+  selectedAt: string;
+  expiresAt: string;
+};
+
+export type ReviewedDeal = {
+  quoteId: string;
+  callId: string;
+  mandateDecision: "APPROVED" | "REJECTED" | "REQUIRES_ESCALATION";
+  reviewedAt: string;
+};
+
+export type Incident = {
+  id: string;
+  operationId: string;
+  callerName: string;
+  carrierId: string;
+  truckPlate?: string;
+  processStage: string;
+  issue: string;
+  delayMinutes: number;
+  revisedEta: string;
+  feasibility: "achievable" | "unachievable";
+  createdAt: string;
+  /** Set by the exception handler after caller identity is verified. */
+  verifiedCallerIdentity?: string;
+};
+
+export type DashboardNotification = {
+  operationId: string;
+  incidentId: string;
+  message: string;
+  createdAt: string;
+};
+
 export type Operation = {
   id: string;
   containerId: string;
   shipper: string;
   origin: string;
   destination: string;
-  status: "open" | "negotiating" | "committed" | "escalated" | "failed";
+  status: OperationStatus;
   mandate: Mandate;
   candidates: CarrierCandidate[];
   quotes: Quote[];
@@ -111,6 +160,10 @@ export type Operation = {
   commitment?: Commitment;
   callBriefs: CallBrief[];
   escalations: Escalation[];
+  reviewedDeals: ReviewedDeal[];
+  selection?: ClientSelection;
+  incidents: Incident[];
+  dashboardNotifications: DashboardNotification[];
 };
 
 export type OperationEvent =
@@ -125,4 +178,29 @@ export type OperationEvent =
       type: "escalation.requested";
       operationId: string;
       escalation: Escalation;
+    }
+  | {
+      type: "deal.reviewed";
+      operationId: string;
+      reviewedDeal: ReviewedDeal;
+    }
+  | {
+      type: "selection.created";
+      operationId: string;
+      selection: ClientSelection;
+    }
+  | {
+      type: "confirmation.failed";
+      operationId: string;
+      reason: string;
+    }
+  | {
+      type: "incident.updated";
+      operationId: string;
+      incident: Incident;
+    }
+  | {
+      type: "dashboard.notification.created";
+      operationId: string;
+      notification: DashboardNotification;
     };
