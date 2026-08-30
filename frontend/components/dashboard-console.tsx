@@ -445,6 +445,15 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
       pickup_address: String(data.get("pickup_address")),
       pickup_datetime: toOffsetDatetime(data.get("pickup_datetime"))
     };
+    if (
+      Date.parse(mandate.pickup_datetime) >=
+      Date.parse(mandate.destination_datetime)
+    ) {
+      throw new Error(
+        "Pickup date & time must be before the destination date & time."
+      );
+    }
+
     const response = await fetch("/api/mandates", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -452,9 +461,9 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
     });
 
     if (!response.ok) {
-      throw new Error(
-        "Volta could not save this mandate. Check the details and try again."
-      );
+      // The backend already says exactly what was wrong; a generic message
+      // here just hides it and turns every failure into a guessing game.
+      throw new Error(await mandateErrorMessage(response));
     }
 
     const operation = (await response.json()) as { id: string };
@@ -463,6 +472,10 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
 
   const budget = Number(draft.budget_cap);
   const weight = Number(draft.weight);
+  const datesOutOfOrder =
+    Boolean(draft.pickup_datetime) &&
+    Boolean(draft.destination_datetime) &&
+    draft.pickup_datetime >= draft.destination_datetime;
 
   return (
     <>
@@ -577,6 +590,11 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
                     required
                   />
                 </label>
+                {datesOutOfOrder && (
+                  <p className="form-error span-2" role="alert">
+                    Pickup must be before destination.
+                  </p>
+                )}
                 <label className="span-2">
                   Destination place
                   <input name="destination_place" required />
@@ -846,6 +864,30 @@ function TestingCarriers() {
       </div>
     </details>
   );
+}
+
+const MANDATE_ERROR_MESSAGE: Record<string, string> = {
+  invalid_mandate:
+    "Check every field: pickup date & time must be before the destination date & time, and none can be empty.",
+  mandate_persistence_failed:
+    "Volta could not save this mandate right now — try again in a moment.",
+  authentication_required:
+    "Your session is not authenticated with the dispatch API."
+};
+
+async function mandateErrorMessage(response: Response): Promise<string> {
+  try {
+    const body = (await response.json()) as { error?: string };
+    if (body.error) {
+      return (
+        MANDATE_ERROR_MESSAGE[body.error] ??
+        `Volta could not save this mandate (${body.error}).`
+      );
+    }
+  } catch {
+    // Body was not JSON; fall through to the status-based message.
+  }
+  return `Volta could not save this mandate (HTTP ${response.status}).`;
 }
 
 function toOffsetDatetime(value: FormDataEntryValue | null): string {
