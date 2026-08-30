@@ -721,6 +721,22 @@ export function createApp(options: CreateAppOptions = {}) {
   const resolveTelephonyCallContext = async (
     reference: OutboundCallReference
   ) => {
+    // A callback from a previous build names the operation directly. Serving
+    // it from the instance's current store is what the code did before tokens
+    // existed, and it keeps a call that is already ringing alive.
+    if (!reference.callToken && reference.operationId) {
+      const current = scenario.store.getOperation();
+      if (current.id !== reference.operationId) return undefined;
+      return {
+        store: scenario.store,
+        context: {
+          organizationId: activeOrganizationId,
+          operationId: current.id
+        },
+        organizationId: activeOrganizationId
+      };
+    }
+
     const durableContext = await repository.getTelephonyCallContext(
       hashTelephonyCallToken(reference.callToken)
     );

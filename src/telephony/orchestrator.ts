@@ -205,6 +205,8 @@ export type OutboundCallContext = {
 
 export type OutboundCallReference = {
   callToken: string;
+  /** Set instead of a token by callbacks from a previous build. */
+  operationId?: string;
 };
 
 /**

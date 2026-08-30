@@ -223,7 +223,14 @@ export function callContextFromUrl(
   url: URL
 ): OutboundCallReference | undefined {
   const callToken = url.searchParams.get("callToken")?.trim();
-  return callToken ? { callToken } : undefined;
+  if (callToken) return { callToken };
+
+  // Callbacks for a call placed by an earlier build carry `operationId`
+  // instead. Twilio keeps using the URL it was given when the call started, so
+  // a deploy in the middle of a round leaves legs whose callbacks speak the
+  // previous shape — refusing them drops calls that are already ringing.
+  const operationId = url.searchParams.get("operationId")?.trim();
+  return operationId ? { callToken: "", operationId } : undefined;
 }
 
 export async function resolveCallDependencies(
