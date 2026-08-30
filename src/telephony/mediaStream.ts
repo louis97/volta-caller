@@ -4,6 +4,7 @@ import { VOLTA_SYSTEM_PROMPT } from "../agent/prompt";
 import { agentToolDefinitions, type AgentToolDefinition } from "../agent/tools";
 import { env } from "../config/env";
 import type { CallRuntime } from "./registry";
+import { getTurnTuning } from "./tuning";
 
 export type RelaySocket = {
   send(message: string): void;
@@ -124,24 +125,25 @@ export function createRealtimeSessionConfig(
     "instructions" in input
       ? { configuration: input as ModeConfiguration }
       : input;
+  // Read per session, not at module load: the room is retuned between calls.
+  const tuning = getTurnTuning();
   const turnDetection: TurnDetectionConfig =
     overrides.turnDetection ??
-    (env.REALTIME_TURN_DETECTION === "semantic_vad"
+    (tuning.turnDetection === "semantic_vad"
       ? {
           type: "semantic_vad",
-          eagerness: env.REALTIME_VAD_EAGERNESS,
+          eagerness: tuning.eagerness,
           interrupt_response: true
         }
       : {
           type: "server_vad",
-          threshold: env.REALTIME_VAD_THRESHOLD,
-          silence_duration_ms: env.REALTIME_VAD_SILENCE_MS,
-          prefix_padding_ms: env.REALTIME_VAD_PREFIX_MS,
+          threshold: tuning.threshold,
+          silence_duration_ms: tuning.silenceMs,
+          prefix_padding_ms: tuning.prefixMs,
           interrupt_response: true
         });
 
-  const noiseReduction =
-    overrides.noiseReduction ?? env.REALTIME_NOISE_REDUCTION;
+  const noiseReduction = overrides.noiseReduction ?? tuning.noiseReduction;
 
   return {
     type: "realtime",

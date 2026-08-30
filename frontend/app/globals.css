@@ -2759,3 +2759,40 @@ button.ledger__row:hover {
     background: rgba(255, 92, 92, 0.08);
   }
 }
+
+/* --------------------------------------------------- room turn tuning ---- */
+
+.tuning {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(8, 12, 20, 0.35);
+}
+
+.tuning__label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.tuning__options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.tuning__options .btn {
+  padding: 7px 12px;
+  font-size: 12px;
+}
+
+.tuning__hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  opacity: 0.5;
+}

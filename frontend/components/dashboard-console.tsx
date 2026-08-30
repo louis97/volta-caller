@@ -832,6 +832,67 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
  * another screen to check who is about to be phoned is how a round surprises
  * the room.
  */
+/**
+ * Room tuning for the calls placed next. A phone on speaker hears the agent's
+ * own voice and the room, so it interrupts itself constantly; a handset at
+ * someone's ear needs the opposite. Sitting next to the launch button because
+ * that is when you know which one you are about to use.
+ */
+function TurnTuning() {
+  const [applied, setApplied] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const apply = async (preset: "speakerphone" | "handset") => {
+    setBusy(true);
+    try {
+      const response = await fetch("/api/telephony/tuning", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ preset })
+      });
+      if (response.ok) setApplied(preset);
+    } catch {
+      setApplied(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="tuning">
+      <span className="tuning__label">Interruption sensitivity</span>
+      <div className="tuning__options">
+        <button
+          className={
+            applied === "speakerphone"
+              ? "btn btn--primary"
+              : "btn btn--secondary"
+          }
+          type="button"
+          disabled={busy}
+          onClick={() => void apply("speakerphone")}
+        >
+          Speakerphone
+        </button>
+        <button
+          className={
+            applied === "handset" ? "btn btn--primary" : "btn btn--secondary"
+          }
+          type="button"
+          disabled={busy}
+          onClick={() => void apply("handset")}
+        >
+          Handset
+        </button>
+      </div>
+      <p className="tuning__hint">
+        Speakerphone makes Volta much harder to interrupt — use it when the
+        phone is on a table. Applies to the next call, not one already running.
+      </p>
+    </div>
+  );
+}
+
 function TestingCarriers() {
   const [carriers, setCarriers] = useState<CarrierRow[]>([]);
   const [busy, setBusy] = useState(false);
@@ -944,6 +1005,8 @@ function TestingCarriers() {
             </li>
           )}
         </ul>
+
+        <TurnTuning />
 
         {/* Not a form: this panel lives inside the mandate form, and a nested
             form is invalid and would submit the mandate on Enter. */}

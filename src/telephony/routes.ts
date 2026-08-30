@@ -11,6 +11,13 @@ import type { OperationStore } from "../core/state";
 import { auctionFromOperation, type Auction } from "./auction";
 import { closeBridge, getBridge, openBridge } from "./hub";
 import {
+  getTurnTuning,
+  HANDSET_PRESET,
+  SPEAKERPHONE_PRESET,
+  setTurnTuning,
+  type TurnTuning
+} from "./tuning";
+import {
   fanOutCalls,
   type OutboundCallContext,
   withCallContext
@@ -496,6 +503,42 @@ export function mountTelephonyRoutes(
       .json(
         [...byId.values()].sort((left, right) => left.startMs - right.startMs)
       );
+  });
+
+  /**
+   * Retunes turn taking for the calls placed from here on. A phone on speaker
+   * in a loud room hears the agent's own voice and interrupts constantly; the
+   * fix has to land between two calls, not between two deploys.
+   */
+  app.get("/api/telephony/tuning", (_request, response) => {
+    response.status(200).json({
+      current: getTurnTuning(),
+      presets: { speakerphone: SPEAKERPHONE_PRESET, handset: HANDSET_PRESET }
+    });
+  });
+
+  app.post("/api/telephony/tuning", jsonBody, (request, response) => {
+    const body = (request.body ?? {}) as {
+      preset?: unknown;
+      threshold?: unknown;
+      silenceMs?: unknown;
+    };
+
+    let patch: Partial<TurnTuning> = {};
+    if (body.preset === "speakerphone") patch = SPEAKERPHONE_PRESET;
+    else if (body.preset === "handset") patch = HANDSET_PRESET;
+    else {
+      if (typeof body.threshold === "number")
+        patch.threshold = Math.min(1, Math.max(0, body.threshold));
+      if (typeof body.silenceMs === "number")
+        patch.silenceMs = Math.max(100, Math.trunc(body.silenceMs));
+    }
+
+    const applied = setTurnTuning(patch);
+    console.log(
+      `[tuning] threshold=${applied.threshold} silence=${applied.silenceMs}ms noise=${applied.noiseReduction}`
+    );
+    response.status(200).json(applied);
   });
 
   app.get("/api/auction", (_request, response) => {
