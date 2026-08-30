@@ -38,18 +38,28 @@ describe("DashboardConsole", () => {
     ).toBeInTheDocument();
   });
 
-  it("opens the contextual copilot from every dispatch view", async () => {
+  it("opens Volta as a primary workspace instead of a drawer", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => [] })
+    );
     render(<DashboardConsole />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Ask Volta" }));
-    const copilot = await screen.findByRole("complementary", {
-      name: "Volta Copilot"
+    openNavigationItem("Volta");
+    const workspace = await screen.findByRole("region", {
+      name: "Volta central brain"
     });
     expect(
-      within(copilot).getByText(
-        "Backend agent grounded in operational records. Every factual answer links to its evidence; actions wait for your approval."
-      )
+      within(workspace).getByRole("heading", { name: "Volta", level: 1 })
     ).toBeInTheDocument();
+    expect(
+      within(workspace).getByRole("navigation", {
+        name: "Volta conversations"
+      })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Close Volta Copilot" })
+    ).not.toBeInTheDocument();
   });
 
   it("creates a backend conversation and renders navigable evidence", async () => {
@@ -74,7 +84,7 @@ describe("DashboardConsole", () => {
       createdAt: "2026-09-01T15:00:01.000Z"
     };
     const stream = [
-      'event: status\ndata: {"stage":"retrieving"}\n\n',
+      'event: activity\ndata: {"stage":"searching_records","label":"Searching operational records"}\n\n',
       `event: final\ndata: ${JSON.stringify(finalMessage)}\n\n`
     ].join("");
     const fetchMock = vi
@@ -85,7 +95,15 @@ describe("DashboardConsole", () => {
       })
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ id: "conversation-001" })
+        json: async () => ({
+          id: "conversation-001",
+          organizationId: "textiles-pacifico",
+          createdBy: "dispatcher",
+          title: "Where is the shipment?",
+          messages: [],
+          createdAt: "2026-09-01T15:00:00.000Z",
+          updatedAt: "2026-09-01T15:00:00.000Z"
+        })
       })
       .mockResolvedValueOnce(
         new Response(stream, {
@@ -96,24 +114,23 @@ describe("DashboardConsole", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<DashboardConsole />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Ask Volta" }));
+    openNavigationItem("Volta");
     fireEvent.change(
       await screen.findByLabelText("Ask across operational history"),
       {
         target: { value: "Where is the shipment?" }
       }
     );
+    const workspace = screen.getByRole("region", {
+      name: "Volta central brain"
+    });
     await vi.waitFor(() =>
       expect(
-        within(
-          screen.getByRole("complementary", { name: "Volta Copilot" })
-        ).getByRole("button", { name: "Ask Volta" })
+        within(workspace).getByRole("button", { name: "Ask Volta" })
       ).toBeEnabled()
     );
     fireEvent.click(
-      within(
-        screen.getByRole("complementary", { name: "Volta Copilot" })
-      ).getByRole("button", { name: "Ask Volta" })
+      within(workspace).getByRole("button", { name: "Ask Volta" })
     );
 
     expect(
@@ -126,6 +143,62 @@ describe("DashboardConsole", () => {
       3,
       "/api/agent/conversations/conversation-001/messages",
       expect.objectContaining({ method: "POST" })
+    );
+  });
+
+  it("restores the latest conversation and renames it", async () => {
+    const conversation = {
+      id: "conversation-latest",
+      organizationId: "textiles-pacifico",
+      createdBy: "dispatcher",
+      title: "Morning triage",
+      messages: [],
+      createdAt: "2026-09-01T14:00:00.000Z",
+      updatedAt: "2026-09-01T15:00:00.000Z"
+    };
+    const detail = {
+      ...conversation,
+      messages: [
+        {
+          id: "assistant-latest",
+          conversationId: conversation.id,
+          role: "assistant",
+          content: "Two approvals need your attention.",
+          citations: [],
+          proposedActions: [],
+          createdAt: "2026-09-01T15:00:00.000Z"
+        }
+      ]
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => [conversation] })
+      .mockResolvedValueOnce({ ok: true, json: async () => detail })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ...conversation, title: "Priority approvals" })
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<DashboardConsole />);
+
+    openNavigationItem("Volta");
+    expect(
+      await screen.findByText("Two approvals need your attention.")
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Rename Morning triage" })
+    );
+    const titleInput = screen.getByLabelText("Conversation title");
+    fireEvent.change(titleInput, { target: { value: "Priority approvals" } });
+    fireEvent.submit(titleInput.closest("form")!);
+
+    expect(
+      (await screen.findAllByText("Priority approvals")).length
+    ).toBeGreaterThan(0);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/agent/conversations/conversation-latest",
+      expect.objectContaining({ method: "PATCH" })
     );
   });
 

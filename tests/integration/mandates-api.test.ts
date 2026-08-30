@@ -5,6 +5,8 @@ import type { CreateMandateRequest } from "@volta/contracts";
 import { afterEach, expect, it } from "vitest";
 
 import { createApp } from "../../src/server";
+import { DeterministicAgentAnswerer } from "../../src/agent/operationalAgent";
+import { MemoryAgentRepository } from "../../src/agent/repository";
 import type {
   MandateRecord,
   MandatesRepository
@@ -110,6 +112,71 @@ it("runs the mock call round through quotes and stops for a client decision", as
   await expect(readResponse.json()).resolves.toMatchObject({
     pipelineStage: "awaiting_approval"
   });
+});
+
+it("renames a durable Volta conversation", async () => {
+  const app = createApp({
+    mandatesRepository: new MemoryRepository(),
+    repository: new MemoryAgentRepository(),
+    answerer: new DeterministicAgentAnswerer()
+  });
+  const createResponse = await request(app, "/api/agent/conversations", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title: "Original title" })
+  });
+  const created = (await createResponse.json()) as { id: string };
+
+  const renameResponse = await request(
+    app,
+    `/api/agent/conversations/${created.id}`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "Carrier exceptions" })
+    }
+  );
+
+  expect(renameResponse.status).toBe(200);
+  await expect(renameResponse.json()).resolves.toMatchObject({
+    id: created.id,
+    title: "Carrier exceptions"
+  });
+  const listResponse = await request(app, "/api/agent/conversations");
+  await expect(listResponse.json()).resolves.toEqual([
+    expect.objectContaining({ id: created.id, title: "Carrier exceptions" })
+  ]);
+});
+
+it("streams readable central-brain activity before the grounded answer", async () => {
+  const app = createApp({
+    mandatesRepository: new MemoryRepository(),
+    repository: new MemoryAgentRepository(),
+    answerer: new DeterministicAgentAnswerer()
+  });
+  const createResponse = await request(app, "/api/agent/conversations", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title: "Operational status" })
+  });
+  const created = (await createResponse.json()) as { id: string };
+
+  const messageResponse = await request(
+    app,
+    `/api/agent/conversations/${created.id}/messages`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ question: "What needs my attention?" })
+    }
+  );
+  const stream = await messageResponse.text();
+
+  expect(messageResponse.status).toBe(200);
+  expect(stream).toContain("event: activity");
+  expect(stream).toContain("Searching operational records");
+  expect(stream).toContain("Reviewing items that need attention");
+  expect(stream).toContain("event: final");
 });
 
 class MemoryRepository implements MandatesRepository {

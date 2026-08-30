@@ -21,6 +21,11 @@ export type CreateConversationInput = OrganizationContext & { title?: string };
 
 export type AgentRepository = {
   syncOperation(organizationId: string, operation: Operation): Promise<void>;
+  listOperations(context: OrganizationContext): Promise<Operation[]>;
+  getOperation(
+    context: OrganizationContext,
+    operationId: string
+  ): Promise<Operation | undefined>;
   saveCallSession(
     organizationId: string,
     callSession: CallSession
@@ -40,6 +45,11 @@ export type AgentRepository = {
     conversationId: string
   ): Promise<AgentConversation | undefined>;
   listConversations(context: OrganizationContext): Promise<AgentConversation[]>;
+  renameConversation(
+    context: OrganizationContext,
+    conversationId: string,
+    title: string
+  ): Promise<AgentConversation | undefined>;
   appendMessage(
     context: OrganizationContext,
     message: AgentMessage
@@ -92,6 +102,21 @@ export class MemoryAgentRepository implements AgentRepository {
     const organization = this.operations.get(organizationId) ?? new Map();
     organization.set(operation.id, structuredClone(operation));
     this.operations.set(organizationId, organization);
+  }
+
+  async listOperations(context: OrganizationContext) {
+    return [...(this.operations.get(context.organizationId)?.values() ?? [])]
+      .map((item) => structuredClone(item))
+      .sort((left, right) =>
+        latestOperationTime(right).localeCompare(latestOperationTime(left))
+      );
+  }
+
+  async getOperation(context: OrganizationContext, operationId: string) {
+    const operation = this.operations
+      .get(context.organizationId)
+      ?.get(operationId);
+    return operation ? structuredClone(operation) : undefined;
   }
 
   async saveCallSession(organizationId: string, callSession: CallSession) {
@@ -166,6 +191,20 @@ export class MemoryAgentRepository implements AgentRepository {
       .filter((item) => item.organizationId === context.organizationId)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .map((item) => structuredClone(item));
+  }
+
+  async renameConversation(
+    context: OrganizationContext,
+    conversationId: string,
+    title: string
+  ) {
+    const conversation = this.conversations.get(
+      key(context.organizationId, conversationId)
+    );
+    if (!conversation) return undefined;
+    conversation.title = title;
+    conversation.updatedAt = new Date().toISOString();
+    return structuredClone(conversation);
   }
 
   async appendMessage(context: OrganizationContext, message: AgentMessage) {
