@@ -714,6 +714,8 @@ function TestingCarriers() {
   const [carriers, setCarriers] = useState<CarrierRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const phoneRef = useRef<HTMLInputElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
 
   const refresh = async () => {
     try {
@@ -724,9 +726,9 @@ function TestingCarriers() {
     }
   };
 
-  useEffect(() => {
-    void refresh();
-  }, []);
+  // Loaded when the panel is opened, not on mount: the mandate screen should
+  // not fetch a directory nobody asked to see.
+  const [loaded, setLoaded] = useState(false);
 
   const toggle = async (carrier: CarrierRow) => {
     setBusy(true);
@@ -745,11 +747,8 @@ function TestingCarriers() {
     }
   };
 
-  const add = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const data = new FormData(form);
-    const phone = String(data.get("phone") ?? "").trim();
+  const add = async () => {
+    const phone = phoneRef.current?.value.trim() ?? "";
     if (!phone) return;
 
     setBusy(true);
@@ -760,14 +759,15 @@ function TestingCarriers() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           id: `carrier-${phone.replace(/\D/g, "")}`,
-          name: String(data.get("name") ?? "").trim() || phone,
+          name: nameRef.current?.value.trim() || phone,
           phone,
           lanes: [],
           active: true
         })
       });
       if (!response.ok) throw new Error("create_failed");
-      form.reset();
+      if (phoneRef.current) phoneRef.current.value = "";
+      if (nameRef.current) nameRef.current.value = "";
       await refresh();
     } catch {
       setError("Could not add that number.");
@@ -779,7 +779,15 @@ function TestingCarriers() {
   const active = carriers.filter((carrier) => carrier.active);
 
   return (
-    <details className="testing">
+    <details
+      className="testing"
+      onToggle={(event) => {
+        if (event.currentTarget.open && !loaded) {
+          setLoaded(true);
+          void refresh();
+        }
+      }}
+    >
       <summary>
         <span>Testing · numbers this mandate will call</span>
         <Tag tone={active.length > 0 ? "commit" : "halt"}>
@@ -815,13 +823,20 @@ function TestingCarriers() {
           )}
         </ul>
 
-        <form className="testing__add" onSubmit={(event) => void add(event)}>
-          <input name="phone" placeholder="+573001112233" required />
-          <input name="name" placeholder="Carrier name (optional)" />
-          <button className="btn btn--secondary" type="submit" disabled={busy}>
+        {/* Not a form: this panel lives inside the mandate form, and a nested
+            form is invalid and would submit the mandate on Enter. */}
+        <div className="testing__add">
+          <input ref={phoneRef} placeholder="+573001112233" type="tel" />
+          <input ref={nameRef} placeholder="Carrier name (optional)" />
+          <button
+            className="btn btn--secondary"
+            type="button"
+            onClick={() => void add()}
+            disabled={busy}
+          >
             Add
           </button>
-        </form>
+        </div>
 
         {error && (
           <p className="form-error" role="alert">
