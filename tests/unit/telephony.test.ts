@@ -5,6 +5,7 @@ import {
   createRealtimeSessionConfig,
   type RelaySocket
 } from "../../src/telephony/mediaStream";
+import type { CallRuntime } from "../../src/telephony/registry";
 import { createModeConfiguration } from "../../src/agent/modes";
 import { createExceptionModeConfiguration } from "../../src/agent/modes";
 import { createExceptionCallContext } from "../../src/core/exceptions";
@@ -35,6 +36,17 @@ class FakeSocket implements RelaySocket {
     }
   }
 }
+
+const runtime: CallRuntime = {
+  callSid: "CA1",
+  streamSid: "MZ123",
+  operationId: "operation-001",
+  carrierName: "Fletes del Norte",
+  direction: "outbound",
+  startedAt: "2026-08-30T10:00:00.000Z",
+  frameCount: 0,
+  routeTo: "AGENT"
+};
 
 describe("telephony adapters", () => {
   it("returns a media-stream TwiML response for an inbound call", () => {
@@ -140,6 +152,65 @@ describe("telephony adapters", () => {
         arguments: { price: 8500, pickupTime: "2026-09-03T10:00:00-06:00" }
       }
     ]);
+  });
+
+  it("configures the session itself when nothing warmed it", () => {
+    const twilio = new FakeSocket();
+    const realtime = new FakeSocket();
+
+    attachMediaStreamRelay({
+      twilio,
+      realtime,
+      instructionsFor: () => "briefing for this carrier",
+      onStart: () => runtime,
+      executeToolCall: async () => ({ outcome: "approved" })
+    });
+    twilio.receive({
+      event: "start",
+      streamSid: "MZ123",
+      start: { streamSid: "MZ123", callSid: "CA1" }
+    });
+
+    expect(realtime.sent.map((message) => JSON.parse(message).type)).toEqual([
+      "session.update",
+      "session.update",
+      "response.create"
+    ]);
+  });
+
+  it("asks a pre-warmed session for the greeting and nothing else", () => {
+    const twilio = new FakeSocket();
+    const realtime = new FakeSocket();
+    let firstAudio = 0;
+
+    attachMediaStreamRelay({
+      twilio,
+      realtime,
+      sessionAlreadyConfigured: true,
+      instructionsFor: () => "briefing for this carrier",
+      onStart: () => runtime,
+      onFirstAudio: () => {
+        firstAudio += 1;
+      },
+      executeToolCall: async () => ({ outcome: "approved" })
+    });
+    twilio.receive({
+      event: "start",
+      streamSid: "MZ123",
+      start: { streamSid: "MZ123", callSid: "CA1" }
+    });
+
+    // Configuring the session again would put the handshake the ring time
+    // already paid for back onto the clock of a carrier who has answered.
+    expect(realtime.sent.map((message) => JSON.parse(message).type)).toEqual([
+      "response.create"
+    ]);
+
+    realtime.receive({ type: "response.output_audio.delta", delta: "one" });
+    realtime.receive({ type: "response.output_audio.delta", delta: "two" });
+
+    // The end of the carrier's silence happens once, however long Volta talks.
+    expect(firstAudio).toBe(1);
   });
 
   it("uses the mock gateway without connecting to Twilio", async () => {

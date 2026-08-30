@@ -61,6 +61,18 @@ export type MediaStreamRelayDependencies = {
   /** Mode for this call; decides which tools the session exposes. */
   configuration?: ModeConfiguration;
   /**
+   * Set when the session was configured while the phone was still ringing.
+   * Re-sending the configuration here would put the whole cost back on the
+   * carrier's clock, so the only thing left to do on `start` is ask for the
+   * greeting.
+   */
+  sessionAlreadyConfigured?: boolean;
+  /**
+   * The first audio frame reaching the carrier — the end of the silence the
+   * person who answered actually experiences. Called once per call.
+   */
+  onFirstAudio?: () => void;
+  /**
    * Whether the agent is the one the caller should be hearing right now. While
    * a person has the call, Volta keeps listening and transcribing but its
    * audio is not played: that is what makes the handover a routing change
@@ -178,17 +190,22 @@ export function attachMediaStreamRelay({
   configuration,
   onTranscript,
   agentHasTheFloor,
-  onCallerAudio
+  onCallerAudio,
+  sessionAlreadyConfigured = false,
+  onFirstAudio
 }: MediaStreamRelayDependencies): void {
   let streamSid: string | undefined;
   let runtime: CallRuntime | undefined;
+  let spoken = false;
 
-  realtime.send(
-    JSON.stringify({
-      type: "session.update",
-      session: createRealtimeSessionConfig({ configuration })
-    })
-  );
+  if (!sessionAlreadyConfigured) {
+    realtime.send(
+      JSON.stringify({
+        type: "session.update",
+        session: createRealtimeSessionConfig({ configuration })
+      })
+    );
+  }
 
   twilio.on("message", (message) => {
     const event = parseEvent(message);
@@ -208,8 +225,10 @@ export function attachMediaStreamRelay({
       }
 
       // Now that the carrier is known, replace the generic instructions with
-      // the briefing for this job before the agent says anything.
-      if (runtime && instructionsFor) {
+      // the briefing for this job before the agent says anything. A
+      // pre-warmed session was already briefed at dial time, when the carrier
+      // was just as known and the carrier was not yet waiting.
+      if (runtime && instructionsFor && !sessionAlreadyConfigured) {
         realtime.send(
           JSON.stringify({
             type: "session.update",
@@ -255,6 +274,10 @@ export function attachMediaStreamRelay({
       // session: it keeps hearing and transcribing throughout.
       if (agentHasTheFloor && !agentHasTheFloor()) return;
       if (delta && streamSid) {
+        if (!spoken) {
+          spoken = true;
+          onFirstAudio?.();
+        }
         twilio.send(
           JSON.stringify({
             event: "media",

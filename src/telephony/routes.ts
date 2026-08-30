@@ -4,6 +4,8 @@ import express, { type Express } from "express";
 import twilio from "twilio";
 import { WebSocketServer, type WebSocket } from "ws";
 
+import type { CallSession, CallSupervision } from "@volta/contracts";
+
 import { executeToolCall } from "../agent/interpreter";
 import { buildCallInstructions } from "../agent/prompt";
 import { env } from "../config/env";
@@ -25,6 +27,15 @@ import {
 } from "./orchestrator";
 import { attachMediaStreamRelay } from "./mediaStream";
 import {
+  answeredAt,
+  discardWarmSession,
+  markCallAnswered,
+  prewarmRealtimeSession,
+  takeWarmSession,
+  warmCallContext,
+  type WarmSession
+} from "./prewarm";
+import {
   callClockMs,
   createCallRegistry,
   type CallRegistry,
@@ -44,6 +55,15 @@ import {
 
 export const MEDIA_STREAM_PATH = "/media-stream";
 export const SUPERVISOR_STREAM_PATH = "/supervisor-stream";
+
+/** Twilio statuses after which no media stream is coming. */
+const TERMINAL_CALL_STATUSES = new Set([
+  "completed",
+  "busy",
+  "no-answer",
+  "failed",
+  "canceled"
+]);
 
 function escapeXmlText(value: string): string {
   return value.replace(/[<>&'"]/g, (character) => {
@@ -209,6 +229,48 @@ function bindCallSession(
   return input.callSid;
 }
 
+/**
+ * The call session the console is talking about.
+ *
+ * Sessions opened by a round carry a generated id and the Twilio sid in
+ * separate fields; ones bound by the media stream use the sid for both. The
+ * console sends whichever it has, so both have to resolve — matching only the
+ * id is what made every takeover button return 404 and look dead.
+ */
+function findCallSession(
+  store: OperationStore,
+  callId: string
+): CallSession | undefined {
+  const sessions = store.getOperation().callSessions;
+  return (
+    sessions.find((session) => session.callSid === callId) ??
+    sessions.find((session) => session.id === callId)
+  );
+}
+
+/**
+ * A supervision change the console can see. A change that finds no session
+ * publishes no event, which leaves the board showing the agent in charge of a
+ * call a person is already on.
+ */
+function setSupervisionFor(
+  store: OperationStore,
+  callId: string,
+  supervision: CallSupervision
+): CallSession | undefined {
+  const session = findCallSession(store, callId);
+  if (!session) {
+    console.error(
+      `[takeover] no call session for call=${callId}. Known: ${store
+        .getOperation()
+        .callSessions.map((item) => item.callSid ?? item.id)
+        .join(", ")}`
+    );
+    return undefined;
+  }
+  return store.setCallSupervision(session.id, supervision);
+}
+
 function mediaStreamUrl(
   reference?: OutboundCallReference,
   direction?: "inbound"
@@ -233,12 +295,10 @@ export function callContextFromUrl(
   return operationId ? { callToken: "", operationId } : undefined;
 }
 
-export async function resolveCallDependencies(
+export function withResolvedCallContext(
   dependencies: TelephonyDependencies,
-  reference: OutboundCallReference
-): Promise<TelephonyDependencies> {
-  const resolved = await dependencies.resolveCallContext?.(reference);
-  if (!resolved) throw new Error("telephony_call_context_not_found");
+  resolved: ResolvedTelephonyCallContext
+): TelephonyDependencies {
   return {
     ...dependencies,
     store: resolved.store,
@@ -249,6 +309,15 @@ export async function resolveCallDependencies(
       dependencies.organizationId,
     callContext: { ...resolved.context, carrier: resolved.carrier }
   };
+}
+
+export async function resolveCallDependencies(
+  dependencies: TelephonyDependencies,
+  reference: OutboundCallReference
+): Promise<TelephonyDependencies> {
+  const resolved = await dependencies.resolveCallContext?.(reference);
+  if (!resolved) throw new Error("telephony_call_context_not_found");
+  return withResolvedCallContext(dependencies, resolved);
 }
 
 export function mountTelephonyRoutes(
@@ -266,6 +335,34 @@ export function mountTelephonyRoutes(
       );
   });
   const twiml = express.urlencoded({ extended: false });
+
+  /**
+   * Opens the agent's session before the number starts ringing, briefed for
+   * this exact carrier. The context is cached alongside it so the media
+   * WebSocket does not have to read it back out of Postgres while the carrier
+   * waits on the upgrade.
+   */
+  const warmSessionFor = async (
+    reference: OutboundCallReference,
+    carrier?: { id: string; name: string }
+  ) => {
+    if (env.VOLTA_MODE !== "live" || !reference.callToken) return;
+    const operation = store.getOperation();
+    await prewarmRealtimeSession({
+      callToken: reference.callToken,
+      instructions: buildCallInstructions(operation, carrier?.name),
+      context: {
+        store,
+        context: {
+          operationId: operation.id,
+          carrierId: carrier?.id,
+          organizationId: dependencies.organizationId
+        },
+        organizationId: dependencies.organizationId,
+        carrier
+      }
+    });
+  };
 
   const hangUp = (response: express.Response) =>
     response
@@ -290,13 +387,19 @@ export function mountTelephonyRoutes(
   // Outbound calls are fail-closed: a generic callback must never inherit the
   // process's demo/current operation and speak its mandate to the carrier.
   app.post("/twiml/outbound", twiml, (request, response) => {
-    if (machineAnswered(request)) {
-      hangUp(response);
-      return;
-    }
     const reference = callContextFromUrl(
       new URL(request.originalUrl, "http://localhost")
     );
+    if (machineAnswered(request)) {
+      // The warmed session has no call to serve now.
+      if (reference?.callToken)
+        discardWarmSession(reference.callToken, "answering machine");
+      hangUp(response);
+      return;
+    }
+    // This request is Twilio telling us the carrier picked up, which is where
+    // the only latency the carrier experiences starts being counted.
+    if (reference?.callToken) markCallAnswered(reference.callToken);
     // Fails open on purpose. Refusing a callback whose context cannot be read
     // hangs up on a carrier who has already answered, and a deploy landing
     // mid-round is enough to cause it. Serving the instance's current
@@ -419,6 +522,7 @@ export function mountTelephonyRoutes(
       gateway:
         env.VOLTA_MODE === "live" ? createLiveTelephonyGateway() : undefined,
       createCallReference: dependencies.createCallReference,
+      prewarm: ({ reference, carrier }) => warmSessionFor(reference, carrier),
       timeLimitSeconds: env.CALL_TIME_LIMIT_SECONDS,
       record: env.TWILIO_RECORD_CALLS,
       detectAnsweringMachine: env.TWILIO_HANGUP_ON_MACHINE,
@@ -434,32 +538,51 @@ export function mountTelephonyRoutes(
   });
 
   /**
-   * Hands a live call to a person. The agent leg is never dropped: this marks
-   * intent and state, and the audio hub routes the caller to the supervisor.
-   * Until the hub lands the state is recorded so the board can already show
-   * and drive the handover.
+   * Hands a live call to a person: rings the supervisor and puts them into the
+   * conversation. The agent leg is never dropped, and the agent keeps the
+   * floor until the supervisor actually picks up — silencing it the moment the
+   * button is pressed would leave the carrier listening to nothing for as long
+   * as a phone rings.
    */
-  app.post("/api/calls/:callId/takeover", jsonBody, (request, response) => {
-    const reason =
-      typeof (request.body as { reason?: unknown } | undefined)?.reason ===
-      "string"
-        ? (request.body as { reason: string }).reason
-        : undefined;
+  app.post(
+    "/api/calls/:callId/takeover",
+    jsonBody,
+    async (request, response) => {
+      const callId = String(request.params.callId);
+      const reason =
+        typeof (request.body as { reason?: unknown } | undefined)?.reason ===
+        "string"
+          ? (request.body as { reason: string }).reason
+          : undefined;
 
-    try {
-      const callSession = store.setCallSupervision(
-        String(request.params.callId),
-        {
-          state: "briefing_supervisor",
-          reason,
-          requestedAt: new Date().toISOString()
-        }
-      );
+      const callSession = setSupervisionFor(store, callId, {
+        state: "briefing_supervisor",
+        reason,
+        requestedAt: new Date().toISOString()
+      });
+      if (!callSession) {
+        response.status(404).json({ error: "call_session_not_found" });
+        return;
+      }
+
+      try {
+        await dialSupervisor(callSession.callSid ?? callSession.id);
+      } catch (error) {
+        // Leaving the board on "briefing you" for a call nobody is going to
+        // join is worse than admitting the supervisor could not be reached.
+        setSupervisionFor(store, callId, {
+          state: "agent",
+          reason: "supervisor_unreachable"
+        });
+        const detail = error instanceof Error ? error.message : "unknown";
+        console.error(`[takeover] could not reach the supervisor: ${detail}`);
+        response.status(502).json({ error: "supervisor_unreachable", detail });
+        return;
+      }
+
       response.status(202).json(callSession);
-    } catch {
-      response.status(404).json({ error: "call_session_not_found" });
     }
-  });
+  );
 
   /**
    * Accepts a call the agent offered. Only works while the countdown is still
@@ -471,46 +594,47 @@ export function mountTelephonyRoutes(
       response.status(409).json({ error: "takeover_window_closed" });
       return;
     }
-    const session = store
-      .getOperation()
-      .callSessions.find((item) => item.callSid === callSid);
-    response.status(200).json(session ?? { callSid });
+    response.status(200).json(findCallSession(store, callSid) ?? { callSid });
   });
 
-  /** The supervisor is on the line; the caller now hears them. */
+  /**
+   * Moves the floor to the person by hand. The supervisor stream does this on
+   * its own once they pick up, so this is the override for a leg the stream
+   * never reached.
+   */
   app.post("/api/calls/:callId/connect", (request, response) => {
-    try {
-      const runtime = context.registry.byCallSid(String(request.params.callId));
-      if (runtime) runtime.routeTo = "HUMAN";
-      const callSession = store.setCallSupervision(
-        String(request.params.callId),
-        {
-          state: "human",
-          takenOverAt: new Date().toISOString()
-        }
-      );
-      response.status(200).json(callSession);
-    } catch {
+    const callId = String(request.params.callId);
+    const callSession = setSupervisionFor(store, callId, {
+      state: "human",
+      takenOverAt: new Date().toISOString()
+    });
+    if (!callSession) {
       response.status(404).json({ error: "call_session_not_found" });
+      return;
     }
+    const runtime = context.registry.byCallSid(
+      callSession.callSid ?? callSession.id
+    );
+    if (runtime) runtime.routeTo = "HUMAN";
+    response.status(200).json(callSession);
   });
 
   /** Gives the conversation back to Volta without ending the call. */
   app.post("/api/calls/:callId/handback", (request, response) => {
-    try {
-      const runtime = context.registry.byCallSid(String(request.params.callId));
-      if (runtime) runtime.routeTo = "AGENT";
-      const callSession = store.setCallSupervision(
-        String(request.params.callId),
-        {
-          state: "returned_to_agent",
-          returnedAt: new Date().toISOString()
-        }
-      );
-      response.status(200).json(callSession);
-    } catch {
+    const callId = String(request.params.callId);
+    const callSession = setSupervisionFor(store, callId, {
+      state: "returned_to_agent",
+      returnedAt: new Date().toISOString()
+    });
+    if (!callSession) {
       response.status(404).json({ error: "call_session_not_found" });
+      return;
     }
+    const runtime = context.registry.byCallSid(
+      callSession.callSid ?? callSession.id
+    );
+    if (runtime) runtime.routeTo = "AGENT";
+    response.status(200).json(callSession);
   });
 
   app.get("/api/transcript", async (request, response) => {
@@ -602,6 +726,17 @@ export function mountTelephonyRoutes(
         response.sendStatus(204);
         return;
       }
+      // A call that never connected leaves its warmed session with nothing to
+      // serve; without this a round nobody answers keeps paying for four open
+      // OpenAI sockets. A call that did connect already claimed its own, so
+      // this is a no-op for the healthy path.
+      if (
+        reference.callToken &&
+        callStatus !== undefined &&
+        TERMINAL_CALL_STATUSES.has(callStatus)
+      ) {
+        discardWarmSession(reference.callToken, callStatus);
+      }
       const resolved = await resolveCallDependencies(dependencies, reference);
       const statusStore = resolved.store;
       const session = statusStore
@@ -650,6 +785,7 @@ export function mountTelephonyRoutes(
       if (twimlPath === "/twiml/outbound" && !reference) {
         throw new Error("telephony_call_context_persistence_missing");
       }
+      if (reference) await warmSessionFor(reference, carrier);
       const session = await gateway.createOutboundCall({
         operationId: store.getOperation().id,
         carrierId: carrier?.id,
@@ -698,12 +834,28 @@ export function mountTelephonyRoutes(
   });
 }
 
+/** Everything resolved before the media socket was handed to the relay. */
+type MediaStreamSetup = {
+  dependencies: TelephonyDependencies;
+  /** The session opened while this call was still ringing, if we got one. */
+  warm?: WarmSession;
+  /** When the carrier picked up, as reported by Twilio's TwiML request. */
+  answeredAtMs?: number;
+  /** How long the upgrade took; the carrier waits through all of it. */
+  upgradeMs: number;
+};
+
+function warmLabel(warm?: WarmSession): string {
+  if (!warm) return "no";
+  return warm.ready ? "ready" : "pending";
+}
+
 export function attachTelephonyWebSockets(
   server: Server,
   dependencies: TelephonyDependencies
 ): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
-  const dependenciesBySocket = new WeakMap<WebSocket, TelephonyDependencies>();
+  const setupBySocket = new WeakMap<WebSocket, MediaStreamSetup>();
 
   server.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url ?? "/", "http://localhost");
@@ -714,26 +866,48 @@ export function attachTelephonyWebSockets(
     }
 
     void (async () => {
+      const upgradeStartedAt = Date.now();
       let resolved = dependencies;
+      let warm: WarmSession | undefined;
+      let answeredAtMs: number | undefined;
+
       if (pathname === MEDIA_STREAM_PATH) {
         const reference = callContextFromUrl(url);
         if (reference) {
-          // Falls back rather than throwing: a context that cannot be read
-          // used to abort the upgrade, which drops the audio of a call the
-          // carrier already answered. The instance's active operation is a
-          // worse answer than the right one and a far better answer than
-          // silence.
-          try {
-            resolved = await resolveCallDependencies(dependencies, reference);
-          } catch (error) {
-            console.warn(
-              `[twilio] call context unresolved (${error instanceof Error ? error.message : "unknown"}); using the active operation`
-            );
+          const { callToken } = reference;
+          const warmed = callToken ? warmCallContext(callToken) : undefined;
+          if (callToken) answeredAtMs = answeredAt(callToken);
+
+          if (warmed) {
+            // Captured when we dialled. Reading it from memory keeps Postgres
+            // out of an upgrade the carrier is already waiting on.
+            resolved = withResolvedCallContext(dependencies, warmed);
+          } else {
+            // Falls back rather than throwing: a context that cannot be read
+            // used to abort the upgrade, which drops the audio of a call the
+            // carrier already answered. The instance's active operation is a
+            // worse answer than the right one and a far better answer than
+            // silence.
+            try {
+              resolved = await resolveCallDependencies(dependencies, reference);
+            } catch (error) {
+              console.warn(
+                `[twilio] call context unresolved (${error instanceof Error ? error.message : "unknown"}); using the active operation`
+              );
+            }
           }
+          if (callToken) warm = takeWarmSession(callToken);
         }
       }
+
+      const upgradeMs = Date.now() - upgradeStartedAt;
       wss.handleUpgrade(request, socket, head, (client) => {
-        dependenciesBySocket.set(client, resolved);
+        setupBySocket.set(client, {
+          dependencies: resolved,
+          ...(warm ? { warm } : {}),
+          ...(answeredAtMs === undefined ? {} : { answeredAtMs }),
+          upgradeMs
+        });
         wss.emit("connection", client, request);
       });
     })().catch((error: unknown) => {
@@ -746,21 +920,24 @@ export function attachTelephonyWebSockets(
     const url = new URL(request.url ?? "/", "http://localhost");
 
     if (url.pathname === SUPERVISOR_STREAM_PATH) {
-      attachSupervisorStream(client, url.searchParams.get("callSid") ?? "");
+      attachSupervisorStream(
+        client,
+        url.searchParams.get("callSid") ?? "",
+        dependencies
+      );
       return;
     }
 
-    console.log("[twilio] media stream connected");
-    const callDependencies = dependenciesBySocket.get(client);
-    if (!callDependencies) {
+    const setup = setupBySocket.get(client);
+    if (!setup) {
       console.error("[twilio] media stream rejected: dependencies missing");
       client.close();
       return;
     }
-    openMediaStreamSession(
-      toRelaySocket(client, { label: "twilio" }),
-      callDependencies
+    console.log(
+      `[twilio] media stream connected (upgrade=${setup.upgradeMs}ms warm=${warmLabel(setup.warm)})`
     );
+    openMediaStreamSession(toRelaySocket(client, { label: "twilio" }), setup);
   });
 
   return wss;
@@ -804,10 +981,12 @@ export function acceptTakeover(callSid: string): boolean {
  * arrives on its own media stream and the hub plays it to the carrier.
  */
 async function dialSupervisor(callSid: string): Promise<void> {
-  if (!env.SUPERVISOR_PHONE || !env.TWILIO_FROM_NUMBER) {
-    console.warn("[takeover] no SUPERVISOR_PHONE configured; nobody to ring");
-    return;
-  }
+  // Throws rather than warning: a takeover that quietly rings nobody leaves
+  // the console claiming a person is joining a call they cannot hear.
+  if (env.VOLTA_MODE !== "live") throw new Error("live_mode_required");
+  if (!env.SUPERVISOR_PHONE) throw new Error("supervisor_phone_missing");
+  if (!env.TWILIO_FROM_NUMBER) throw new Error("twilio_from_number_missing");
+
   const base = (env.PUBLIC_BASE_URL ?? "").replace(/\/$/, "");
   const brief =
     "You are joining a Volta call in progress. You can hear the carrier and you are live.";
@@ -833,28 +1012,8 @@ function openTakeoverWindow(input: {
   const windowMs = env.TAKEOVER_WINDOW_SECONDS * 1000;
   const now = new Date();
 
-  const setSupervision = (
-    supervision: import("@volta/contracts").CallSupervision
-  ) => {
-    const sessions = store.getOperation().callSessions;
-    // Sessions opened by a round carry the sid on `callSid`; ones bound by the
-    // media stream are keyed by it. Matching only the first silently found
-    // nothing, and a supervision change that finds no session publishes no
-    // event — the console stayed blank while the countdown ran and the agent
-    // hung up on schedule.
-    const session =
-      sessions.find((item) => item.callSid === runtime.callSid) ??
-      sessions.find((item) => item.id === runtime.callSid);
-
-    if (!session) {
-      console.error(
-        `[takeover] no call session for call=${runtime.callSid}; the console cannot be alerted. Known: ${sessions
-          .map((item) => item.callSid ?? item.id)
-          .join(", ")}`
-      );
-      return;
-    }
-    store.setCallSupervision(session.id, supervision);
+  const setSupervision = (supervision: CallSupervision) => {
+    setSupervisionFor(store, runtime.callSid, supervision);
   };
 
   setSupervision({
@@ -912,7 +1071,11 @@ function openTakeoverWindow(input: {
  * they hold the call, so joining is never enough on its own to talk over the
  * agent.
  */
-function attachSupervisorStream(client: WebSocket, callSid: string): void {
+function attachSupervisorStream(
+  client: WebSocket,
+  callSid: string,
+  dependencies: TelephonyDependencies
+): void {
   const bridge = getBridge(callSid);
   if (!bridge) {
     console.warn(`[takeover] supervisor joined but call=${callSid} is gone`);
@@ -920,6 +1083,8 @@ function attachSupervisorStream(client: WebSocket, callSid: string): void {
     return;
   }
 
+  const { store } = dependencies;
+  const { registry } = telephonyContext(store);
   let streamSid: string | undefined;
   console.log(`[takeover] supervisor is on the line for call=${callSid}`);
 
@@ -943,6 +1108,18 @@ function attachSupervisorStream(client: WebSocket, callSid: string): void {
           );
         }
       });
+
+      // The floor moves now, when there is genuinely a person to hear, rather
+      // than when the button was pressed. The carrier must not hear the
+      // agent's half-finished sentence either: Twilio has audio buffered.
+      const runtime = registry.byCallSid(callSid);
+      if (runtime) runtime.routeTo = "HUMAN";
+      bridge.clearCarrier();
+      setSupervisionFor(store, callSid, {
+        state: "human",
+        takenOverAt: new Date().toISOString()
+      });
+      console.log(`[takeover] the human has the floor on call=${callSid}`);
       return;
     }
 
@@ -955,13 +1132,26 @@ function attachSupervisorStream(client: WebSocket, callSid: string): void {
   client.on("close", () => {
     console.log(`[takeover] supervisor left call=${callSid}`);
     bridge.detachSupervisor();
+
+    // A supervisor who hangs up first would otherwise leave the carrier on an
+    // open line with a muted agent, which sounds exactly like a dropped call.
+    const runtime = registry.byCallSid(callSid);
+    if (runtime?.routeTo === "HUMAN") {
+      runtime.routeTo = "AGENT";
+      setSupervisionFor(store, callSid, {
+        state: "returned_to_agent",
+        returnedAt: new Date().toISOString()
+      });
+      console.log(`[takeover] floor returned to Volta on call=${callSid}`);
+    }
   });
 }
 
 function openMediaStreamSession(
   twilioSocket: ClosableRelaySocket,
-  dependencies: TelephonyDependencies
+  setup: MediaStreamSetup
 ): void {
+  const { dependencies, warm } = setup;
   const { store } = dependencies;
   const context = telephonyContext(store);
   const registry = context.registry;
@@ -995,10 +1185,15 @@ function openMediaStreamSession(
   // attributed to it, so quotes from concurrent calls cannot be confused.
   let runtime: CallRuntime | undefined;
 
-  const realtime = createRealtimeSocket({
-    apiKey: env.OPENAI_API_KEY,
-    model: env.OPENAI_REALTIME_MODEL
-  });
+  // The session warmed while this call was ringing is already open and already
+  // briefed for this carrier. Opening a new one here is the cold path: correct,
+  // but it puts the handshake back on the clock of a carrier who has answered.
+  const realtime =
+    warm?.realtime ??
+    createRealtimeSocket({
+      apiKey: env.OPENAI_API_KEY,
+      model: env.OPENAI_REALTIME_MODEL
+    });
 
   // Realtime reports rejected session config as an `error` event rather than by
   // closing, so a silent agent looks identical to a healthy one without this.
@@ -1020,6 +1215,19 @@ function openMediaStreamSession(
   attachMediaStreamRelay({
     twilio: twilioSocket,
     realtime,
+    sessionAlreadyConfigured: Boolean(warm),
+    // The number the carrier actually experiences: how long they held a live
+    // line in silence. Without it a slow greeting and a fast one look the same
+    // in the logs.
+    onFirstAudio: () => {
+      const sinceAnswer =
+        setup.answeredAtMs === undefined
+          ? "unknown"
+          : `${Date.now() - setup.answeredAtMs}ms`;
+      console.log(
+        `[latency] answer->first_audio=${sinceAnswer} (upgrade=${setup.upgradeMs}ms warm=${warmLabel(warm)})`
+      );
+    },
     onStart: ({ streamSid, callSid }) => {
       const carrier =
         dependencies.callContext?.carrier ??

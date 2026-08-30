@@ -18,6 +18,17 @@ export type FanoutDependencies = {
   createCallReference?: (
     context: OutboundCallContext
   ) => Promise<OutboundCallReference>;
+  /**
+   * Opens the agent's Realtime session before the phone rings, and resolves
+   * once it is ready to talk. Awaited rather than fired alongside the dial: a
+   * carrier who answers on the first ring — or voicemail, which answers
+   * instantly — would otherwise win the race and wait through the whole
+   * handshake in silence.
+   */
+  prewarm?: (input: {
+    reference: OutboundCallReference;
+    carrier: { id: string; name: string };
+  }) => Promise<void>;
   onDialled?: (callId: string, carrier: { id: string; name: string }) => void;
   onRoundReviewed?: (input: {
     operationId: string;
@@ -77,6 +88,20 @@ export async function fanOutCalls(
       const callReference = dependencies.createCallReference
         ? await dependencies.createCallReference(callContext)
         : undefined;
+
+      if (callReference && dependencies.prewarm) {
+        // Never at the expense of the call: a round that cannot warm up is
+        // still a round, it just greets the carrier as slowly as it used to.
+        try {
+          await dependencies.prewarm({
+            reference: callReference,
+            carrier: { id: candidate.id, name: candidate.name }
+          });
+        } catch (error) {
+          console.error("[prewarm] could not warm the session:", error);
+        }
+      }
+
       const created = await gateway.createOutboundCall({
         operationId: operation.id,
         carrierId: candidate.id,

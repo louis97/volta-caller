@@ -1335,7 +1335,7 @@ const SUPERVISION_LABEL: Record<CallSupervisionState, string> = {
   agent: "Volta speaking",
   awaiting_human: "Volta needs you",
   postponed: "Nobody joined · call closed",
-  briefing_supervisor: "Briefing you",
+  briefing_supervisor: "Ringing your phone…",
   human: "You are on the line",
   returned_to_agent: "Handed back"
 };
@@ -1348,12 +1348,39 @@ function supervisionTone(state: CallSupervisionState): Tone {
   return "idle";
 }
 
-async function callControl(callSid: string, action: string) {
-  await fetch(`/api/calls/${encodeURIComponent(callSid)}/${action}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ reason: "operator_requested" })
-  });
+const CALL_CONTROL_ERROR: Record<string, string> = {
+  call_session_not_found: "Volta no longer has this call on the floor.",
+  takeover_window_closed: "That offer already expired.",
+  supervisor_unreachable:
+    "Volta could not ring your phone. Check SUPERVISOR_PHONE and the Twilio logs."
+};
+
+/**
+ * Every one of these can fail, and the failure has to be visible: fired and
+ * forgotten, a rejected takeover looked exactly like a working one and the
+ * button read as dead.
+ */
+async function callControl(callSid: string, action: string): Promise<void> {
+  const response = await fetch(
+    `/api/calls/${encodeURIComponent(callSid)}/${action}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "operator_requested" })
+    }
+  );
+  if (response.ok) return;
+
+  let code: string | undefined;
+  try {
+    code = ((await response.json()) as { error?: string }).error;
+  } catch {
+    // Body was not JSON; the status is all we have to go on.
+  }
+  throw new Error(
+    (code ? CALL_CONTROL_ERROR[code] : undefined) ??
+      `Volta could not do that (${code ?? response.status}).`
+  );
 }
 
 function CallTranscript({ segments }: { segments: TranscriptSegment[] }) {
@@ -1382,14 +1409,33 @@ function CallTranscript({ segments }: { segments: TranscriptSegment[] }) {
 }
 
 /**
- * Handing a live call to a person never drops the agent leg: the server routes
- * the audio, so this drives a state change rather than a telephony operation.
+ * Handing a live call to a person never drops the agent leg: taking over rings
+ * your phone and the server routes the audio when you pick up, so Volta keeps
+ * talking instead of leaving the carrier in silence while it rings.
  */
 function CallHandover({ session }: { session: CallSession }) {
   const state: CallSupervisionState = session.supervision?.state ?? "agent";
   const callSid = session.callSid ?? session.id;
   const deadline = session.supervision?.deadlineAt;
   const [remaining, setRemaining] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async (action: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await callControl(callSid, action);
+    } catch (failure) {
+      setError(
+        failure instanceof Error
+          ? failure.message
+          : "Volta could not do that. Try again."
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
 
   // The offer expires, so the console has to show time running out rather than
   // a button that silently stops working.
@@ -1416,11 +1462,17 @@ function CallHandover({ session }: { session: CallSession }) {
         </Tag>
         <button
           className="btn btn--primary"
-          onClick={() => void callControl(callSid, "accept")}
+          disabled={busy}
+          onClick={() => void run("accept")}
           type="button"
         >
           Join the call
         </button>
+        {error ? (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        ) : null}
       </div>
     );
   }
@@ -1431,28 +1483,38 @@ function CallHandover({ session }: { session: CallSession }) {
       {state === "human" ? (
         <button
           className="btn btn--secondary"
-          onClick={() => void callControl(callSid, "handback")}
+          disabled={busy}
+          onClick={() => void run("handback")}
           type="button"
         >
           Hand back to Volta
         </button>
       ) : state === "briefing_supervisor" ? (
+        // Answering the phone moves the floor on its own. This is the override
+        // for a supervisor leg that rang but never joined the audio.
         <button
-          className="btn btn--primary"
-          onClick={() => void callControl(callSid, "connect")}
+          className="btn btn--secondary"
+          disabled={busy}
+          onClick={() => void run("connect")}
           type="button"
         >
-          Join the call
+          Take the floor now
         </button>
       ) : (
         <button
           className="btn btn--secondary"
-          onClick={() => void callControl(callSid, "takeover")}
+          disabled={busy}
+          onClick={() => void run("takeover")}
           type="button"
         >
-          Take over
+          {busy ? "Ringing you…" : "Take over"}
         </button>
       )}
+      {error ? (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }
