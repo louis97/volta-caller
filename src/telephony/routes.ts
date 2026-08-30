@@ -2,13 +2,14 @@ import type { Server } from "node:http";
 
 import express, { type Express } from "express";
 import twilio from "twilio";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, type WebSocket } from "ws";
 
 import { executeToolCall } from "../agent/interpreter";
 import { buildCallInstructions } from "../agent/prompt";
 import { env } from "../config/env";
 import type { OperationStore } from "../core/state";
 import { auctionFromOperation, type Auction } from "./auction";
+import { closeBridge, getBridge, openBridge } from "./hub";
 import { fanOutCalls } from "./orchestrator";
 import { attachMediaStreamRelay } from "./mediaStream";
 import {
@@ -30,6 +31,20 @@ import {
 } from "./twilio";
 
 export const MEDIA_STREAM_PATH = "/media-stream";
+export const SUPERVISOR_STREAM_PATH = "/supervisor-stream";
+
+function escapeXmlText(value: string): string {
+  return value.replace(/[<>&'"]/g, (character) => {
+    const entities: Record<string, string> = {
+      "<": "&lt;",
+      ">": "&gt;",
+      "&": "&amp;",
+      "'": "&apos;",
+      '"': "&quot;"
+    };
+    return entities[character]!;
+  });
+}
 
 export type TelephonyDependencies = {
   store: OperationStore;
@@ -202,6 +217,26 @@ export function mountTelephonyRoutes(
       response.type("text/xml").send(createInboundTwiML(mediaStreamUrl()));
     }
   );
+
+  /**
+   * What the supervisor hears when they pick up. Polly reads the brief while
+   * they are still connecting, so they arrive knowing the case without any
+   * extra text-to-speech in the path.
+   */
+  app.post("/twiml/supervisor", twiml, (request, response) => {
+    const callSid = String(request.query.callSid ?? "");
+    const brief = String(request.query.brief ?? "Entrando a la llamada.");
+    const wsUrl = `${(env.PUBLIC_WS_URL ?? "").replace(/\/$/, "")}${SUPERVISOR_STREAM_PATH}?callSid=${encodeURIComponent(callSid)}`;
+
+    response
+      .type("text/xml")
+      .send(
+        `<?xml version="1.0" encoding="UTF-8"?><Response>` +
+          `<Say voice="Polly.Mia" language="es-MX">${escapeXmlText(brief)}</Say>` +
+          `<Connect><Stream url="${escapeXmlText(wsUrl)}" /></Connect>` +
+          `</Response>`
+      );
+  });
 
   // Diagnostic only: a TwiML with no media stream. If a call reaches this and
   // speaks, the account and the public URL are fine and the stream itself is
@@ -487,7 +522,7 @@ export function attachTelephonyWebSockets(
 
   server.on("upgrade", (request, socket, head) => {
     const { pathname } = new URL(request.url ?? "/", "http://localhost");
-    if (pathname !== MEDIA_STREAM_PATH) {
+    if (pathname !== MEDIA_STREAM_PATH && pathname !== SUPERVISOR_STREAM_PATH) {
       socket.destroy();
       return;
     }
@@ -496,7 +531,14 @@ export function attachTelephonyWebSockets(
     });
   });
 
-  wss.on("connection", (client) => {
+  wss.on("connection", (client, request) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
+
+    if (url.pathname === SUPERVISOR_STREAM_PATH) {
+      attachSupervisorStream(client, url.searchParams.get("callSid") ?? "");
+      return;
+    }
+
     console.log("[twilio] media stream connected");
     openMediaStreamSession(
       toRelaySocket(client, { label: "twilio" }),
@@ -540,6 +582,28 @@ export function acceptTakeover(callSid: string): boolean {
  * to the human; letting it lapse has the agent close the conversation itself
  * and end the leg.
  */
+/**
+ * Rings the supervisor and connects them into the live call. Their audio
+ * arrives on its own media stream and the hub plays it to the carrier.
+ */
+async function dialSupervisor(callSid: string): Promise<void> {
+  if (!env.SUPERVISOR_PHONE || !env.TWILIO_FROM_NUMBER) {
+    console.warn("[takeover] no SUPERVISOR_PHONE configured; nobody to ring");
+    return;
+  }
+  const base = (env.PUBLIC_BASE_URL ?? "").replace(/\/$/, "");
+  const brief =
+    "Entras a una llamada en curso de Volta. Escuchas al transportista y ya puedes hablar.";
+
+  await createLiveTelephonyGateway().createOutboundCall({
+    operationId: callSid,
+    to: env.SUPERVISOR_PHONE,
+    from: env.TWILIO_FROM_NUMBER,
+    twimlUrl: `${base}/twiml/supervisor?callSid=${encodeURIComponent(callSid)}&brief=${encodeURIComponent(brief)}`
+  });
+  console.log(`[takeover] ringing the supervisor for call=${callSid}`);
+}
+
 function openTakeoverWindow(input: {
   store: OperationStore;
   runtime: CallRuntime;
@@ -594,6 +658,12 @@ function openTakeoverWindow(input: {
     timer,
     accept: () => {
       runtime.routeTo = "HUMAN";
+      // The carrier must not hear the agent's half-finished sentence once the
+      // person takes over; Twilio has audio buffered.
+      getBridge(runtime.callSid)?.clearCarrier();
+      void dialSupervisor(runtime.callSid).catch((error: unknown) =>
+        console.error("[takeover] could not reach the supervisor:", error)
+      );
       setSupervision({
         state: "human",
         requestedAt: now.toISOString(),
@@ -602,6 +672,57 @@ function openTakeoverWindow(input: {
       console.log(`[takeover] accepted call=${runtime.callSid}`);
     },
     expire: () => undefined
+  });
+}
+
+/**
+ * A supervisor's leg. Their audio reaches the carrier only while the hub says
+ * they hold the call, so joining is never enough on its own to talk over the
+ * agent.
+ */
+function attachSupervisorStream(client: WebSocket, callSid: string): void {
+  const bridge = getBridge(callSid);
+  if (!bridge) {
+    console.warn(`[takeover] supervisor joined but call=${callSid} is gone`);
+    client.close();
+    return;
+  }
+
+  let streamSid: string | undefined;
+  console.log(`[takeover] supervisor is on the line for call=${callSid}`);
+
+  client.on("message", (data: unknown) => {
+    let event: Record<string, unknown>;
+    try {
+      event = JSON.parse(String(data)) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+
+    if (event.event === "start") {
+      streamSid =
+        (event.streamSid as string | undefined) ??
+        (event.start as { streamSid?: string } | undefined)?.streamSid ??
+        undefined;
+      bridge.attachSupervisor((payload) => {
+        if (client.readyState === 1 && streamSid) {
+          client.send(
+            JSON.stringify({ event: "media", streamSid, media: { payload } })
+          );
+        }
+      });
+      return;
+    }
+
+    if (event.event !== "media") return;
+    const payload = (event.media as { payload?: string } | undefined)?.payload;
+    // Only audible once a person has actually been handed the call.
+    if (payload) bridge.sendToCarrier(payload, "human");
+  });
+
+  client.on("close", () => {
+    console.log(`[takeover] supervisor left call=${callSid}`);
+    bridge.detachSupervisor();
   });
 }
 
@@ -669,6 +790,20 @@ function openMediaStreamSession(
     realtime,
     onStart: ({ streamSid, callSid }) => {
       const carrier = callSid ? dialled.get(callSid) : undefined;
+
+      // The switchboard for this call. Holding the carrier's socket here is
+      // what lets a supervisor be routed in later without touching the leg.
+      openBridge({
+        callSid: callSid ?? streamSid,
+        sendToCarrier: (payload) =>
+          twilioSocket.send(
+            JSON.stringify({ event: "media", streamSid, media: { payload } })
+          ),
+        clearCarrier: () =>
+          twilioSocket.send(JSON.stringify({ event: "clear", streamSid })),
+        floor: () => runtime?.routeTo ?? "AGENT"
+      });
+
       runtime = registry.open({
         callSid: callSid ?? streamSid,
         streamSid,
@@ -696,6 +831,12 @@ function openMediaStreamSession(
         `[call] started stream=${streamSid} call=${callSid ?? "?"} carrier=${carrier?.name ?? "unknown"}`
       );
       return runtime;
+    },
+    // Volta only reaches the carrier while it still has the floor.
+    agentHasTheFloor: () => (runtime?.routeTo ?? "AGENT") === "AGENT",
+    // A supervisor who joined hears the carrier throughout.
+    onCallerAudio: (payload) => {
+      if (runtime) getBridge(runtime.callSid)?.toSupervisor(payload);
     },
     onTranscript: ({ speaker, text, atMs }) => {
       const call = runtime;
@@ -770,6 +911,7 @@ function openMediaStreamSession(
   // Realtime session keeps billing after the caller hangs up.
   twilioSocket.on("close", () => {
     if (runtime) {
+      closeBridge(runtime.callSid);
       registry.close(runtime.streamSid);
       const session = store
         .getOperation()

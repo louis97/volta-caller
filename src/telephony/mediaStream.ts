@@ -60,6 +60,15 @@ export type MediaStreamRelayDependencies = {
   /** Mode for this call; decides which tools the session exposes. */
   configuration?: ModeConfiguration;
   /**
+   * Whether the agent is the one the caller should be hearing right now. While
+   * a person has the call, Volta keeps listening and transcribing but its
+   * audio is not played: that is what makes the handover a routing change
+   * rather than tearing the leg down.
+   */
+  agentHasTheFloor?: () => boolean;
+  /** Mirrors the caller's audio to a supervisor who joined mid-call. */
+  onCallerAudio?: (payload: string) => void;
+  /**
    * One transcribed utterance. Realtime already produces both sides of the
    * conversation; without this they are dropped and the floor has nothing to
    * show while a call is in progress.
@@ -165,7 +174,9 @@ export function attachMediaStreamRelay({
   onStart,
   instructionsFor,
   configuration,
-  onTranscript
+  onTranscript,
+  agentHasTheFloor,
+  onCallerAudio
 }: MediaStreamRelayDependencies): void {
   let streamSid: string | undefined;
   let runtime: CallRuntime | undefined;
@@ -220,6 +231,9 @@ export function attachMediaStreamRelay({
     streamSid = stringValue(event.streamSid) ?? streamSid;
     // One inbound frame is 20 ms of call audio; this is the call clock.
     if (runtime) runtime.frameCount += 1;
+    // A supervisor who joined needs to hear the caller regardless of who is
+    // speaking back to them.
+    if (payload) onCallerAudio?.(payload);
     if (payload)
       realtime.send(
         JSON.stringify({ type: "input_audio_buffer.append", audio: payload })
@@ -235,6 +249,9 @@ export function attachMediaStreamRelay({
       event.type === "response.audio.delta"
     ) {
       const delta = stringValue(event.delta);
+      // Silence the agent while a person holds the call, without closing the
+      // session: it keeps hearing and transcribing throughout.
+      if (agentHasTheFloor && !agentHasTheFloor()) return;
       if (delta && streamSid) {
         twilio.send(
           JSON.stringify({
