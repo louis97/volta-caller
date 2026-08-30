@@ -3,6 +3,7 @@ import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  inboundKapsoMessage,
   inboundTextMessage,
   receivedKapsoMessages,
   verifyKapsoSignature
@@ -41,6 +42,27 @@ describe("Kapso WhatsApp webhook helpers", () => {
       id: "wamid.1",
       from: "+573001112233",
       content: "¿Qué necesita atención?"
+    });
+  });
+
+  it("uses Kapso's voice-note transcript as the agent input", () => {
+    const inbound = inboundKapsoMessage({
+      message: {
+        id: "wamid.audio-1",
+        type: "audio",
+        from: "+573001112233",
+        kapso: {
+          direction: "inbound",
+          transcript: { text: "  Muéstrame la operación más urgente  " }
+        }
+      }
+    });
+
+    expect(inbound).toEqual({
+      id: "wamid.audio-1",
+      from: "+573001112233",
+      type: "audio",
+      content: "Muéstrame la operación más urgente"
     });
   });
 });

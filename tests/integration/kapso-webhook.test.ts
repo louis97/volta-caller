@@ -58,6 +58,47 @@ it("answers a signed inbound Kapso WhatsApp text with the operational agent", as
   });
 });
 
+it("sends a Kapso voice-note transcript to the operational agent", async () => {
+  const sendText = vi.fn().mockResolvedValue(undefined);
+  const app = createApp({
+    repository: new MemoryAgentRepository(),
+    answerer: new DeterministicAgentAnswerer(),
+    kapsoMessenger: { sendText },
+    kapsoWebhookSecret: "kapso-test-secret"
+  });
+  const payload = JSON.stringify({
+    message: {
+      id: "wamid.audio-1",
+      type: "audio",
+      from: "+573001112233",
+      kapso: {
+        direction: "inbound",
+        transcript: { text: "¿Qué necesita atención?" }
+      }
+    }
+  });
+  const signature = createHmac("sha256", "kapso-test-secret")
+    .update(payload)
+    .digest("hex");
+
+  const response = await request(app, "/webhooks/kapso/whatsapp", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-idempotency-key": "audio-event-1",
+      "x-webhook-event": "whatsapp.message.received",
+      "x-webhook-signature": signature
+    },
+    body: payload
+  });
+
+  expect(response.status).toBe(200);
+  expect(sendText).toHaveBeenCalledWith({
+    to: "+573001112233",
+    text: expect.any(String)
+  });
+});
+
 it("allows Kapso to retry an event when sending the reply fails", async () => {
   const sendText = vi
     .fn()

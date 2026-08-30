@@ -50,7 +50,7 @@ import { fanOutCalls } from "./telephony/orchestrator";
 import { PostgresAgentRepository } from "./storage/postgres";
 import {
   createKapsoMessenger,
-  inboundTextMessage,
+  inboundKapsoMessage,
   receivedKapsoMessages,
   verifyKapsoSignature,
   type KapsoMessenger,
@@ -255,7 +255,7 @@ export function createApp(options: CreateAppOptions = {}) {
       }
       try {
         for (const item of receivedKapsoMessages(payload)) {
-          const inbound = inboundTextMessage(item);
+          const inbound = inboundKapsoMessage(item);
           if (!inbound) continue;
           const context: OrganizationContext = {
             organizationId: env.VOLTA_DEFAULT_ORGANIZATION_ID,
@@ -269,7 +269,9 @@ export function createApp(options: CreateAppOptions = {}) {
           const reply = inbound.content
             ? (await agent.ask(context, conversation.id, inbound.content))
                 .content
-            : "Por ahora puedo responder mensajes de texto. Envíame tu consulta por escrito.";
+            : inbound.type === "audio"
+              ? "No pude transcribir ese audio. Intenta enviarlo de nuevo o escríbeme tu consulta."
+              : "Por ahora puedo responder mensajes de texto o audios que Kapso pueda transcribir.";
           await kapsoMessenger.sendText({ to: inbound.from, text: reply });
         }
         if (idempotencyKey) processedKapsoEvents.add(idempotencyKey);

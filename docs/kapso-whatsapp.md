@@ -2,6 +2,12 @@
 
 Volta recibe mensajes de WhatsApp en `POST /webhooks/kapso/whatsapp` y responde usando el mismo agente operacional que alimenta el dashboard. Las conversaciones se conservan por número de remitente con el título `WhatsApp · <número>`.
 
+## Mensajes de voz
+
+Los audios entrantes (`message.type: "audio"`) se enrutan al mismo agente backend. Kapso aporta la transcripción en `message.kapso.transcript.text`; Volta la usa como la consulta del usuario y responde por texto en el mismo chat de WhatsApp. Para payloads más recientes también acepta `message.kapso.content`, el contenido listo para LLM que Kapso genera.
+
+Si Kapso no pudo transcribir el audio, Volta pide reenviarlo o escribir la consulta: nunca inventa una pregunta a partir del binario del audio.
+
 ## Configuración de producción
 
 Define estas tres variables en el entorno de la API:
