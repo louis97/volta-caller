@@ -806,10 +806,25 @@ function openTakeoverWindow(input: {
   const setSupervision = (
     supervision: import("@volta/contracts").CallSupervision
   ) => {
-    const session = store
-      .getOperation()
-      .callSessions.find((item) => item.callSid === runtime.callSid);
-    if (session) store.setCallSupervision(session.id, supervision);
+    const sessions = store.getOperation().callSessions;
+    // Sessions opened by a round carry the sid on `callSid`; ones bound by the
+    // media stream are keyed by it. Matching only the first silently found
+    // nothing, and a supervision change that finds no session publishes no
+    // event — the console stayed blank while the countdown ran and the agent
+    // hung up on schedule.
+    const session =
+      sessions.find((item) => item.callSid === runtime.callSid) ??
+      sessions.find((item) => item.id === runtime.callSid);
+
+    if (!session) {
+      console.error(
+        `[takeover] no call session for call=${runtime.callSid}; the console cannot be alerted. Known: ${sessions
+          .map((item) => item.callSid ?? item.id)
+          .join(", ")}`
+      );
+      return;
+    }
+    store.setCallSupervision(session.id, supervision);
   };
 
   setSupervision({
