@@ -180,7 +180,25 @@ export function mountTelephonyRoutes(
   app.post(
     ["/twiml/outbound", "/twiml/inbound"],
     twiml,
-    (_request, response) => {
+    (request, response) => {
+      // Twilio reports its answering-machine verdict here when machineDetection
+      // is on. Opening a media stream to a recording spends telephony and model
+      // minutes on a conversation nobody is having.
+      const answeredBy = String(
+        (request.body as { AnsweredBy?: unknown } | undefined)?.AnsweredBy ?? ""
+      );
+      if (answeredBy.startsWith("machine") || answeredBy === "fax") {
+        console.log(
+          `[call] ${answeredBy} answered; hanging up without an agent`
+        );
+        response
+          .type("text/xml")
+          .send(
+            '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
+          );
+        return;
+      }
+
       response.type("text/xml").send(createInboundTwiML(mediaStreamUrl()));
     }
   );
@@ -252,6 +270,9 @@ export function mountTelephonyRoutes(
       from: env.TWILIO_FROM_NUMBER,
       gateway:
         env.VOLTA_MODE === "live" ? createLiveTelephonyGateway() : undefined,
+      timeLimitSeconds: env.CALL_TIME_LIMIT_SECONDS,
+      record: env.TWILIO_RECORD_CALLS,
+      detectAnsweringMachine: true,
       onDialled: (callId, carrier) => {
         dialled.set(callId, carrier);
         context.auction.startCall(carrier.id, callId);

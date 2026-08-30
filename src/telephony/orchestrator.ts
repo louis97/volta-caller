@@ -27,6 +27,11 @@ export type FanoutDependencies = {
    * console without a redeploy.
    */
   carriers?: Operation["candidates"];
+  /** Hard ceiling per leg; 0 or absent omits it. */
+  timeLimitSeconds?: number;
+  record?: boolean;
+  /** Hang up instead of negotiating with an answering machine. */
+  detectAnsweringMachine?: boolean;
 };
 
 export async function fanOutCalls(
@@ -63,7 +68,14 @@ export async function fanOutCalls(
         to: candidate.phone,
         from: dependencies.from ?? "",
         twimlUrl: `${(dependencies.publicBaseUrl ?? "").replace(/\/$/, "")}/twiml/outbound`,
-        statusCallbackUrl: `${(dependencies.publicBaseUrl ?? "").replace(/\/$/, "")}/twiml/status`
+        statusCallbackUrl: `${(dependencies.publicBaseUrl ?? "").replace(/\/$/, "")}/twiml/status`,
+        // A round never carried these, so a call that reached voicemail ran
+        // the agent against a recording for minutes with no ceiling.
+        ...(dependencies.timeLimitSeconds
+          ? { timeLimitSeconds: dependencies.timeLimitSeconds }
+          : {}),
+        record: dependencies.record === true,
+        detectAnsweringMachine: dependencies.detectAnsweringMachine === true
       });
       store.updateCallSession(pendingId, {
         callSid: created.id,

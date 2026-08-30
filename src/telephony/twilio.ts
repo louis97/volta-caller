@@ -18,6 +18,13 @@ export type OutboundCallInput = {
    * link to an audio timestamp.
    */
   record?: boolean;
+  /**
+   * Ask Twilio to tell a person from an answering machine before it fetches
+   * TwiML. Without it a call to voicemail runs the full agent against a
+   * recording until the time limit, burning telephony and model minutes on a
+   * conversation nobody is having.
+   */
+  detectAnsweringMachine?: boolean;
 };
 
 export type TransferInput = {
@@ -39,6 +46,8 @@ export type TwilioCallClient = {
       timeLimit?: number;
       record?: boolean;
       recordingChannels?: "mono" | "dual";
+      machineDetection?: string;
+      machineDetectionTimeout?: number;
       statusCallback?: string;
       statusCallbackEvent?: Array<
         "initiated" | "ringing" | "answered" | "completed"
@@ -83,6 +92,9 @@ export function createTwilioGateway({
           : { timeLimit: input.timeLimitSeconds }),
         ...(input.record === true
           ? { record: true, recordingChannels: "dual" as const }
+          : {}),
+        ...(input.detectAnsweringMachine === true
+          ? { machineDetection: "Enable", machineDetectionTimeout: 15 }
           : {})
       });
       return {
