@@ -186,6 +186,78 @@ export function mountTelephonyRoutes(
     });
   });
 
+  /**
+   * Hands a live call to a person. The agent leg is never dropped: this marks
+   * intent and state, and the audio hub routes the caller to the supervisor.
+   * Until the hub lands the state is recorded so the board can already show
+   * and drive the handover.
+   */
+  app.post("/api/calls/:callId/takeover", jsonBody, (request, response) => {
+    const reason =
+      typeof (request.body as { reason?: unknown } | undefined)?.reason ===
+      "string"
+        ? (request.body as { reason: string }).reason
+        : undefined;
+
+    try {
+      const callSession = store.setCallSupervision(
+        String(request.params.callId),
+        {
+          state: "briefing_supervisor",
+          reason,
+          requestedAt: new Date().toISOString()
+        }
+      );
+      response.status(202).json(callSession);
+    } catch {
+      response.status(404).json({ error: "call_session_not_found" });
+    }
+  });
+
+  /** The supervisor is on the line; the caller now hears them. */
+  app.post("/api/calls/:callId/connect", (request, response) => {
+    try {
+      const runtime = context.registry.byCallSid(String(request.params.callId));
+      if (runtime) runtime.routeTo = "HUMAN";
+      const callSession = store.setCallSupervision(
+        String(request.params.callId),
+        {
+          state: "human",
+          takenOverAt: new Date().toISOString()
+        }
+      );
+      response.status(200).json(callSession);
+    } catch {
+      response.status(404).json({ error: "call_session_not_found" });
+    }
+  });
+
+  /** Gives the conversation back to Volta without ending the call. */
+  app.post("/api/calls/:callId/handback", (request, response) => {
+    try {
+      const runtime = context.registry.byCallSid(String(request.params.callId));
+      if (runtime) runtime.routeTo = "AGENT";
+      const callSession = store.setCallSupervision(
+        String(request.params.callId),
+        {
+          state: "returned_to_agent",
+          returnedAt: new Date().toISOString()
+        }
+      );
+      response.status(200).json(callSession);
+    } catch {
+      response.status(404).json({ error: "call_session_not_found" });
+    }
+  });
+
+  app.get("/api/transcript", (request, response) => {
+    const callId =
+      typeof request.query.callId === "string"
+        ? request.query.callId
+        : undefined;
+    response.status(200).json(store.getTranscript(callId));
+  });
+
   app.get("/api/auction", (_request, response) => {
     response.status(200).json({
       status: context.auction.status(),
@@ -370,6 +442,21 @@ function openMediaStreamSession(
         `[call] started stream=${streamSid} call=${callSid ?? "?"} carrier=${carrier?.name ?? "unknown"}`
       );
       return runtime;
+    },
+    onTranscript: ({ speaker, text, atMs }) => {
+      const call = runtime;
+      if (!call) return;
+      store.appendTranscript({
+        id: `seg-${call.callSid}-${atMs}`,
+        organizationId: dependencies.organizationId ?? "textiles-pacifico",
+        operationId: call.operationId,
+        callId: call.callSid,
+        speaker,
+        text,
+        startMs: atMs,
+        endMs: atMs,
+        createdAt: new Date().toISOString()
+      });
     },
     instructionsFor: (call) =>
       buildCallInstructions(store.getOperation(), call.carrierName),

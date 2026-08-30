@@ -95,6 +95,27 @@ export type ClosingAuthorization = {
   authorizedAt: string;
 };
 
+/**
+ * Who the caller is currently hearing on a live call.
+ *
+ * The agent leg is never torn down to hand a call to a person: the server
+ * routes audio, so the transition is a state change and the carrier's line is
+ * untouched. `briefing_supervisor` is the window where the human has been
+ * dialled and is being briefed while the caller is on hold.
+ */
+export type CallSupervisionState =
+  "agent" | "briefing_supervisor" | "human" | "returned_to_agent";
+
+export type CallSupervision = {
+  state: CallSupervisionState;
+  /** Why a human was pulled in, for the audit trail and the board. */
+  reason?: string;
+  supervisorCallSid?: string;
+  requestedAt?: string;
+  takenOverAt?: string;
+  returnedAt?: string;
+};
+
 export type CallSession = {
   id: string;
   callSid?: string;
@@ -107,6 +128,8 @@ export type CallSession = {
   transcript?: string;
   quoteId?: string;
   endedReason?: string;
+  /** Absent until a call has ever been escalated. */
+  supervision?: CallSupervision;
   startedAt: string;
   endedAt?: string;
 };
@@ -246,6 +269,18 @@ export type OperationEvent =
   | { type: "quote.registered"; operationId: string; quote: Quote }
   | { type: "call.started"; operationId: string; callSession: CallSession }
   | { type: "call.updated"; operationId: string; callSession: CallSession }
+  | {
+      /** One utterance, as soon as it is transcribed, for the live floor. */
+      type: "transcript.appended";
+      operationId: string;
+      segment: TranscriptSegment;
+    }
+  | {
+      type: "call.supervision.changed";
+      operationId: string;
+      callSession: CallSession;
+      supervision: CallSupervision;
+    }
   | {
       type: "approval.requested";
       operationId: string;

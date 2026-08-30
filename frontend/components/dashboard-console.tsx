@@ -5,11 +5,13 @@ import type {
   AgentMessage,
   ApprovalRequest,
   CallSession,
+  CallSupervisionState,
   CreateMandateRequest,
   Operation,
   OperationReadModel,
   ProposedAction,
-  Quote
+  Quote,
+  TranscriptSegment
 } from "@volta/contracts";
 import {
   AnimatePresence,
@@ -704,11 +706,88 @@ function useLiveOperation() {
       "quote.registered",
       "approval.requested",
       "approval.resolved",
-      "commitment.finalized"
+      "commitment.finalized",
+      "call.supervision.changed"
     ].forEach((name) => events.addEventListener(name, sync));
     return () => events.close();
   }, []);
   return operation;
+}
+
+/**
+ * Transcript arrives one utterance at a time over SSE, appended rather than
+ * refetched: a call floor that reloads the whole transcript on every line
+ * scrolls out from under whoever is reading it.
+ */
+function useLiveTranscript() {
+  const [segments, setSegments] = useState<TranscriptSegment[]>([]);
+
+  useEffect(() => {
+    void (async () => {
+      const response = await fetch("/api/transcript");
+      if (response.ok) {
+        setSegments((await response.json()) as TranscriptSegment[]);
+      }
+    })();
+
+    if (typeof EventSource === "undefined") return;
+    const events = new EventSource("/api/events");
+    events.addEventListener("transcript.appended", (event) => {
+      const payload = JSON.parse((event as MessageEvent<string>).data) as {
+        segment: TranscriptSegment;
+      };
+      setSegments((current) =>
+        current.some((item) => item.id === payload.segment.id)
+          ? current
+          : [...current, payload.segment]
+      );
+    });
+    return () => events.close();
+  }, []);
+
+  return segments;
+}
+
+function supervisionTone(
+  state: CallSupervisionState | undefined
+): "blue" | "green" | "amber" | "red" | "neutral" {
+  if (state === "human") return "amber";
+  if (state === "briefing_supervisor") return "blue";
+  return "neutral";
+}
+
+const supervisionLabel: Record<CallSupervisionState, string> = {
+  agent: "Volta speaking",
+  briefing_supervisor: "Briefing supervisor",
+  human: "Human on the line",
+  returned_to_agent: "Handed back to Volta"
+};
+
+async function callControl(callSid: string, action: string) {
+  await fetch(`/api/calls/${encodeURIComponent(callSid)}/${action}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ reason: "operator_requested" })
+  });
+}
+
+function CallTranscript({ segments }: { segments: TranscriptSegment[] }) {
+  if (segments.length === 0) {
+    return <p className="transcript-empty">Listening…</p>;
+  }
+  return (
+    <ol className="transcript">
+      {segments.map((segment) => (
+        <li key={segment.id} data-speaker={segment.speaker}>
+          <span className="transcript-who">
+            {segment.speaker === "agent" ? "Volta" : "Carrier"}
+          </span>
+          <span className="transcript-text">{segment.text}</span>
+          <time>{Math.floor(segment.startMs / 1000)}s</time>
+        </li>
+      ))}
+    </ol>
+  );
 }
 
 function callDuration(session: CallSession): string {
@@ -729,6 +808,7 @@ function callTone(
 
 function CallFloorView() {
   const operation = useLiveOperation();
+  const transcript = useLiveTranscript();
   return (
     <>
       <Topbar
@@ -746,6 +826,11 @@ function CallFloorView() {
           const quote = operation?.quotes.find(
             (item) => item.id === session.quoteId || item.callId === session.id
           );
+          // Handover only means anything while the line is still open.
+          const live =
+            session.status === "in_progress" || session.status === "pending";
+          const supervision: CallSupervisionState =
+            session.supervision?.state ?? "agent";
           return (
             <article className="panel call-card" key={session.id}>
               <div className="call-card-head">
@@ -772,6 +857,15 @@ function CallFloorView() {
                   <i key={index} />
                 ))}
               </div>
+
+              <CallTranscript
+                segments={transcript.filter(
+                  (segment) =>
+                    segment.callId === session.callSid ||
+                    segment.callId === session.id
+                )}
+              />
+
               <div className="call-actions">
                 {quote ? (
                   <strong>
@@ -785,6 +879,51 @@ function CallFloorView() {
                   </span>
                 )}
               </div>
+
+              {live && (
+                <div className="call-supervision">
+                  <Status tone={supervisionTone(supervision)}>
+                    {supervisionLabel[supervision]}
+                  </Status>
+                  {supervision === "human" ? (
+                    <button
+                      className="button button--secondary"
+                      onClick={() =>
+                        void callControl(
+                          session.callSid ?? session.id,
+                          "handback"
+                        )
+                      }
+                    >
+                      Hand back to Volta
+                    </button>
+                  ) : supervision === "briefing_supervisor" ? (
+                    <button
+                      className="button button--primary"
+                      onClick={() =>
+                        void callControl(
+                          session.callSid ?? session.id,
+                          "connect"
+                        )
+                      }
+                    >
+                      Join the call
+                    </button>
+                  ) : (
+                    <button
+                      className="button button--destructive"
+                      onClick={() =>
+                        void callControl(
+                          session.callSid ?? session.id,
+                          "takeover"
+                        )
+                      }
+                    >
+                      Take over
+                    </button>
+                  )}
+                </div>
+              )}
             </article>
           );
         })}

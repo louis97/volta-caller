@@ -59,6 +59,16 @@ export type MediaStreamRelayDependencies = {
   instructionsFor?: (runtime: CallRuntime) => string;
   /** Mode for this call; decides which tools the session exposes. */
   configuration?: ModeConfiguration;
+  /**
+   * One transcribed utterance. Realtime already produces both sides of the
+   * conversation; without this they are dropped and the floor has nothing to
+   * show while a call is in progress.
+   */
+  onTranscript?: (utterance: {
+    speaker: "agent" | "carrier";
+    text: string;
+    atMs: number;
+  }) => void;
 };
 
 export type RealtimeSocketFactory = () => RelaySocket;
@@ -154,7 +164,8 @@ export function attachMediaStreamRelay({
   executeToolCall: runToolCall,
   onStart,
   instructionsFor,
-  configuration
+  configuration,
+  onTranscript
 }: MediaStreamRelayDependencies): void {
   let streamSid: string | undefined;
   let runtime: CallRuntime | undefined;
@@ -241,6 +252,37 @@ export function attachMediaStreamRelay({
       event.type === "response.cancelled"
     ) {
       if (streamSid) twilio.send(JSON.stringify({ event: "clear", streamSid }));
+      return;
+    }
+
+    // Both sides of the conversation, as soon as each is transcribed. The
+    // caller's side lags its audio slightly: transcription is a separate pass.
+    if (
+      event.type === "conversation.item.input_audio_transcription.completed"
+    ) {
+      const text = stringValue(event.transcript);
+      if (text && onTranscript) {
+        onTranscript({
+          speaker: "carrier",
+          text,
+          atMs: runtime ? runtime.frameCount * 20 : 0
+        });
+      }
+      return;
+    }
+
+    if (
+      event.type === "response.output_audio_transcript.done" ||
+      event.type === "response.audio_transcript.done"
+    ) {
+      const text = stringValue(event.transcript);
+      if (text && onTranscript) {
+        onTranscript({
+          speaker: "agent",
+          text,
+          atMs: runtime ? runtime.frameCount * 20 : 0
+        });
+      }
       return;
     }
 

@@ -2,16 +2,18 @@ import type {
   ApprovalRequest,
   CallBrief,
   CallSession,
+  CallSupervision,
+  ClientSelection,
   ClosingAuthorization,
   Commitment,
-  ClientSelection,
   DashboardNotification,
   Escalation,
   Incident,
   Operation,
   OperationEvent,
   Quote,
-  ReviewedDeal
+  ReviewedDeal,
+  TranscriptSegment
 } from "@volta/contracts";
 import { evaluateMandate } from "./mandate";
 
@@ -23,6 +25,14 @@ export type OperationStore = {
   updateCallSession(
     callSessionId: string,
     patch: Partial<Omit<CallSession, "id" | "operationId">>
+  ): CallSession;
+  /** One transcribed utterance, published as soon as it lands. */
+  appendTranscript(segment: TranscriptSegment): void;
+  getTranscript(callId?: string): TranscriptSegment[];
+  /** Records who the caller is hearing; the audio route itself is telephony's. */
+  setCallSupervision(
+    callSessionId: string,
+    supervision: CallSupervision
   ): CallSession;
   requestCarrierSelectionApproval(input: {
     id: string;
@@ -70,6 +80,9 @@ export function createOperationStore(
   initialOperation: Operation
 ): OperationStore {
   let operation = clone(initialOperation);
+  // Transcript lives beside the operation: it grows per utterance and would
+  // otherwise force a full operation clone on every spoken line.
+  const transcript: TranscriptSegment[] = [];
   const listeners = new Set<(event: OperationEvent) => void>();
 
   function publish(event: OperationEvent): void {
@@ -141,6 +154,36 @@ export function createOperationStore(
         type: "call.updated",
         operationId: operation.id,
         callSession
+      });
+      return clone(callSession);
+    },
+    appendTranscript: (segment) => {
+      const stored = clone(segment);
+      transcript.push(stored);
+      publish({
+        type: "transcript.appended",
+        operationId: operation.id,
+        segment: stored
+      });
+    },
+    setCallSupervision: (callSessionId, supervision) => {
+      const index = operation.callSessions.findIndex(
+        (item) => item.id === callSessionId
+      );
+      if (index === -1) throw new Error("call_session_not_found");
+
+      const callSession: CallSession = {
+        ...operation.callSessions[index]!,
+        supervision: clone(supervision)
+      };
+      const callSessions = [...operation.callSessions];
+      callSessions[index] = callSession;
+      operation = { ...operation, callSessions };
+      publish({
+        type: "call.supervision.changed",
+        operationId: operation.id,
+        callSession: clone(callSession),
+        supervision: clone(supervision)
       });
       return clone(callSession);
     },
@@ -546,6 +589,10 @@ export function createOperationStore(
         escalation: storedEscalation
       });
     },
+    getTranscript: (callId) =>
+      transcript
+        .filter((segment) => callId === undefined || segment.callId === callId)
+        .map((segment) => clone(segment)),
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
