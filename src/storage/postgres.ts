@@ -85,9 +85,9 @@ export class PostgresAgentRepository implements AgentRepository {
   async saveCallSession(organizationId: string, callSession: CallSession) {
     await this.initialize();
     await this.pool.query(
-      `INSERT INTO call_sessions (organization_id, id, operation_id, carrier_id, driver_name, direction, status, audio_url, quote_id, ended_reason, started_at, ended_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-       ON CONFLICT (organization_id, id) DO UPDATE SET carrier_id = EXCLUDED.carrier_id, driver_name = EXCLUDED.driver_name, status = EXCLUDED.status, audio_url = EXCLUDED.audio_url, quote_id = EXCLUDED.quote_id, ended_reason = EXCLUDED.ended_reason, started_at = EXCLUDED.started_at, ended_at = EXCLUDED.ended_at`,
+      `INSERT INTO call_sessions (organization_id, id, operation_id, carrier_id, driver_name, direction, status, audio_url, quote_id, ended_reason, started_at, ended_at, call_sid, supervision)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
+       ON CONFLICT (organization_id, id) DO UPDATE SET carrier_id = EXCLUDED.carrier_id, driver_name = EXCLUDED.driver_name, status = EXCLUDED.status, audio_url = EXCLUDED.audio_url, quote_id = EXCLUDED.quote_id, ended_reason = EXCLUDED.ended_reason, started_at = EXCLUDED.started_at, ended_at = EXCLUDED.ended_at, call_sid = EXCLUDED.call_sid, supervision = EXCLUDED.supervision`,
       [
         organizationId,
         callSession.id,
@@ -100,9 +100,28 @@ export class PostgresAgentRepository implements AgentRepository {
         callSession.quoteId ?? null,
         callSession.endedReason ?? null,
         callSession.startedAt,
-        callSession.endedAt ?? null
+        callSession.endedAt ?? null,
+        callSession.callSid ?? null,
+        callSession.supervision ? JSON.stringify(callSession.supervision) : null
       ]
     );
+  }
+
+  /**
+   * Matches the sid or the generated id, because a call is known by both: the
+   * round that dialled it names it one way and every Twilio callback the
+   * other.
+   */
+  async findOperationIdByCallSid(organizationId: string, callSid: string) {
+    await this.initialize();
+    const result = await this.pool.query<{ operation_id: string }>(
+      `SELECT operation_id FROM call_sessions
+       WHERE organization_id = $1 AND (call_sid = $2 OR id = $2)
+       ORDER BY started_at DESC
+       LIMIT 1`,
+      [organizationId, callSid]
+    );
+    return result.rows[0]?.operation_id;
   }
 
   async saveTelephonyCallContext(context: TelephonyCallContextRecord) {
@@ -534,9 +553,13 @@ export class PostgresAgentRepository implements AgentRepository {
 
   async listTranscript(
     organizationId: string,
-    callId?: string
+    callId?: string,
+    limit = 500
   ): Promise<TranscriptSegment[]> {
     await this.initialize();
+    // Bounded, newest first, then put back in reading order. Unbounded, this
+    // returned the organization's entire history on every load of the call
+    // floor, which is why the console kept getting slower as the day went on.
     const { rows } = await this.pool.query<{
       id: string;
       operation_id: string;
@@ -548,9 +571,17 @@ export class PostgresAgentRepository implements AgentRepository {
       created_at: Date;
     }>(
       callId
-        ? `select * from transcript_segments where organization_id=$1 and call_id=$2 order by start_ms asc`
-        : `select * from transcript_segments where organization_id=$1 order by created_at asc`,
-      callId ? [organizationId, callId] : [organizationId]
+        ? `select * from (
+             select * from transcript_segments
+             where organization_id=$1 and call_id=$2
+             order by created_at desc limit $3
+           ) recent order by start_ms asc`
+        : `select * from (
+             select * from transcript_segments
+             where organization_id=$1
+             order by created_at desc limit $2
+           ) recent order by created_at asc`,
+      callId ? [organizationId, callId, limit] : [organizationId, limit]
     );
 
     return rows.map((row) => ({
@@ -702,7 +733,8 @@ export class PostgresAgentRepository implements AgentRepository {
       "004_agent_action_payload.sql",
       "005_inbound_message_receipts.sql",
       "006_telephony_call_contexts.sql",
-      "007_quote_extractions.sql"
+      "007_quote_extractions.sql",
+      "008_call_session_identity.sql"
     ];
     for (const migration of migrations) {
       const sql = await readFile(

@@ -22,6 +22,7 @@ import {
 import * as m from "motion/react-m";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { fetchOperationalRead } from "./api-client";
+import { subscribeToEvents } from "./event-stream";
 import {
   AlertIcon,
   ApprovalIcon,
@@ -120,6 +121,24 @@ function useOperationSnapshot() {
   );
 }
 
+/** Anything that can change which mandates exist or how they look in the deck. */
+const DIRECTORY_EVENTS = [
+  "mandate.created",
+  "call.started",
+  "call.updated",
+  "quote.registered",
+  "approval.requested",
+  "approval.resolved",
+  "approval.reopened",
+  "commitment.finalized"
+] as const;
+
+/** Anything that can change the operation a screen is currently showing. */
+const OPERATION_EVENTS = [
+  ...DIRECTORY_EVENTS,
+  "call.supervision.changed"
+] as const;
+
 type OperationDirectory = {
   operations: OperationReadModel[];
   selectedOperationId: string | null;
@@ -162,21 +181,13 @@ function useOperationDirectory(): OperationDirectory {
   };
 
   useEffect(() => {
-    void refreshOperations();
-    if (typeof EventSource === "undefined") return;
-    const events = new EventSource("/api/events");
     const sync = () => void refreshOperations();
-    [
-      "mandate.created",
-      "call.started",
-      "call.updated",
-      "quote.registered",
-      "approval.requested",
-      "approval.resolved",
-      "approval.reopened",
-      "commitment.finalized"
-    ].forEach((name) => events.addEventListener(name, sync));
-    return () => events.close();
+    sync();
+    return subscribeToEvents({
+      names: DIRECTORY_EVENTS,
+      onEvent: sync,
+      onResync: sync
+    });
   }, []);
 
   return {
@@ -209,27 +220,16 @@ function useLiveOperation(operationId?: string | null) {
       }
     };
 
-    void refresh();
-    if (typeof EventSource === "undefined")
-      return () => {
-        cancelled = true;
-      };
-
-    const events = new EventSource("/api/events");
     const sync = () => void refresh();
-    [
-      "mandate.created",
-      "call.started",
-      "call.updated",
-      "quote.registered",
-      "approval.requested",
-      "approval.resolved",
-      "commitment.finalized",
-      "call.supervision.changed"
-    ].forEach((name) => events.addEventListener(name, sync));
+    sync();
+    const unsubscribe = subscribeToEvents({
+      names: OPERATION_EVENTS,
+      onEvent: sync,
+      onResync: sync
+    });
     return () => {
       cancelled = true;
-      events.close();
+      unsubscribe();
     };
   }, [operationId]);
 
@@ -262,16 +262,16 @@ function NotificationsView({
           setError("Notifications are unavailable. Retry in a moment.");
       }
     };
-    void refresh();
-    if (typeof EventSource === "undefined")
-      return () => {
-        cancelled = true;
-      };
-    const source = new EventSource("/api/events");
-    source.addEventListener("shipment.event.created", () => void refresh());
+    const sync = () => void refresh();
+    sync();
+    const unsubscribe = subscribeToEvents({
+      names: ["shipment.event.created"],
+      onEvent: sync,
+      onResync: sync
+    });
     return () => {
       cancelled = true;
-      source.close();
+      unsubscribe();
     };
   }, []);
 
@@ -1296,35 +1296,38 @@ function useLiveTranscript() {
 
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
+    const reload = async () => {
       try {
-        const response = await fetch("/api/transcript");
+        // The floor renders a tail, not an archive. Asking for everything is
+        // what made opening this screen slower with every call ever made.
+        const response = await fetch("/api/transcript?limit=400");
         if (!response.ok || cancelled) return;
         setSegments((await response.json()) as TranscriptSegment[]);
       } catch {
         // The floor still renders; the line simply stays empty.
       }
-    })();
+    };
+    void reload();
 
-    if (typeof EventSource === "undefined")
-      return () => {
-        cancelled = true;
-      };
-
-    const events = new EventSource("/api/events");
-    events.addEventListener("transcript.appended", (event) => {
-      const payload = JSON.parse((event as MessageEvent<string>).data) as {
-        segment: TranscriptSegment;
-      };
-      setSegments((current) =>
-        current.some((item) => item.id === payload.segment.id)
-          ? current
-          : [...current, payload.segment]
-      );
+    const unsubscribe = subscribeToEvents({
+      names: ["transcript.appended"],
+      onEvent: (_type, data) => {
+        const segment = (data as { segment?: TranscriptSegment } | undefined)
+          ?.segment;
+        if (!segment) return;
+        setSegments((current) =>
+          current.some((item) => item.id === segment.id)
+            ? current
+            : [...current, segment]
+        );
+      },
+      // Utterances spoken while the stream was down were never delivered, and
+      // appending cannot recover them: the whole tail has to be read again.
+      onResync: () => void reload()
     });
     return () => {
       cancelled = true;
-      events.close();
+      unsubscribe();
     };
   }, []);
 
@@ -1372,15 +1375,29 @@ async function callControl(callSid: string, action: string): Promise<void> {
   if (response.ok) return;
 
   let code: string | undefined;
+  let twilioCode: number | undefined;
+  let detail: string | undefined;
   try {
-    code = ((await response.json()) as { error?: string }).error;
+    const body = (await response.json()) as {
+      error?: string;
+      detail?: string;
+      twilioCode?: number;
+    };
+    code = body.error;
+    detail = body.detail;
+    twilioCode = body.twilioCode;
   } catch {
     // Body was not JSON; the status is all we have to go on.
   }
-  throw new Error(
+  const message =
     (code ? CALL_CONTROL_ERROR[code] : undefined) ??
-      `Volta could not do that (${code ?? response.status}).`
-  );
+    `Volta could not do that (${code ?? response.status}).`;
+  // Twilio's numeric code is the only part that says what to fix — 21215 is a
+  // country the account is not allowed to call, not a bug in the console.
+  const cause = twilioCode
+    ? ` Twilio ${twilioCode}: ${detail ?? ""}`.trim()
+    : "";
+  throw new Error(cause ? `${message} (${cause})` : message);
 }
 
 function CallTranscript({ segments }: { segments: TranscriptSegment[] }) {
@@ -1595,8 +1612,14 @@ function CallFloorView({
 
       <section className="calls">
         {sessions.map((session) => {
+          // A quote names its call by Twilio sid, which is not the id of a
+          // session a round opened. Both have to be tried or a call that
+          // quoted still reads "awaiting quote".
           const quote = quotes.find(
-            (item) => item.id === session.quoteId || item.callId === session.id
+            (item) =>
+              item.id === session.quoteId ||
+              item.callId === session.id ||
+              (session.callSid !== undefined && item.callId === session.callSid)
           );
           const live = isLiveCall(session);
           const carrier =
@@ -2162,14 +2185,17 @@ function ApprovalsView({ directory }: { directory: OperationDirectory }) {
     setDecisionError(null);
     void refresh();
 
-    if (typeof EventSource === "undefined") return;
-    const events = new EventSource("/api/events");
     const sync = () => void refresh();
-    events.addEventListener("approval.requested", sync);
-    events.addEventListener("approval.resolved", sync);
-    events.addEventListener("approval.reopened", sync);
-    events.addEventListener("commitment.finalized", sync);
-    return () => events.close();
+    return subscribeToEvents({
+      names: [
+        "approval.requested",
+        "approval.resolved",
+        "approval.reopened",
+        "commitment.finalized"
+      ],
+      onEvent: sync,
+      onResync: sync
+    });
   }, [directory.selectedOperationId]);
 
   const approval = operation?.approvals.find(

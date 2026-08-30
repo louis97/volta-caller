@@ -686,6 +686,41 @@ export function createApp(options: CreateAppOptions = {}) {
     publish(event);
     notifyFromOperationEvent(event);
   });
+
+  /**
+   * Keeps the stored snapshot honest while a round is running.
+   *
+   * `operations.snapshot` is what every read outside this process serves, and
+   * it was written only when a mandate was created or an approval decided. A
+   * call that started, quoted and ended in between left no trace in it, so a
+   * restart — routine on Render's free plan — brought the console back showing
+   * the round frozen at "in progress" with no quotes, which is exactly what it
+   * had been doing.
+   *
+   * Debounced: a live call publishes several events a second and each write
+   * serialises the whole operation.
+   */
+  const PERSISTED_EVENTS = new Set<OperationEvent["type"]>([
+    "call.started",
+    "call.updated",
+    "call.supervision.changed",
+    "quote.registered",
+    "deal.reviewed",
+    "commitment.finalized"
+  ]);
+  let snapshotTimer: NodeJS.Timeout | undefined;
+  scenario.store.subscribe((event) => {
+    if (!PERSISTED_EVENTS.has(event.type) || snapshotTimer) return;
+    snapshotTimer = setTimeout(() => {
+      snapshotTimer = undefined;
+      void repository
+        .syncOperation(activeOrganizationId, scenario.store.getOperation())
+        .catch((error: unknown) =>
+          console.error("[operation] snapshot persist failed:", error)
+        );
+    }, 1_000);
+    snapshotTimer.unref();
+  });
   app.locals.operationStore = scenario.store;
   app.locals.publishShipmentEvent = publishShipmentEvent;
   app.locals.telephonyDialled = dialled;
@@ -716,8 +751,8 @@ export function createApp(options: CreateAppOptions = {}) {
       console.error("[operation] could not restore the last mandate:", error);
     }
   };
-  app.locals.listTranscript = (callId?: string) =>
-    repository.listTranscript(activeOrganizationId, callId);
+  app.locals.listTranscript = (callId?: string, limit?: number) =>
+    repository.listTranscript(activeOrganizationId, callId, limit);
   app.locals.listActiveCarriers = async () => {
     const carriers = await repository.listCarriers(activeOrganizationId);
     return carriers
@@ -745,6 +780,82 @@ export function createApp(options: CreateAppOptions = {}) {
     string,
     Promise<OperationStore | undefined>
   >();
+  /**
+   * An operation this instance is not currently serving, loaded into a store
+   * of its own that writes every change back. Cached per operation so several
+   * calls of the same round share one.
+   */
+  const persistedCallStore = async (
+    organizationId: string,
+    operationId: string
+  ): Promise<OperationStore | undefined> => {
+    const key = `${organizationId}:${operationId}`;
+    let pending = persistedCallStores.get(key);
+    if (!pending) {
+      pending = (async () => {
+        const operation = await repository.getOperation(
+          { organizationId, userId: "twilio" },
+          operationId
+        );
+        if (!operation) return undefined;
+        const callStore = createOperationStore(operation);
+        let persistence = Promise.resolve();
+        callStore.subscribe((event) => {
+          if (event.type === "transcript.appended") return;
+          persistence = persistence
+            .then(() =>
+              repository.syncOperation(organizationId, callStore.getOperation())
+            )
+            .catch((error: unknown) =>
+              console.error("[twilio] operation persistence failed:", error)
+            );
+        });
+        return callStore;
+      })();
+      persistedCallStores.set(key, pending);
+    }
+
+    const callStore = await pending;
+    if (!callStore) persistedCallStores.delete(key);
+    return callStore;
+  };
+
+  /**
+   * The shipment a call belongs to, found by its Twilio sid alone.
+   *
+   * The last way back when a callback carries no resolvable context. A call
+   * that was adopted by an operation other than the one that dialled it —
+   * which is what an inbound leg or a lost call token produces — is otherwise
+   * unreachable, and the console shows it running long after it ended.
+   */
+  const resolveTelephonyCallBySid = async (callSid: string) => {
+    const operationId = await repository.findOperationIdByCallSid(
+      activeOrganizationId,
+      callSid
+    );
+    if (!operationId) return undefined;
+    if (operationId === scenario.store.getOperation().id) {
+      return {
+        store: scenario.store,
+        context: { operationId, organizationId: activeOrganizationId },
+        organizationId: activeOrganizationId
+      };
+    }
+    const callStore = await persistedCallStore(
+      activeOrganizationId,
+      operationId
+    );
+    if (!callStore) return undefined;
+    console.warn(
+      `[twilio] call=${callSid} belongs to operation=${operationId}, not the one this instance is serving`
+    );
+    return {
+      store: callStore,
+      context: { operationId, organizationId: activeOrganizationId },
+      organizationId: activeOrganizationId
+    };
+  };
+
   const resolveTelephonyCallContext = async (
     reference: OutboundCallReference
   ) => {
@@ -786,37 +897,11 @@ export function createApp(options: CreateAppOptions = {}) {
       };
     }
 
-    const key = `${organizationId}:${durableContext.operationId}`;
-    let pending = persistedCallStores.get(key);
-    if (!pending) {
-      pending = (async () => {
-        const operation = await repository.getOperation(
-          { organizationId, userId: "twilio" },
-          durableContext.operationId
-        );
-        if (!operation) return undefined;
-        const callStore = createOperationStore(operation);
-        let persistence = Promise.resolve();
-        callStore.subscribe((event) => {
-          if (event.type === "transcript.appended") return;
-          persistence = persistence
-            .then(() =>
-              repository.syncOperation(organizationId, callStore.getOperation())
-            )
-            .catch((error: unknown) =>
-              console.error("[twilio] operation persistence failed:", error)
-            );
-        });
-        return callStore;
-      })();
-      persistedCallStores.set(key, pending);
-    }
-
-    const callStore = await pending;
-    if (!callStore) {
-      persistedCallStores.delete(key);
-      return undefined;
-    }
+    const callStore = await persistedCallStore(
+      organizationId,
+      durableContext.operationId
+    );
+    if (!callStore) return undefined;
     const operation = callStore.getOperation();
     return {
       store: callStore,
@@ -830,6 +915,7 @@ export function createApp(options: CreateAppOptions = {}) {
     };
   };
   app.locals.resolveTelephonyCallContext = resolveTelephonyCallContext;
+  app.locals.resolveTelephonyCallBySid = resolveTelephonyCallBySid;
   const persistCurrentOperation = (context: OrganizationContext) =>
     repository.syncOperation(
       context.organizationId,
@@ -867,8 +953,17 @@ export function createApp(options: CreateAppOptions = {}) {
         );
       }
       operation.candidates = active.length > 0 ? active : seedCarriers();
+      // Persisted before the store is switched, not after.
+      //
+      // `replaceOperation` is what makes this instance serve the mandate, and
+      // doing it first meant a failed write left the process negotiating an
+      // operation that exists in no snapshot. Every call it then answered —
+      // including inbound ones, which have no call context to resolve and fall
+      // back to whatever the instance holds — was filed against a shipment the
+      // console cannot fetch, so the floor showed a round stuck at
+      // "in progress" while the real conversation happened somewhere invisible.
+      await repository.syncOperation(context.organizationId, operation);
       scenario.store.replaceOperation(operation);
-      await persistCurrentOperation(context);
       const telephony = telephonyContext(scenario.store);
       telephony.resetAuction();
       console.log(
@@ -1543,10 +1638,11 @@ export function createApp(options: CreateAppOptions = {}) {
       app.locals.saveTranscriptSegment(segment),
     // The console's carrier directory is what a round dials.
     listActiveCarriers: () => app.locals.listActiveCarriers(),
-    listTranscript: (callId?: string) =>
-      repository.listTranscript(activeOrganizationId, callId),
+    listTranscript: (callId?: string, limit?: number) =>
+      repository.listTranscript(activeOrganizationId, callId, limit),
     createCallReference: createTelephonyCallReference,
     resolveCallContext: resolveTelephonyCallContext,
+    resolveCallBySid: resolveTelephonyCallBySid,
     onCallCompleted: (callId, operationId) => {
       if (!quoteExtractor) return;
       void (async () => {
@@ -1744,13 +1840,18 @@ if (isMainModule(import.meta.url, process.argv[1])) {
       app.locals.saveTranscriptSegment(segment),
     // The console's carrier directory is what a round dials.
     listActiveCarriers: () => app.locals.listActiveCarriers(),
-    listTranscript: (callId?: string) => app.locals.listTranscript(callId),
+    listTranscript: (callId?: string, limit?: number) =>
+      app.locals.listTranscript(callId, limit),
     resolveCallContext: (reference) =>
-      app.locals.resolveTelephonyCallContext(reference)
+      app.locals.resolveTelephonyCallContext(reference),
+    resolveCallBySid: (callSid) => app.locals.resolveTelephonyCallBySid(callSid)
   });
 
   void app.locals.ensureCarrierDirectory?.();
-  void app.locals.restoreActiveOperation?.();
+  // Awaited: until this resolves the instance does not know which mandate it
+  // holds, and a Twilio callback arriving in that window is filed against
+  // whatever the store happens to contain.
+  await app.locals.restoreActiveOperation?.();
 
   const missing = missingTelephonyConfig();
   if (missing.length > 0) {

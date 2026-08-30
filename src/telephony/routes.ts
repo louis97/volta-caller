@@ -105,7 +105,8 @@ export type TelephonyDependencies = {
   >;
   /** Durable transcript, so any instance can serve a call it did not handle. */
   listTranscript?: (
-    callId?: string
+    callId?: string,
+    limit?: number
   ) => Promise<Array<import("@volta/contracts").TranscriptSegment>>;
   /** Persists a one-time random identity before Twilio is allowed to dial. */
   createCallReference?: (
@@ -118,6 +119,15 @@ export type TelephonyDependencies = {
    */
   resolveCallContext?: (
     reference: OutboundCallReference
+  ) => Promise<ResolvedTelephonyCallContext | undefined>;
+  /**
+   * The shipment a call belongs to, found by its Twilio sid alone. The last
+   * way back when a callback carries no resolvable context — an inbound leg,
+   * or an outbound one whose call token was lost — and the only thing that
+   * closes a call this instance is not the one serving.
+   */
+  resolveCallBySid?: (
+    callSid: string
   ) => Promise<ResolvedTelephonyCallContext | undefined>;
   callContext?: OutboundCallContext & {
     carrier?: { id: string; name: string };
@@ -208,14 +218,34 @@ function bindCallSession(
     direction: "inbound" | "outbound";
   }
 ): string {
+  // Matched on both identifiers. A round keys its session by a generated id
+  // and keeps the sid alongside; a session opened here uses the sid for both.
+  // Checking only `callSid` meant the second stream of the same call opened a
+  // duplicate session, and the console kept rendering the first one — which
+  // nothing ever completed.
   const existing = store
     .getOperation()
-    .callSessions.find((session) => session.callSid === input.callSid);
+    .callSessions.find(
+      (session) =>
+        session.callSid === input.callSid || session.id === input.callSid
+    );
 
   if (existing) {
-    store.updateCallSession(existing.id, { status: "in_progress" });
+    store.updateCallSession(existing.id, {
+      status: "in_progress",
+      ...(existing.callSid ? {} : { callSid: input.callSid })
+    });
     return existing.id;
   }
+
+  // Nothing in this operation dialled this call: an inbound leg, or an
+  // outbound one whose context could not be resolved. Adopting it is still the
+  // right call — the carrier is on the line — but it has to be visible, since
+  // an adoption into the wrong operation is what hides a whole conversation
+  // from the console.
+  console.warn(
+    `[call] adopting ${input.direction} call=${input.callSid} into operation=${store.getOperation().id}; no session dialled it`
+  );
 
   store.openCallSession({
     id: input.callSid,
@@ -329,7 +359,15 @@ export function mountTelephonyRoutes(
   const context = telephonyContext(store);
   const dialled = dependencies.dialled ?? context.dialled;
   store.subscribe((event) => {
-    if (event.type === "call.started" || event.type === "call.updated")
+    // Supervision belongs here too. Leaving it out meant a takeover lived only
+    // in this process's memory: nothing was written, so the console reloaded
+    // straight back to "Volta speaking" for a call a person was already on,
+    // and the button read as dead.
+    if (
+      event.type === "call.started" ||
+      event.type === "call.updated" ||
+      event.type === "call.supervision.changed"
+    )
       dependencies.onCallSessionChanged?.(
         event.callSession,
         dependencies.organizationId
@@ -567,8 +605,39 @@ export function mountTelephonyRoutes(
         return;
       }
 
+      const callSid = callSession.callSid ?? callSession.id;
+      // The bridge is the carrier's live audio socket, and it only exists in
+      // the process that is actually relaying this call. When it is missing,
+      // ringing the supervisor puts them on a leg with nothing on the other
+      // end: they answer, hear silence and get dropped, which is exactly what
+      // "the button does nothing" looked like. Transferring instead hands them
+      // the call for real — Volta leaves the line, which is a worse outcome
+      // than the bridge and a far better one than nobody joining.
+      const bridged = getBridge(callSid) !== undefined;
+
       try {
-        await dialSupervisor(callSession.callSid ?? callSession.id);
+        if (bridged) {
+          await dialSupervisor(callSid);
+        } else {
+          console.warn(
+            `[takeover] no live bridge for call=${callSid}; transferring instead of bridging`
+          );
+          if (!env.SUPERVISOR_PHONE)
+            throw new Error("supervisor_phone_missing");
+          // Recorded before the transfer: replacing the TwiML tears down our
+          // media stream, and the close handler must not read that as the
+          // call having ended.
+          setSupervisionFor(store, callId, {
+            state: "human",
+            reason: "transferred",
+            requestedAt: new Date().toISOString(),
+            takenOverAt: new Date().toISOString()
+          });
+          await createLiveTelephonyGateway().transferToSupervisor({
+            callId: callSid,
+            supervisorPhone: env.SUPERVISOR_PHONE
+          });
+        }
       } catch (error) {
         // Leaving the board on "briefing you" for a call nobody is going to
         // join is worse than admitting the supervisor could not be reached.
@@ -576,13 +645,29 @@ export function mountTelephonyRoutes(
           state: "agent",
           reason: "supervisor_unreachable"
         });
-        const detail = error instanceof Error ? error.message : "unknown";
-        console.error(`[takeover] could not reach the supervisor: ${detail}`);
-        response.status(502).json({ error: "supervisor_unreachable", detail });
+        // Twilio's own code is what names the culprit — 21215 for a country
+        // the account may not call, 13224 for a rejected number. Its message
+        // alone sends people hunting through the console for nothing.
+        const detail = error as {
+          message?: string;
+          code?: number;
+          status?: number;
+        };
+        console.error(
+          `[takeover] could not reach the supervisor: ${detail.message ?? "unknown"} (twilio ${detail.code ?? "-"})`
+        );
+        response.status(502).json({
+          error: "supervisor_unreachable",
+          detail: detail.message ?? "unknown",
+          twilioCode: detail.code,
+          twilioStatus: detail.status
+        });
         return;
       }
 
-      response.status(202).json(callSession);
+      response
+        .status(202)
+        .json({ ...callSession, mode: bridged ? "bridge" : "transfer" });
     }
   );
 
@@ -644,13 +729,21 @@ export function mountTelephonyRoutes(
       typeof request.query.callId === "string"
         ? request.query.callId
         : undefined;
+    // Bounded on purpose. This used to hand back every utterance the
+    // organization had ever recorded, which grew with each call until opening
+    // the floor was visibly slow; the floor only ever renders the tail.
+    const requested = Number(request.query.limit);
+    const limit =
+      Number.isFinite(requested) && requested > 0
+        ? Math.min(2_000, Math.trunc(requested))
+        : 500;
     // The store holds this process's live tail; the repository holds every
     // call ever handled, including by another instance. Merged and deduped so
     // a segment written moments ago is not missing while its insert lands.
     const live = store.getTranscript(callId);
     let stored: Array<import("@volta/contracts").TranscriptSegment> = [];
     try {
-      stored = (await dependencies.listTranscript?.(callId)) ?? [];
+      stored = (await dependencies.listTranscript?.(callId, limit)) ?? [];
     } catch (error) {
       console.error("[transcript] read failed:", error);
     }
@@ -722,9 +815,34 @@ export function mountTelephonyRoutes(
         new URL(request.originalUrl, "http://localhost")
       );
       if (!reference) {
-        console.error(
-          "[twilio] status callback rejected: call context missing"
+        // This is the last chance to close a call, and refusing it left the
+        // floor showing a finished conversation as still in progress. The sid
+        // alone is enough: it resolves in the operation this instance holds,
+        // and failing that in whichever operation actually recorded the call.
+        // An inbound leg has no reference at all and reaches us only here.
+        console.warn(
+          "[twilio] status callback has no call context; matching on the sid"
         );
+        if (callSid && callStatus) {
+          const patch = mapTwilioStatus(
+            callStatus as Parameters<typeof mapTwilioStatus>[0]
+          );
+          const local = findCallSession(store, callSid);
+          if (local) {
+            store.updateCallSession(local.id, patch);
+          } else {
+            const owner = await dependencies.resolveCallBySid?.(callSid);
+            const remote = owner
+              ? findCallSession(owner.store, callSid)
+              : undefined;
+            if (owner && remote)
+              owner.store.updateCallSession(remote.id, patch);
+            else
+              console.warn(
+                `[twilio] no session anywhere for call=${callSid}; nothing to close`
+              );
+          }
+        }
         response.sendStatus(204);
         return;
       }
@@ -741,9 +859,9 @@ export function mountTelephonyRoutes(
       }
       const resolved = await resolveCallDependencies(dependencies, reference);
       const statusStore = resolved.store;
-      const session = statusStore
-        .getOperation()
-        .callSessions.find((item) => item.callSid === callSid);
+      const session = callSid
+        ? findCallSession(statusStore, callSid)
+        : undefined;
       if (session && callStatus)
         statusStore.updateCallSession(
           session.id,
@@ -852,6 +970,12 @@ type MediaStreamSetup = {
   answeredAtMs?: number;
   /** How long the upgrade took; the carrier waits through all of it. */
   upgradeMs: number;
+  /**
+   * Which way the call went. Hardcoding "outbound" recorded every inbound leg
+   * as a call Volta had placed, which is not what the floor should say about a
+   * carrier who rang us.
+   */
+  direction: "inbound" | "outbound";
 };
 
 function warmLabel(warm?: WarmSession): string {
@@ -925,12 +1049,17 @@ export function attachTelephonyWebSockets(
       }
 
       const upgradeMs = Date.now() - upgradeStartedAt;
+      const direction =
+        url.searchParams.get("direction") === "inbound"
+          ? "inbound"
+          : "outbound";
       wss.handleUpgrade(request, socket, head, (client) => {
         setupBySocket.set(client, {
           dependencies: resolved,
           ...(warm ? { warm } : {}),
           ...(answeredAtMs === undefined ? {} : { answeredAtMs }),
-          upgradeMs
+          upgradeMs,
+          direction
         });
         wss.emit("connection", client, request);
       });
@@ -1276,25 +1405,20 @@ function openMediaStreamSession(
         operationId: store.getOperation().id,
         carrierId: carrier?.id,
         carrierName: carrier?.name,
-        direction: "outbound",
+        direction: setup.direction,
         startedAt: new Date().toISOString()
       });
-      const session = store
-        .getOperation()
-        .callSessions.find((item) => item.callSid === (callSid ?? streamSid));
-      if (session)
-        store.updateCallSession(session.id, {
-          status: "in_progress",
-          startedAt: runtime.startedAt
-        });
+      // One place decides which session this call is: doing the lookup here as
+      // well, on `callSid` alone, is what opened a second session for a call
+      // the round had already recorded.
       bindCallSession(store, {
         callSid: callSid ?? streamSid,
         carrier,
-        direction: "outbound"
+        direction: setup.direction
       });
 
       console.log(
-        `[call] started stream=${streamSid} call=${callSid ?? "?"} carrier=${carrier?.name ?? "unknown"}`
+        `[call] started stream=${streamSid} call=${callSid ?? "?"} carrier=${carrier?.name ?? "unknown"} direction=${setup.direction} operation=${store.getOperation().id}`
       );
       return runtime;
     },
@@ -1382,10 +1506,14 @@ function openMediaStreamSession(
     if (runtime) {
       closeBridge(runtime.callSid);
       registry.close(runtime.streamSid);
-      const session = store
-        .getOperation()
-        .callSessions.find((item) => item.callSid === runtime?.callSid);
-      if (session && session.status === "in_progress")
+      // Matched on either identifier: the session this call was bound to may
+      // be one a round opened under a generated id.
+      const session = findCallSession(store, runtime.callSid);
+      // A transferred call is still live — our stream ended because the TwiML
+      // was replaced with a Dial, not because anyone hung up. Twilio's status
+      // callback closes that one when the person actually finishes.
+      const transferred = session?.supervision?.reason === "transferred";
+      if (session && session.status === "in_progress" && !transferred)
         store.updateCallSession(session.id, {
           status: "completed",
           endedAt: new Date().toISOString()

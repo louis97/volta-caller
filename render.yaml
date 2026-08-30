@@ -35,7 +35,7 @@ services:
       - key: REALTIME_VAD_THRESHOLD
         value: "0.9"
       - key: REALTIME_VAD_SILENCE_MS
-        value: "700"
+        value: "450"
       - key: REALTIME_VAD_PREFIX_MS
         value: "300"
       - key: REALTIME_NOISE_REDUCTION
@@ -46,6 +46,11 @@ services:
         value: low
       - key: SUPERVISOR_PHONE
         sync: false
+      # Long enough for a person to notice the console and click. The five
+      # second default expires before anyone can react, so the offer looked
+      # like a button that did nothing.
+      - key: TAKEOVER_WINDOW_SECONDS
+        value: "45"
       - key: DATABASE_URL
         sync: false
       - key: SUPABASE_URL

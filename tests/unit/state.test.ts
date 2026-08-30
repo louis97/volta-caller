@@ -323,6 +323,35 @@ describe("createOperationStore", () => {
     ]);
   });
 
+  it("links a quote to the session that took it when the quote names the Twilio sid", () => {
+    // A quote always names its call by sid: that is the only identifier the
+    // agent has while it is speaking. A session opened by a round is keyed by
+    // a generated id and carries the sid separately, so matching on the id
+    // alone left every call reading "awaiting quote" for the rest of the
+    // demo even though the quote had been recorded.
+    const store = createOperationStore(seedOperation());
+    store.openCallSession({
+      id: "call-generated-001",
+      callSid: "CA0000000000000000000000000000001",
+      operationId: "operation-textiles-pacifico-001",
+      carrierId: "carrier-costa-pacifico",
+      driverName: "Transportes Costa Pacífico",
+      direction: "outbound",
+      status: "in_progress",
+      startedAt: "2026-09-01T15:00:00.000Z"
+    });
+
+    store.registerQuote({
+      ...quote,
+      callId: "CA0000000000000000000000000000001"
+    });
+
+    const session = store
+      .getOperation()
+      .callSessions.find((item) => item.id === "call-generated-001");
+    expect(session?.quoteId).toBe(quote.id);
+  });
+
   it("publishes one matching event for each commitment and escalation mutation", () => {
     const store = createOperationStore(seedOperation());
     const received: OperationEvent[] = [];

@@ -34,6 +34,19 @@ export type AgentRepository = {
     organizationId: string,
     callSession: CallSession
   ): Promise<void>;
+  /**
+   * The operation a call belongs to, found by its Twilio sid.
+   *
+   * This is the way back to the right shipment when a media stream arrives
+   * with a call context that cannot be resolved. Without it the stream was
+   * attached to whatever operation the instance happened to be holding, which
+   * filed the call — and the quote it produced — under a different mandate
+   * than the one the console was watching.
+   */
+  findOperationIdByCallSid(
+    organizationId: string,
+    callSid: string
+  ): Promise<string | undefined>;
   saveTelephonyCallContext(context: TelephonyCallContextRecord): Promise<void>;
   getTelephonyCallContext(
     tokenHash: string
@@ -89,7 +102,13 @@ export type AgentRepository = {
    */
   listTranscript(
     organizationId: string,
-    callId?: string
+    callId?: string,
+    /**
+     * Newest utterances only. Without a bound this read returned every line
+     * the organization had ever spoken, so the call floor got slower with
+     * every call anyone made.
+     */
+    limit?: number
   ): Promise<TranscriptSegment[]>;
   saveAction(action: ProposedAction): Promise<void>;
   getAction(
@@ -174,6 +193,17 @@ export class MemoryAgentRepository implements AgentRepository {
         operation.callSessions.push(structuredClone(callSession));
       else operation.callSessions[index] = structuredClone(callSession);
     }
+  }
+
+  async findOperationIdByCallSid(organizationId: string, callSid: string) {
+    for (const operation of this.operations.get(organizationId)?.values() ??
+      []) {
+      const match = operation.callSessions.find(
+        (session) => session.callSid === callSid || session.id === callSid
+      );
+      if (match) return operation.id;
+    }
+    return undefined;
   }
 
   async saveTelephonyCallContext(context: TelephonyCallContextRecord) {
@@ -331,11 +361,12 @@ export class MemoryAgentRepository implements AgentRepository {
       .map((event) => structuredClone(event));
   }
 
-  async listTranscript(organizationId: string, callId?: string) {
+  async listTranscript(organizationId: string, callId?: string, limit = 500) {
     const all = this.transcripts.get(organizationId) ?? [];
-    return all
+    const matching = all
       .filter((segment) => callId === undefined || segment.callId === callId)
       .map((segment) => ({ ...segment }));
+    return matching.slice(Math.max(0, matching.length - limit));
   }
 
   async addTranscriptSegments(segments: TranscriptSegment[]) {

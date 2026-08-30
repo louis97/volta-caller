@@ -110,8 +110,15 @@ export function createOperationStore(
             ? "awaiting_client_selection"
             : "negotiating",
         quotes: [...operation.quotes, storedQuote],
+        // Matched on the sid as well as the id. A quote always names the call
+        // by its Twilio sid — that is the only identifier the agent has while
+        // it is talking — but a session opened by a round is keyed by a
+        // generated id and carries the sid in a separate field. Comparing only
+        // the id meant a quote was recorded and the call it came from still
+        // read "awaiting quote" for the rest of the demo.
         callSessions: operation.callSessions.map((session) =>
-          session.id === storedQuote.callId
+          session.id === storedQuote.callId ||
+          session.callSid === storedQuote.callId
             ? { ...session, quoteId: storedQuote.id }
             : session
         )

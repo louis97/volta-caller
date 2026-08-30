@@ -162,8 +162,11 @@ export function createRealtimeSessionConfig(
     audio: {
       input: {
         format: { type: "audio/pcmu" },
-        // Needed for the call brief and the audit transcript.
-        transcription: { model: "whisper-1" },
+        // Needed for the call brief and the audit transcript. Configurable
+        // because the choice is a latency trade-off, not a correctness one:
+        // whisper-1 is a batch pass that lands well after the turn it
+        // transcribes, which is what made the floor feel behind the call.
+        transcription: { model: env.OPENAI_TRANSCRIPTION_MODEL },
         ...(noiseReduction === "none"
           ? {}
           : { noise_reduction: { type: noiseReduction } }),

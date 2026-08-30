@@ -11,6 +11,16 @@ const envSchema = z
     OPENAI_REALTIME_MODEL: z.string().min(1).default("gpt-realtime"),
     OPENAI_REALTIME_VOICE: z.string().min(1).default("marin"),
     /**
+     * What transcribes the caller's side. `whisper-1` runs as a separate batch
+     * pass after each turn ends, which is where most of the lag between
+     * someone speaking and the line appearing on the floor came from. The
+     * mini transcribe model is built for this path and answers far sooner.
+     */
+    OPENAI_TRANSCRIPTION_MODEL: z
+      .string()
+      .min(1)
+      .default("gpt-4o-mini-transcribe"),
+    /**
      * Turn taking. These exist as configuration because the right values are a
      * property of the room, not of the code: a quiet booth and a hackathon
      * floor need very different sensitivity, and it has to be tunable between
@@ -43,7 +53,7 @@ const envSchema = z
      * it politely. A caller left on hold while nobody looks at a dashboard is
      * worse than a clean "te devuelvo la llamada".
      */
-    TAKEOVER_WINDOW_SECONDS: z.coerce.number().int().positive().default(5),
+    TAKEOVER_WINDOW_SECONDS: z.coerce.number().int().positive().default(45),
     /**
      * Hard ceiling per outbound call. A leg left open by a bug drains prepaid
      * balance silently, so paid accounts should keep this on. Trial accounts
