@@ -16,7 +16,12 @@ export const registerQuoteSchema = z.object({
   carrierId: z.string().min(1),
   carrierName: z.string().min(1),
   priceMxn: z.number().nonnegative(),
-  etaMinutes: z.number().int().nonnegative(),
+  /**
+   * Optional: a price is the quote. Requiring transit time made the agent
+   * interrogate a dispatcher for a number mid-negotiation instead of pushing
+   * back on the price, and derailed the call every time.
+   */
+  etaMinutes: z.number().int().nonnegative().optional(),
   pickupTime: z.string().datetime({ offset: true }),
   callId: z.string().min(1).optional(),
   createdAt: z.string().datetime({ offset: true }).optional()

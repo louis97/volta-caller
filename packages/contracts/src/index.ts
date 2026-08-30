@@ -48,7 +48,8 @@ export type Quote = {
   carrierId: string;
   carrierName: string;
   priceMxn: number;
-  etaMinutes: number;
+  /** Absent until the carrier volunteers it; a price alone is a valid quote. */
+  etaMinutes?: number;
   pickupTime: string;
   callId: string;
   createdAt: string;

@@ -57,7 +57,8 @@ export function createOperationFromMandate(
   return {
     id: operationId,
     containerId: "PENDING-ASSIGNMENT",
-    shipper: "Unassigned",
+    // Spoken aloud on every call: "Volta, de Unassigned" is not a company.
+    shipper: "Textiles Pacífico",
     origin: input.pickup_address,
     destination: input.destination_place,
     status: "open",

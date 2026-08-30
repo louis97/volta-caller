@@ -237,7 +237,10 @@ export function createCentralBrainTools({
             return (
               leftApproved - rightApproved ||
               left.quote.priceMxn - right.quote.priceMxn ||
-              left.quote.etaMinutes - right.quote.etaMinutes
+              // Transit time is optional; a quote without one ranks last on
+              // this tiebreak rather than sorting as if it were instant.
+              (left.quote.etaMinutes ?? Number.MAX_SAFE_INTEGER) -
+                (right.quote.etaMinutes ?? Number.MAX_SAFE_INTEGER)
             );
           });
         const citationByQuote = new Map(
