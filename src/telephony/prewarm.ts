@@ -1,4 +1,9 @@
 import { buildCallInstructions } from "../agent/prompt";
+import {
+  createModeConfiguration,
+  createNegotiationModeConfiguration,
+  type ModeConfiguration
+} from "../agent/modes";
 import { env } from "../config/env";
 import type { OperationStore } from "../core/state";
 import { createRealtimeSessionConfig } from "./mediaStream";
@@ -70,6 +75,7 @@ function short(callToken: string): string {
 export async function prewarmRealtimeSession(input: {
   callToken: string;
   instructions: string;
+  configuration?: ModeConfiguration;
   context?: WarmCallContext;
   readyTimeoutMs?: number;
   ttlMs?: number;
@@ -113,7 +119,15 @@ export async function prewarmRealtimeSession(input: {
   realtime.send(
     JSON.stringify({
       type: "session.update",
-      session: { ...createRealtimeSessionConfig({}), instructions }
+      session: {
+        ...createRealtimeSessionConfig(
+          input.configuration ?? {
+            ...createModeConfiguration("negotiation"),
+            instructions
+          }
+        ),
+        instructions
+      }
     })
   );
 
@@ -165,6 +179,10 @@ export async function warmOutboundCall(input: {
   await prewarmRealtimeSession({
     callToken: input.callToken,
     instructions: buildCallInstructions(operation, input.carrier?.name),
+    configuration: createNegotiationModeConfiguration(
+      operation,
+      input.carrier?.name
+    ),
     context: {
       store: input.store,
       context: {

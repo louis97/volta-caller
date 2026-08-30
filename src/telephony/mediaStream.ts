@@ -57,7 +57,7 @@ export type MediaStreamRelayDependencies = {
    * initial session.update goes out before Twilio says who we reached, so the
    * job details are sent as a second update rather than guessed at.
    */
-  instructionsFor?: (runtime: CallRuntime) => string;
+  instructionsFor?: (runtime: CallRuntime) => string | ModeConfiguration;
   /** Mode for this call; decides which tools the session exposes. */
   configuration?: ModeConfiguration;
   /**
@@ -232,12 +232,17 @@ export function attachMediaStreamRelay({
       // pre-warmed session was already briefed at dial time, when the carrier
       // was just as known and the carrier was not yet waiting.
       if (runtime && instructionsFor && !sessionAlreadyConfigured) {
+        const briefing = instructionsFor(runtime);
         realtime.send(
           JSON.stringify({
             type: "session.update",
             session: {
               type: "realtime",
-              instructions: instructionsFor(runtime)
+              instructions:
+                typeof briefing === "string" ? briefing : briefing.instructions,
+              ...(typeof briefing === "string"
+                ? {}
+                : { tools: [...briefing.tools] })
             }
           })
         );

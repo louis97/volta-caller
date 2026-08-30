@@ -98,10 +98,15 @@ describe("executeToolCall", () => {
   it("publishes a registered quote as a reviewed deal with its mandate decision", async () => {
     const store = createOperationStore(seedOperation());
 
-    await executeToolCall(
+    const registered = await executeToolCall(
       { name: "register_quote", arguments: quote },
       { mode: "negotiation", store, finalizeConfirmation: async () => {} }
     );
+    expect(registered).toEqual({
+      outcome: "registered",
+      quoteId: quote.id,
+      mandateDecision: { status: "APPROVED" }
+    });
     const result = await executeToolCall(
       {
         name: "review_deal",

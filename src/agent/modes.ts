@@ -1,4 +1,7 @@
+import type { Operation } from "@volta/contracts";
+
 import {
+  buildCallInstructions,
   confirmationPrompt,
   createExceptionPrompt,
   exceptionPrompt,
@@ -53,6 +56,17 @@ export function createModeConfiguration(mode: CallMode): ModeConfiguration {
   return {
     instructions: configuration.instructions,
     tools: [...configuration.tools]
+  };
+}
+
+/** Keeps the per-call shipment briefing and the negotiation allowlist atomic. */
+export function createNegotiationModeConfiguration(
+  operation: Operation,
+  carrierName?: string
+): ModeConfiguration {
+  return {
+    instructions: buildCallInstructions(operation, carrierName),
+    tools: [...configurations.negotiation.tools]
   };
 }
 
