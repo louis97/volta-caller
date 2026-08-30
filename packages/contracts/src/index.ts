@@ -135,8 +135,8 @@ export type Incident = {
   revisedEta: string;
   feasibility: "achievable" | "unachievable";
   createdAt: string;
-  /** Set by the exception handler after caller identity is verified. */
-  verifiedCallerIdentity?: string;
+  /** The caller identity recorded after exception-call verification. */
+  verifiedCallerIdentity: string;
 };
 
 export type DashboardNotification = {
