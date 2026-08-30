@@ -17,7 +17,7 @@ import {
   useState
 } from "react";
 
-import { ArrowIcon, EditIcon, LinkIcon, PlusIcon } from "./icons";
+import { ArrowIcon, EditIcon, LinkIcon, PlusIcon, TrashIcon } from "./icons";
 
 const QUICK_PROMPTS = [
   "What needs my attention right now?",
@@ -41,6 +41,9 @@ export function VoltaChat({ onOperationChange }: VoltaChatProps) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameTitle, setRenameTitle] = useState("");
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const loadSequenceRef = useRef(0);
@@ -145,6 +148,32 @@ export function VoltaChat({ onOperationChange }: VoltaChatProps) {
       setRenameTitle("");
     } catch {
       setLoadError("The conversation title could not be saved.");
+    }
+  }
+
+  async function deleteConversation(conversation: AgentConversation) {
+    if (isSending || isDeleting) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      const response = await fetch(
+        `/api/agent/conversations/${conversation.id}`,
+        { method: "DELETE" }
+      );
+      if (!response.ok && response.status !== 404) {
+        throw new Error("conversation_delete_failed");
+      }
+      setConversations((current) =>
+        current.filter((item) => item.id !== conversation.id)
+      );
+      if (conversationId === conversation.id) startNewChat();
+      setDeletingId(null);
+    } catch {
+      setDeleteError(
+        "This conversation could not be deleted. It remains available."
+      );
+    } finally {
+      setIsDeleting(false);
     }
   }
 
@@ -323,6 +352,31 @@ export function VoltaChat({ onOperationChange }: VoltaChatProps) {
                     value={renameTitle}
                   />
                 </form>
+              ) : deletingId === conversation.id ? (
+                <div className="brain__delete-confirm" role="alert">
+                  <p>Delete this chat and its pending proposals?</p>
+                  <div>
+                    <button
+                      disabled={isDeleting}
+                      onClick={() => {
+                        setDeletingId(null);
+                        setDeleteError(null);
+                      }}
+                      type="button"
+                    >
+                      Keep
+                    </button>
+                    <button
+                      className="brain__delete-confirm-action"
+                      disabled={isDeleting}
+                      onClick={() => void deleteConversation(conversation)}
+                      type="button"
+                    >
+                      {isDeleting ? "Deleting…" : "Delete chat"}
+                    </button>
+                  </div>
+                  {deleteError && <small>{deleteError}</small>}
+                </div>
               ) : (
                 <>
                   <button
@@ -340,12 +394,26 @@ export function VoltaChat({ onOperationChange }: VoltaChatProps) {
                     aria-label={`Rename ${conversation.title}`}
                     className="brain__rename"
                     onClick={() => {
+                      setDeletingId(null);
                       setRenamingId(conversation.id);
                       setRenameTitle(conversation.title);
                     }}
                     type="button"
                   >
                     <EditIcon />
+                  </button>
+                  <button
+                    aria-label={`Delete ${conversation.title}`}
+                    className="brain__delete"
+                    disabled={isSending}
+                    onClick={() => {
+                      setRenamingId(null);
+                      setDeletingId(conversation.id);
+                      setDeleteError(null);
+                    }}
+                    type="button"
+                  >
+                    <TrashIcon />
                   </button>
                 </>
               )}

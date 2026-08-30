@@ -202,6 +202,58 @@ describe("DashboardConsole", () => {
     );
   });
 
+  it("deletes a conversation only after confirmation", async () => {
+    const conversation = {
+      id: "conversation-delete",
+      organizationId: "textiles-pacifico",
+      createdBy: "dispatcher",
+      title: "Discarded triage",
+      messages: [],
+      createdAt: "2026-09-01T14:00:00.000Z",
+      updatedAt: "2026-09-01T15:00:00.000Z"
+    };
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(async (input: string, init?: RequestInit) => {
+        if (input === "/api/agent/conversations") {
+          return { ok: true, json: async () => [conversation] };
+        }
+        if (
+          input === "/api/agent/conversations/conversation-delete" &&
+          init?.method === "DELETE"
+        ) {
+          return { ok: true, status: 204 };
+        }
+        if (input === "/api/agent/conversations/conversation-delete") {
+          return { ok: true, json: async () => conversation };
+        }
+        throw new Error(`Unexpected request: ${input}`);
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<DashboardConsole />);
+
+    openNavigationItem("Volta");
+    const deleteButton = await screen.findByRole("button", {
+      name: "Delete Discarded triage"
+    });
+    fireEvent.click(deleteButton);
+    expect(
+      screen.getByText("Delete this chat and its pending proposals?")
+    ).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "/api/agent/conversations/conversation-delete",
+      expect.objectContaining({ method: "DELETE" })
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Delete chat" }));
+
+    await screen.findByText("What should we look at?");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/agent/conversations/conversation-delete",
+      expect.objectContaining({ method: "DELETE" })
+    );
+    expect(screen.queryByText("Discarded triage")).not.toBeInTheDocument();
+  });
+
   it("posts the complete mandate to the API before showing it as created", async () => {
     const { container } = render(<DashboardConsole />);
     const fetchMock = vi.fn().mockResolvedValue({

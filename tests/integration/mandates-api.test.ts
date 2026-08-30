@@ -154,6 +154,57 @@ it("renames a durable Volta conversation", async () => {
   ]);
 });
 
+it("deletes a conversation only within its organization", async () => {
+  const app = createApp({
+    mandatesRepository: new MemoryRepository(),
+    repository: new MemoryAgentRepository(),
+    answerer: new DeterministicAgentAnswerer()
+  });
+  const ownerHeaders = {
+    "content-type": "application/json",
+    "x-volta-org-id": "organization-owner",
+    "x-volta-user-id": "dispatcher-owner"
+  };
+  const createResponse = await request(app, "/api/agent/conversations", {
+    method: "POST",
+    headers: ownerHeaders,
+    body: JSON.stringify({ title: "Discard this chat" })
+  });
+  const created = (await createResponse.json()) as { id: string };
+
+  const foreignDelete = await request(
+    app,
+    `/api/agent/conversations/${created.id}`,
+    {
+      method: "DELETE",
+      headers: {
+        "x-volta-org-id": "organization-other",
+        "x-volta-user-id": "dispatcher-other"
+      }
+    }
+  );
+  expect(foreignDelete.status).toBe(404);
+  const detailBeforeDelete = await request(
+    app,
+    `/api/agent/conversations/${created.id}`,
+    { headers: ownerHeaders }
+  );
+  expect(detailBeforeDelete.status).toBe(200);
+
+  const deleteResponse = await request(
+    app,
+    `/api/agent/conversations/${created.id}`,
+    { method: "DELETE", headers: ownerHeaders }
+  );
+  expect(deleteResponse.status).toBe(204);
+  const detailAfterDelete = await request(
+    app,
+    `/api/agent/conversations/${created.id}`,
+    { headers: ownerHeaders }
+  );
+  expect(detailAfterDelete.status).toBe(404);
+});
+
 it("streams readable central-brain activity before the grounded answer", async () => {
   const app = createApp({
     mandatesRepository: new MemoryRepository(),
