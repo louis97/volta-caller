@@ -105,7 +105,14 @@ export type ClosingAuthorization = {
  * dialled and is being briefed while the caller is on hold.
  */
 export type CallSupervisionState =
-  "agent" | "briefing_supervisor" | "human" | "returned_to_agent";
+  | "agent"
+  /** The agent asked for a person and the console is counting down. */
+  | "awaiting_human"
+  | "briefing_supervisor"
+  | "human"
+  /** Nobody accepted in time; the agent closed the call itself. */
+  | "postponed"
+  | "returned_to_agent";
 
 export type CallSupervision = {
   state: CallSupervisionState;
@@ -113,6 +120,8 @@ export type CallSupervision = {
   reason?: string;
   supervisorCallSid?: string;
   requestedAt?: string;
+  /** When the offer to take the call expires. */
+  deadlineAt?: string;
   takenOverAt?: string;
   returnedAt?: string;
 };

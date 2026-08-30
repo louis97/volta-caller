@@ -39,6 +39,12 @@ const envSchema = z
     PUBLIC_WS_URL: z.string().url().optional(),
     SUPERVISOR_PHONE: z.string().min(1).optional(),
     /**
+     * How long the console has to accept a live call before the agent closes
+     * it politely. A caller left on hold while nobody looks at a dashboard is
+     * worse than a clean "te devuelvo la llamada".
+     */
+    TAKEOVER_WINDOW_SECONDS: z.coerce.number().int().positive().default(5),
+    /**
      * Hard ceiling per outbound call. A leg left open by a bug drains prepaid
      * balance silently, so paid accounts should keep this on. Trial accounts
      * reject the parameter, so 0 omits it entirely.

@@ -1048,12 +1048,16 @@ function useLiveTranscript() {
 
 const SUPERVISION_LABEL: Record<CallSupervisionState, string> = {
   agent: "Volta speaking",
+  awaiting_human: "Volta needs you",
+  postponed: "Nobody joined · call closed",
   briefing_supervisor: "Briefing you",
   human: "You are on the line",
   returned_to_agent: "Handed back"
 };
 
 function supervisionTone(state: CallSupervisionState): Tone {
+  if (state === "awaiting_human") return "halt";
+  if (state === "postponed") return "idle";
   if (state === "human") return "brass";
   if (state === "briefing_supervisor") return "signal";
   return "idle";
@@ -1099,6 +1103,42 @@ function CallTranscript({ segments }: { segments: TranscriptSegment[] }) {
 function CallHandover({ session }: { session: CallSession }) {
   const state: CallSupervisionState = session.supervision?.state ?? "agent";
   const callSid = session.callSid ?? session.id;
+  const deadline = session.supervision?.deadlineAt;
+  const [remaining, setRemaining] = useState<number | null>(null);
+
+  // The offer expires, so the console has to show time running out rather than
+  // a button that silently stops working.
+  useEffect(() => {
+    if (state !== "awaiting_human" || !deadline) {
+      setRemaining(null);
+      return;
+    }
+    const tick = () =>
+      setRemaining(
+        Math.max(0, Math.ceil((Date.parse(deadline) - Date.now()) / 1000))
+      );
+    tick();
+    const id = setInterval(tick, 250);
+    return () => clearInterval(id);
+  }, [state, deadline]);
+
+  if (state === "awaiting_human") {
+    return (
+      <div className="call__handover call__handover--urgent">
+        <Tag tone="halt">
+          <i className="pulse" />
+          Volta needs you{remaining !== null ? ` · ${remaining}s` : ""}
+        </Tag>
+        <button
+          className="btn btn--primary"
+          onClick={() => void callControl(callSid, "accept")}
+          type="button"
+        >
+          Join the call
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="call__handover">

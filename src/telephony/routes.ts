@@ -312,6 +312,22 @@ export function mountTelephonyRoutes(
     }
   });
 
+  /**
+   * Accepts a call the agent offered. Only works while the countdown is still
+   * running: once it lapses the agent has already closed the conversation.
+   */
+  app.post("/api/calls/:callId/accept", (request, response) => {
+    const callSid = String(request.params.callId);
+    if (!acceptTakeover(callSid)) {
+      response.status(409).json({ error: "takeover_window_closed" });
+      return;
+    }
+    const session = store
+      .getOperation()
+      .callSessions.find((item) => item.callSid === callSid);
+    response.status(200).json(session ?? { callSid });
+  });
+
   /** The supervisor is on the line; the caller now hears them. */
   app.post("/api/calls/:callId/connect", (request, response) => {
     try {
@@ -491,6 +507,104 @@ export function attachTelephonyWebSockets(
   return wss;
 }
 
+/**
+ * A call the agent asked a person to take over.
+ *
+ * The offer expires: a carrier left holding while nobody watches a dashboard
+ * is worse than a clean "te devuelvo la llamada", so on expiry the agent says
+ * so itself and the leg ends. Keyed by call sid, which is what the console
+ * sends back when someone accepts.
+ */
+type PendingTakeover = {
+  callSid: string;
+  timer: NodeJS.Timeout;
+  /** Hands the conversation to the person who accepted. */
+  accept(): void;
+  /** Closes politely because nobody did. */
+  expire(): void;
+};
+
+const pendingTakeovers = new Map<string, PendingTakeover>();
+
+export function acceptTakeover(callSid: string): boolean {
+  const pending = pendingTakeovers.get(callSid);
+  if (!pending) return false;
+  clearTimeout(pending.timer);
+  pendingTakeovers.delete(callSid);
+  pending.accept();
+  return true;
+}
+
+/**
+ * Offers a live call to a person and counts down. Accepting routes the caller
+ * to the human; letting it lapse has the agent close the conversation itself
+ * and end the leg.
+ */
+function openTakeoverWindow(input: {
+  store: OperationStore;
+  runtime: CallRuntime;
+  realtime: ClosableRelaySocket;
+  hangUp: () => void;
+}): void {
+  const { store, runtime, realtime, hangUp } = input;
+  if (pendingTakeovers.has(runtime.callSid)) return;
+
+  const windowMs = env.TAKEOVER_WINDOW_SECONDS * 1000;
+  const now = new Date();
+
+  const setSupervision = (
+    supervision: import("@volta/contracts").CallSupervision
+  ) => {
+    const session = store
+      .getOperation()
+      .callSessions.find((item) => item.callSid === runtime.callSid);
+    if (session) store.setCallSupervision(session.id, supervision);
+  };
+
+  setSupervision({
+    state: "awaiting_human",
+    requestedAt: now.toISOString(),
+    deadlineAt: new Date(now.getTime() + windowMs).toISOString()
+  });
+  console.log(
+    `[takeover] offered call=${runtime.callSid} for ${env.TAKEOVER_WINDOW_SECONDS}s`
+  );
+
+  const timer = setTimeout(() => {
+    pendingTakeovers.delete(runtime.callSid);
+    console.log(`[takeover] nobody accepted call=${runtime.callSid}; closing`);
+    setSupervision({ state: "postponed", requestedAt: now.toISOString() });
+
+    // Volta closes in its own voice rather than the line simply dying.
+    realtime.send(
+      JSON.stringify({
+        type: "response.create",
+        response: {
+          instructions:
+            "Cierra la llamada ahora, en una sola frase breve y cordial: dile que necesitas confirmarlo internamente y que le devuelves la llamada. No negocies más, no hagas preguntas."
+        }
+      })
+    );
+    // Long enough for that sentence to play out before the leg ends.
+    setTimeout(hangUp, 6000);
+  }, windowMs);
+
+  pendingTakeovers.set(runtime.callSid, {
+    callSid: runtime.callSid,
+    timer,
+    accept: () => {
+      runtime.routeTo = "HUMAN";
+      setSupervision({
+        state: "human",
+        requestedAt: now.toISOString(),
+        takenOverAt: new Date().toISOString()
+      });
+      console.log(`[takeover] accepted call=${runtime.callSid}`);
+    },
+    expire: () => undefined
+  });
+}
+
 function openMediaStreamSession(
   twilioSocket: ClosableRelaySocket,
   dependencies: TelephonyDependencies
@@ -609,8 +723,22 @@ function openMediaStreamSession(
     },
     instructionsFor: (call) =>
       buildCallInstructions(store.getOperation(), call.carrierName),
-    executeToolCall: (request) => {
+    executeToolCall: async (request) => {
       const current = runtime;
+
+      // The agent asking for a person opens a countdown rather than parking
+      // the call: someone accepts from the console, or Volta says it will call
+      // back and hangs up. A carrier holding for a dashboard nobody is
+      // watching is the worst of the three outcomes.
+      if (request.name === "trigger_escalation" && current) {
+        openTakeoverWindow({
+          store,
+          runtime: current,
+          realtime,
+          hangUp: () => twilioSocket.close()
+        });
+      }
+
       console.log(
         `[tool] ${request.name} call=${current?.callSid ?? "?"} t=${current ? callClockMs(current) : 0}ms`
       );

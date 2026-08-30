@@ -2706,3 +2706,26 @@ button.ledger__row:hover {
 .testing__add input {
   min-width: 0;
 }
+
+/* An expiring offer has to be impossible to miss on a busy floor. */
+.call__handover--urgent {
+  animation: handover-pulse 1.1s ease-in-out infinite;
+  border-top-color: rgba(255, 92, 92, 0.5);
+}
+
+@keyframes handover-pulse {
+  0%,
+  100% {
+    background: transparent;
+  }
+  50% {
+    background: rgba(255, 92, 92, 0.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .call__handover--urgent {
+    animation: none;
+    background: rgba(255, 92, 92, 0.08);
+  }
+}
