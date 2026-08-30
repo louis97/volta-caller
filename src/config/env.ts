@@ -38,7 +38,10 @@ const envSchema = z
       .string()
       .min(1)
       .default("textiles-pacifico"),
-    VOLTA_INTERNAL_API_KEY: z.string().min(16).optional()
+    VOLTA_INTERNAL_API_KEY: z.string().min(16).optional(),
+    KAPSO_API_KEY: z.string().min(1).optional(),
+    KAPSO_PHONE_NUMBER_ID: z.string().min(1).optional(),
+    KAPSO_WEBHOOK_SECRET: z.string().min(1).optional()
   })
   .superRefine((value, context) => {
     if (
@@ -59,6 +62,18 @@ const envSchema = z
         code: "custom",
         message:
           "SUPABASE_URL and either SUPABASE_PUBLISHABLE_KEY or SUPABASE_SERVICE_ROLE_KEY must be provided together"
+      });
+    }
+    const kapsoValues = [
+      value.KAPSO_API_KEY,
+      value.KAPSO_PHONE_NUMBER_ID,
+      value.KAPSO_WEBHOOK_SECRET
+    ];
+    if (kapsoValues.some(Boolean) && !kapsoValues.every(Boolean)) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "KAPSO_API_KEY, KAPSO_PHONE_NUMBER_ID and KAPSO_WEBHOOK_SECRET must be provided together"
       });
     }
   });
