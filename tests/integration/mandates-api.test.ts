@@ -32,7 +32,7 @@ afterEach(async () => {
   );
 });
 
-it("creates, gets, and lists mandates without changing the operation store", async () => {
+it("creates a real operation, then retains the mandate record", async () => {
   const app = createApp({ mandatesRepository: new MemoryRepository() });
   const createResponse = await request(app, "/api/mandates", {
     method: "POST",
@@ -41,14 +41,78 @@ it("creates, gets, and lists mandates without changing the operation store", asy
   });
 
   expect(createResponse.status).toBe(201);
-  const created = (await createResponse.json()) as MandateRecord;
-  expect(created).toMatchObject({ id: "mandate-1", budget_cap: 8700.5 });
+  const operation = (await createResponse.json()) as {
+    id: string;
+    mandate: { budgetCapMxn: number };
+  };
+  expect(operation).toMatchObject({
+    id: "operation-mandate-1",
+    mandate: { budgetCapMxn: 8700.5 }
+  });
 
-  const oneResponse = await request(app, `/api/mandates/${created.id}`);
-  await expect(oneResponse.json()).resolves.toEqual(created);
+  const oneResponse = await request(app, "/api/mandates/mandate-1");
+  const created = (await oneResponse.json()) as MandateRecord;
+  expect(created).toMatchObject({ id: "mandate-1", budget_cap: 8700.5 });
 
   const listResponse = await request(app, "/api/mandates");
   await expect(listResponse.json()).resolves.toEqual([created]);
+});
+
+it("runs the mock call round through quotes and a pending carrier approval", async () => {
+  const app = createApp({ mandatesRepository: new MemoryRepository() });
+  for (const carrier of [
+    { name: "Transportes Norte", phone: "+525511111111" },
+    { name: "Carga Occidente", phone: "+525522222222" }
+  ]) {
+    const carrierResponse = await request(app, "/api/carriers", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...carrier, lanes: ["Manzanillo → Guadalajara"] })
+    });
+    expect(carrierResponse.status).toBe(201);
+  }
+
+  const createResponse = await request(app, "/api/mandates", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(mandate)
+  });
+
+  expect(createResponse.status).toBe(201);
+  const operation = (await createResponse.json()) as {
+    pipelineStage: string;
+    quotes: Array<{ id: string }>;
+    callSessions: Array<{ status: string; quoteId?: string }>;
+    approvals: Array<{ status: string; quoteIds: string[] }>;
+  };
+  expect(operation.pipelineStage).toBe("awaiting_approval");
+  expect(operation.quotes).toHaveLength(2);
+  expect(operation.callSessions).toHaveLength(2);
+  expect(operation.callSessions).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        status: "completed",
+        quoteId: expect.any(String)
+      }),
+      expect.objectContaining({
+        status: "completed",
+        quoteId: expect.any(String)
+      })
+    ])
+  );
+  expect(operation.approvals).toEqual([
+    expect.objectContaining({
+      status: "pending",
+      quoteIds: expect.arrayContaining(
+        operation.quotes.map((quote) => quote.id)
+      )
+    })
+  ]);
+
+  const readResponse = await request(app, "/api/operation");
+  await expect(readResponse.json()).resolves.toMatchObject({
+    pipelineStage: "awaiting_approval"
+  });
 });
 
 class MemoryRepository implements MandatesRepository {

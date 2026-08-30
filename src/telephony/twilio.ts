@@ -6,6 +6,7 @@ export type OutboundCallInput = {
   to: string;
   from: string;
   twimlUrl: string;
+  statusCallbackUrl?: string;
   /**
    * Hard ceiling for the call. Prepaid balance is drained silently by a leg a
    * bug left open, so every outbound call carries a limit.
@@ -38,6 +39,10 @@ export type TwilioCallClient = {
       timeLimit?: number;
       record?: boolean;
       recordingChannels?: "mono" | "dual";
+      statusCallback?: string;
+      statusCallbackEvent?: Array<
+        "initiated" | "ringing" | "answered" | "completed"
+      >;
     }): Promise<{ sid: string }>;
     (callId: string): { update(input: { twiml: string }): Promise<unknown> };
   };
@@ -62,6 +67,17 @@ export function createTwilioGateway({
         to: input.to,
         from: input.from,
         url: input.twimlUrl,
+        ...(input.statusCallbackUrl === undefined
+          ? {}
+          : {
+              statusCallback: input.statusCallbackUrl,
+              statusCallbackEvent: [
+                "initiated",
+                "ringing",
+                "answered",
+                "completed"
+              ]
+            }),
         ...(input.timeLimitSeconds === undefined
           ? {}
           : { timeLimit: input.timeLimitSeconds }),
@@ -84,6 +100,38 @@ export function createTwilioGateway({
       });
     }
   };
+}
+
+export type TwilioStatus =
+  | "queued"
+  | "initiated"
+  | "ringing"
+  | "answered"
+  | "in-progress"
+  | "completed"
+  | "busy"
+  | "no-answer"
+  | "failed"
+  | "canceled";
+
+export function mapTwilioStatus(
+  status: TwilioStatus
+): Pick<CallSession, "status" | "endedAt" | "endedReason"> {
+  if (status === "completed")
+    return { status: "completed", endedAt: new Date().toISOString() };
+  if (
+    status === "busy" ||
+    status === "no-answer" ||
+    status === "failed" ||
+    status === "canceled"
+  ) {
+    return {
+      status: "failed",
+      endedAt: new Date().toISOString(),
+      endedReason: status
+    };
+  }
+  return { status: "in_progress" };
 }
 
 function escapeXml(value: string): string {

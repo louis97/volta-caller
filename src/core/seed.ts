@@ -39,6 +39,7 @@ export function seedOperation(): Operation {
         phone: "+573208643487"
       }
     ],
+    callSessions: [],
     quotes: [],
     approvals: [],
     callBriefs: [],
@@ -69,6 +70,7 @@ export function createOperationFromMandate(
       escalationPhone: "unconfigured"
     },
     candidates: [],
+    callSessions: [],
     quotes: [],
     approvals: [],
     callBriefs: [],

@@ -159,9 +159,12 @@ describe("DashboardConsole", () => {
       container.querySelectorAll("input[name], select[name]")
     ).toHaveLength(expectedManifestFields.length);
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Type of content" }), {
-      target: { value: "textiles" }
-    });
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Type of content" }),
+      {
+        target: { value: "textiles" }
+      }
+    );
     fireEvent.change(screen.getByRole("spinbutton", { name: "Weight KG" }), {
       target: { value: "18400" }
     });
@@ -177,12 +180,18 @@ describe("DashboardConsole", () => {
     fireEvent.change(screen.getByLabelText("Destination date & time"), {
       target: { value: "2026-09-03T18:00" }
     });
-    fireEvent.change(screen.getByRole("textbox", { name: "Destination place" }), {
-      target: { value: "Textiles Pacífico, Guadalajara, Jalisco" }
-    });
-    fireEvent.change(screen.getByRole("spinbutton", { name: "Budget cap MXN" }), {
-      target: { value: "9000" }
-    });
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Destination place" }),
+      {
+        target: { value: "Textiles Pacífico, Guadalajara, Jalisco" }
+      }
+    );
+    fireEvent.change(
+      screen.getByRole("spinbutton", { name: "Budget cap MXN" }),
+      {
+        target: { value: "9000" }
+      }
+    );
     fireEvent.click(screen.getByRole("button", { name: "Launch mandate" }));
 
     await vi.waitFor(() => {
@@ -213,9 +222,12 @@ describe("DashboardConsole", () => {
       vi.fn().mockResolvedValue({ ok: false, json: async () => ({}) })
     );
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Type of content" }), {
-      target: { value: "textiles" }
-    });
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Type of content" }),
+      {
+        target: { value: "textiles" }
+      }
+    );
     fireEvent.change(screen.getByRole("spinbutton", { name: "Weight KG" }), {
       target: { value: "18400" }
     });
@@ -231,12 +243,18 @@ describe("DashboardConsole", () => {
     fireEvent.change(screen.getByLabelText("Destination date & time"), {
       target: { value: "2026-09-03T18:00" }
     });
-    fireEvent.change(screen.getByRole("textbox", { name: "Destination place" }), {
-      target: { value: "Textiles Pacífico, Guadalajara, Jalisco" }
-    });
-    fireEvent.change(screen.getByRole("spinbutton", { name: "Budget cap MXN" }), {
-      target: { value: "9000" }
-    });
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Destination place" }),
+      {
+        target: { value: "Textiles Pacífico, Guadalajara, Jalisco" }
+      }
+    );
+    fireEvent.change(
+      screen.getByRole("spinbutton", { name: "Budget cap MXN" }),
+      {
+        target: { value: "9000" }
+      }
+    );
     fireEvent.click(screen.getByRole("button", { name: "Launch mandate" }));
 
     expect(
