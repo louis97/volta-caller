@@ -14,6 +14,12 @@ Cuando el agente propone una única acción HITL, Volta responde con un mensaje 
 
 Si el mensaje interactivo falla, el backend envía el mismo contenido como texto. El usuario también puede escribir `APROBAR` / `RECHAZAR` o enviarlos por audio para usar la ruta de respaldo. Un «sí» aislado nunca ejecuta una acción porque podría ser la respuesta a una pregunta del intake.
 
+## Elección automática al terminar una ronda
+
+Cuando todos los transportistas de un mandato terminaron y sus cotizaciones fueron revisadas, Volta ordena solo las que cumplen el mandato por precio (y ETA como desempate). Envía por Kapso las dos mejores opciones con botones **Elegir opción 1** y **Elegir opción 2**. El botón aprueba únicamente la cotización indicada, desde el mismo número al que se envió, e inicia la llamada de cierre al proveedor elegido.
+
+Para un mandato creado desde WhatsApp, el destinatario es el número que aprobó el mandato. Para uno creado en el dashboard, configura `VOLTA_SELECTION_WHATSAPP_TO` con el número E.164 del dispatcher. Si los botones no están disponibles, el mismo mensaje incluye los dos comandos `APROBAR <código>` como respaldo.
+
 ## Configuración de producción
 
 Define estas tres variables en el entorno de la API:
@@ -21,6 +27,7 @@ Define estas tres variables en el entorno de la API:
 - `KAPSO_API_KEY`: API key del proyecto de Kapso.
 - `KAPSO_PHONE_NUMBER_ID`: ID interno del número de WhatsApp en Kapso.
 - `KAPSO_WEBHOOK_SECRET`: secreto único que se usará para firmar el webhook.
+- `VOLTA_SELECTION_WHATSAPP_TO`: número E.164 del dispatcher que recibe las opciones de los mandates creados desde el dashboard.
 
 El endpoint exige `X-Webhook-Signature` (HMAC SHA-256 sobre los bytes crudos), procesa solo `whatsapp.message.received` y deduplica con `X-Idempotency-Key`. Soporta el payload v2 individual y el payload v2 con buffering.
 

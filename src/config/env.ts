@@ -94,7 +94,13 @@ const envSchema = z
     VOLTA_INTERNAL_API_KEY: z.string().min(16).optional(),
     KAPSO_API_KEY: z.string().min(1).optional(),
     KAPSO_PHONE_NUMBER_ID: z.string().min(1).optional(),
-    KAPSO_WEBHOOK_SECRET: z.string().min(1).optional()
+    KAPSO_WEBHOOK_SECRET: z.string().min(1).optional(),
+    /**
+     * Dispatcher number that receives the two best quotes for mandates
+     * created from the dashboard. Mandates created from WhatsApp reply to the
+     * number that approved the mandate instead.
+     */
+    VOLTA_SELECTION_WHATSAPP_TO: z.string().trim().min(8).optional()
   })
   .superRefine((value, context) => {
     if (

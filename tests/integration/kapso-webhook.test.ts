@@ -12,6 +12,9 @@ import {
 } from "../../src/agent/operationalAgent";
 import { MemoryAgentRepository } from "../../src/agent/repository";
 import { createMemoryMandatesRepository } from "../../src/core/mandates/memory-repository";
+import { seedOperation } from "../../src/core/seed";
+import { createOperationStore } from "../../src/core/state";
+import { createMockTelephonyGateway } from "../../src/mocks/telephony";
 import { createApp } from "../../src/server";
 
 const servers: ReturnType<ReturnType<typeof createApp>["listen"]>[] = [];
@@ -198,6 +201,89 @@ it("approves a mandate with native WhatsApp buttons without calling the model ag
       pickupAddress: "Sociedad Portuaria de Santa Marta",
       destinationPlace: "Calle 87B #6-10, Medellín"
     }
+  });
+});
+
+it("sends the two best mandate-compliant quotes and calls the option chosen in WhatsApp", async () => {
+  const sendText = vi.fn().mockResolvedValue(undefined);
+  const sendInteractiveButtons = vi.fn().mockResolvedValue(undefined);
+  const repository = new MemoryAgentRepository();
+  const operation = seedOperation();
+  operation.id = "operation-whatsapp-choice";
+  operation.candidates = operation.candidates.slice(0, 2);
+  operation.mandate.escalationPhone = "+573001112233";
+  const store = createOperationStore(operation);
+  const telephony = createMockTelephonyGateway();
+  const app = createApp({
+    scenario: { store, run: async () => {} },
+    repository,
+    telephony,
+    kapsoMessenger: { sendText, sendInteractiveButtons },
+    kapsoWebhookSecret: "kapso-test-secret"
+  });
+  const quotes = [
+    {
+      id: "quote-expensive",
+      carrierId: operation.candidates[0]!.id,
+      carrierName: operation.candidates[0]!.name,
+      priceMxn: 8800,
+      etaMinutes: 75,
+      pickupTime: operation.mandate.pickupDatetime,
+      callId: "call-expensive",
+      createdAt: "2026-09-01T15:00:00.000Z"
+    },
+    {
+      id: "quote-best",
+      carrierId: operation.candidates[1]!.id,
+      carrierName: operation.candidates[1]!.name,
+      priceMxn: 8200,
+      etaMinutes: 90,
+      pickupTime: operation.mandate.pickupDatetime,
+      callId: "call-best",
+      createdAt: "2026-09-01T15:01:00.000Z"
+    }
+  ];
+  for (const quote of quotes) store.registerQuote(quote);
+  for (const quote of quotes) {
+    store.reviewDeal({ quoteId: quote.id, reviewedAt: quote.createdAt });
+  }
+
+  await vi.waitFor(() =>
+    expect(sendInteractiveButtons).toHaveBeenCalledTimes(1)
+  );
+  const selectionPrompt = sendInteractiveButtons.mock.calls[0]?.[0];
+  expect(selectionPrompt).toMatchObject({
+    to: "+573001112233",
+    bodyText: expect.stringContaining("Ruta Occidente")
+  });
+  expect(selectionPrompt?.bodyText).toContain("MXN 8,200");
+  expect(selectionPrompt?.buttons).toHaveLength(2);
+  const bestOption = selectionPrompt?.buttons[0];
+  if (!bestOption) throw new Error("missing_best_quote_button");
+
+  const selection = await signedWhatsAppRequest(app, {
+    id: "wamid.quote-selection",
+    from: "+573001112233",
+    type: "interactive",
+    content: bestOption.id
+  });
+
+  expect(selection.status).toBe(200);
+  expect(sendText).toHaveBeenLastCalledWith({
+    to: "+573001112233",
+    text: expect.stringContaining("Opción elegida")
+  });
+  expect(store.getOperation()).toMatchObject({
+    status: "confirming_selected_carrier",
+    selection: { quoteId: "quote-best" }
+  });
+  expect(telephony.calls).toContainEqual({
+    type: "created",
+    callId: "mock-call-1",
+    input: expect.objectContaining({
+      carrierId: operation.candidates[1]!.id,
+      to: operation.candidates[1]!.phone
+    })
   });
 });
 

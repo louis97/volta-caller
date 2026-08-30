@@ -4,11 +4,13 @@ import { pathToFileURL } from "node:url";
 import express, { type Request, type Response } from "express";
 import type {
   AgentConversation,
+  AgentMessage,
   Carrier,
   OperationEvent,
   Operation,
   OperationReadModel,
   ProposedAction,
+  Quote,
   ShipmentEvent,
   TranscriptSegment
 } from "@volta/contracts";
@@ -25,6 +27,7 @@ import {
 import {
   type AgentRepository,
   MemoryAgentRepository,
+  operationVersion,
   type OrganizationContext
 } from "./agent/repository";
 import { env, missingTelephonyConfig } from "./config/env";
@@ -236,9 +239,9 @@ function whatsappDecisionReply(action: ProposedAction) {
       return "✅ Mandato aprobado y creado. Ya inicié la ronda de cotizaciones con los transportistas activos.";
     }
     if (action.type === "resolve_carrier_selection") {
-      return "✅ Selección de transportista aprobada y ejecutada.";
+      return "✅ Opción elegida. Ya inicié la llamada de cierre al proveedor seleccionado.";
     }
-    return "✅ Llamada de cierre aprobada y ejecutada.";
+    return "✅ Opción elegida. Ya inicié la llamada de cierre al proveedor seleccionado.";
   }
   if (action.status === "expired") {
     return "La propuesta venció porque la operación cambió. Pídeme generar una nueva propuesta.";
@@ -250,6 +253,62 @@ function whatsappDecisionReply(action: ProposedAction) {
     return "No pude confirmar que el mandato aprobado quedara completo. No lo dupliques; revisa Mandates en Volta antes de intentarlo de nuevo.";
   }
   return "No pude ejecutar la acción aprobada. Revisa el detalle en Volta antes de intentarlo de nuevo.";
+}
+
+/** A number in an app header is not a delivery destination until it is E.164-like. */
+function whatsappRecipient(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const digits = value.replace(/\D/g, "");
+  return /^[1-9]\d{7,14}$/.test(digits) ? `+${digits}` : undefined;
+}
+
+function selectionRecipient(context: OrganizationContext): string | undefined {
+  const fromWhatsApp = context.userId.startsWith("whatsapp:")
+    ? context.userId.slice("whatsapp:".length)
+    : undefined;
+  return whatsappRecipient(fromWhatsApp ?? env.VOLTA_SELECTION_WHATSAPP_TO);
+}
+
+function topApprovedQuotes(operation: Operation): Quote[] {
+  const approved = new Set(
+    operation.reviewedDeals
+      .filter((deal) => deal.mandateDecision === "APPROVED")
+      .map((deal) => deal.quoteId)
+  );
+  return operation.quotes
+    .filter((quote) => approved.has(quote.id))
+    .sort(
+      (left, right) =>
+        left.priceMxn - right.priceMxn ||
+        (left.etaMinutes ?? Number.MAX_SAFE_INTEGER) -
+          (right.etaMinutes ?? Number.MAX_SAFE_INTEGER) ||
+        left.createdAt.localeCompare(right.createdAt)
+    )
+    .slice(0, 2);
+}
+
+function quoteSelectionMessage(
+  operation: Operation,
+  quotes: Quote[],
+  actions: ProposedAction[]
+): string {
+  const options = quotes.map((quote, index) => {
+    const eta =
+      quote.etaMinutes === undefined ? "sin ETA" : `${quote.etaMinutes} min`;
+    return `${index + 1}. *${quote.carrierName}* — MXN ${quote.priceMxn.toLocaleString("en-US")} — ${eta}`;
+  });
+  const fallback = actions
+    .map(
+      (action, index) => `Opción ${index + 1}: APROBAR ${action.id.slice(0, 8)}`
+    )
+    .join("\n");
+  return [
+    `Terminó la ronda de cotizaciones para ${operation.origin} → ${operation.destination}.`,
+    "Estas son las mejores opciones que cumplen el mandato:",
+    ...options,
+    "Elige una opción para que Volta llame al proveedor y cierre el deal.",
+    `Si no ves los botones, responde exactamente:\n${fallback}`
+  ].join("\n\n");
 }
 
 export function createApp(options: CreateAppOptions = {}) {
@@ -568,6 +627,92 @@ export function createApp(options: CreateAppOptions = {}) {
       }
     }
   };
+  const quoteSelectionPromptOperations = new Set<string>();
+  const sendQuoteSelectionPrompt = async (input: {
+    operationId: string;
+    occurredAt: string;
+  }) => {
+    if (quoteSelectionPromptOperations.has(input.operationId)) return;
+    const operation = scenario.store.getOperation();
+    if (
+      operation.id !== input.operationId ||
+      operation.status !== "awaiting_client_selection"
+    ) {
+      return;
+    }
+    const recipient = whatsappRecipient(operation.mandate.escalationPhone);
+    if (!recipient) {
+      console.warn(
+        `[quotes] ${operation.id} is ready, but no WhatsApp recipient is configured`
+      );
+      return;
+    }
+    if (!kapsoMessenger) {
+      console.warn(
+        `[quotes] ${operation.id} is ready, but Kapso is not configured`
+      );
+      return;
+    }
+    const quotes = topApprovedQuotes(operation);
+    if (quotes.length === 0) {
+      console.warn(
+        `[quotes] ${operation.id} has no mandate-approved quote to offer`
+      );
+      return;
+    }
+
+    const context: OrganizationContext = {
+      organizationId: activeOrganizationId,
+      userId: `whatsapp:${recipient}`
+    };
+    const title = `WhatsApp · ${recipient}`;
+    const conversation =
+      (await agent.listConversations(context)).find(
+        (item) => item.title === title && item.createdBy === context.userId
+      ) ?? (await agent.createConversation(context, title));
+    const actions: ProposedAction[] = quotes.map((quote, index) => ({
+      id: randomUUID(),
+      organizationId: context.organizationId,
+      conversationId: conversation.id,
+      operationId: operation.id,
+      type: "resolve_carrier_selection",
+      payload: {
+        selectedQuoteId: quote.id,
+        rationale: `Opción ${index + 1} enviada automáticamente tras terminar la ronda.`
+      },
+      status: "pending",
+      summary: `Elegir opción ${index + 1}: ${quote.carrierName} por MXN ${quote.priceMxn} para la llamada de cierre.`,
+      expectedOperationVersion: operationVersion(operation),
+      requestedBy: context.userId,
+      createdAt: input.occurredAt
+    }));
+    await Promise.all(actions.map((action) => repository.saveAction(action)));
+    const text = quoteSelectionMessage(operation, quotes, actions);
+    const message: AgentMessage = {
+      id: randomUUID(),
+      conversationId: conversation.id,
+      role: "assistant",
+      content: text,
+      citations: [],
+      proposedActions: actions,
+      createdAt: input.occurredAt
+    };
+    await repository.appendMessage(context, message);
+
+    if (kapsoMessenger.sendInteractiveButtons) {
+      await kapsoMessenger.sendInteractiveButtons({
+        to: recipient,
+        bodyText: text,
+        buttons: actions.map((action, index) => ({
+          id: `volta:approve:${action.id}`,
+          title: `Elegir opción ${index + 1}`
+        }))
+      });
+    } else {
+      await kapsoMessenger.sendText({ to: recipient, text });
+    }
+    quoteSelectionPromptOperations.add(operation.id);
+  };
   const quoteReadyOperations = new Set<string>();
   const publishQuotesReady = async (input: {
     operationId: string;
@@ -588,6 +733,17 @@ export function createApp(options: CreateAppOptions = {}) {
       receivedAt: input.occurredAt,
       metadata: { quoteIds: input.quoteIds, carrierCount: input.carrierCount }
     });
+    try {
+      await sendQuoteSelectionPrompt({
+        operationId: input.operationId,
+        occurredAt: input.occurredAt
+      });
+    } catch (error) {
+      // A notification failure cannot roll back a completed carrier round.
+      // The selection remains visible in Volta and the failed outbound send is
+      // logged for retry/operations follow-up.
+      console.error("[quotes] could not send WhatsApp selection prompt", error);
+    }
   };
   const notifyFromOperationEvent = (event: OperationEvent) => {
     const operation = scenario.store.getOperation();
@@ -939,6 +1095,10 @@ export function createApp(options: CreateAppOptions = {}) {
         mandate,
         `operation-${mandate.id}`
       );
+      // A mandate created through WhatsApp must return to the same dispatcher.
+      // Dashboard-created mandates use the configured operations number.
+      const recipient = selectionRecipient(context);
+      if (recipient) operation.mandate.escalationPhone = recipient;
       const active = carriers
         .filter((carrier) => carrier.active)
         .map(({ id, name, phone }) => ({ id, name, phone }));
@@ -1739,7 +1899,8 @@ if (isMainModule(import.meta.url, process.argv[1])) {
       app.locals.listTranscript(callId, limit),
     resolveCallContext: (reference) =>
       app.locals.resolveTelephonyCallContext(reference),
-    resolveCallBySid: (callSid) => app.locals.resolveTelephonyCallBySid(callSid),
+    resolveCallBySid: (callSid) =>
+      app.locals.resolveTelephonyCallBySid(callSid),
     confirmationCoordinator: app.locals.confirmationCoordinator,
     whatsappMessenger: app.locals.whatsappMessenger
   });

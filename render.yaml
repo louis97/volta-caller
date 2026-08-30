@@ -67,3 +67,7 @@ services:
         sync: false
       - key: KAPSO_WEBHOOK_SECRET
         sync: false
+      # Número del dispatcher que elige por WhatsApp la mejor cotización de
+      # los mandates creados desde el dashboard.
+      - key: VOLTA_SELECTION_WHATSAPP_TO
+        sync: false
