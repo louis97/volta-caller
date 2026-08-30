@@ -215,7 +215,7 @@ describe("createOperationStore", () => {
     const received: OperationEvent[] = [];
     store.subscribe((event) => received.push(event));
 
-    store.beginConfirmation(quote.id);
+    store.beginConfirmation(quote.id, "call-confirm-001");
     store.failConfirmation("caller_unverified", "call-confirm-001");
     store.recordIncident(incident);
     store.updateOperationStatus({
@@ -249,6 +249,24 @@ describe("createOperationStore", () => {
     expect(() =>
       store.failConfirmation("caller_unverified", "call-001")
     ).toThrow("confirmation_not_allowed");
+    expect(store.getOperation()).toEqual(before);
+  });
+
+  it("rejects a stale confirmation failure call ID without mutation", () => {
+    const operation = seedOperation();
+    operation.status = "carrier_selected";
+    operation.selection = {
+      quoteId: quote.id,
+      selectedAt: "2026-09-03T15:00:00.000Z",
+      expiresAt: operation.mandate.destinationDatetime
+    };
+    const store = createOperationStore(operation);
+    store.beginConfirmation(quote.id, "call-confirm-current");
+    const before = store.getOperation();
+
+    expect(() =>
+      store.failConfirmation("stale_callback", "call-confirm-stale")
+    ).toThrow("confirmation_call_mismatch");
     expect(store.getOperation()).toEqual(before);
   });
 

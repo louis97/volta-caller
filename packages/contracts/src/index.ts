@@ -157,6 +157,7 @@ export type Operation = {
   candidates: CarrierCandidate[];
   quotes: Quote[];
   selectedCarrierId?: string;
+  confirmationCallId?: string;
   commitment?: Commitment;
   callBriefs: CallBrief[];
   escalations: Escalation[];
