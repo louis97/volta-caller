@@ -31,7 +31,9 @@ export type TelephonyDependencies = {
   store: OperationStore;
   organizationId?: string;
   dialled?: Map<string, { id: string; name: string }>;
-  onCallSessionChanged?: (session: import("@volta/contracts").CallSession) => void;
+  onCallSessionChanged?: (
+    session: import("@volta/contracts").CallSession
+  ) => void;
 };
 
 function getTwilioClient(): TwilioCallClient {
@@ -53,14 +55,19 @@ function mediaStreamUrl(): string {
   return `${env.PUBLIC_WS_URL.replace(/\/$/, "")}${MEDIA_STREAM_PATH}`;
 }
 
-export function mountTelephonyRoutes(app: Express, dependencies: TelephonyDependencies): void {
+export function mountTelephonyRoutes(
+  app: Express,
+  dependencies: TelephonyDependencies
+): void {
   const { store } = dependencies;
   const registry = createCallRegistry();
   let auction: Auction = auctionFromOperation(store.getOperation());
-  const dialled = dependencies.dialled ?? new Map<string, { id: string; name: string }>();
+  const dialled =
+    dependencies.dialled ?? new Map<string, { id: string; name: string }>();
   store.subscribe((event) => {
     if (event.type === "quote.registered") auction.recordQuote(event.quote);
-    if (event.type === "call.started" || event.type === "call.updated") dependencies.onCallSessionChanged?.(event.callSession);
+    if (event.type === "call.started" || event.type === "call.updated")
+      dependencies.onCallSessionChanged?.(event.callSession);
   });
   const twiml = express.urlencoded({ extended: false });
 
@@ -116,12 +123,20 @@ export function mountTelephonyRoutes(app: Express, dependencies: TelephonyDepend
     auction = auctionFromOperation(store.getOperation());
     dialled.clear();
     await fanOutCalls({
-      store, mode: env.VOLTA_MODE, publicBaseUrl: env.PUBLIC_BASE_URL,
+      store,
+      mode: env.VOLTA_MODE,
+      publicBaseUrl: env.PUBLIC_BASE_URL,
       from: env.TWILIO_FROM_NUMBER,
-      gateway: env.VOLTA_MODE === "live" ? createLiveTelephonyGateway() : undefined,
-      onDialled: (callId, carrier) => { dialled.set(callId, carrier); auction.startCall(carrier.id, callId); }
+      gateway:
+        env.VOLTA_MODE === "live" ? createLiveTelephonyGateway() : undefined,
+      onDialled: (callId, carrier) => {
+        dialled.set(callId, carrier);
+        auction.startCall(carrier.id, callId);
+      }
     });
-    response.status(202).json({ status: auction.status(), operation: store.getOperation() });
+    response
+      .status(202)
+      .json({ status: auction.status(), operation: store.getOperation() });
   });
 
   app.get("/api/auction", (_request, response) => {
@@ -131,10 +146,22 @@ export function mountTelephonyRoutes(app: Express, dependencies: TelephonyDepend
   });
 
   app.post("/twiml/status", twiml, (request, response) => {
-    const callSid = typeof request.body.CallSid === "string" ? request.body.CallSid : undefined;
-    const callStatus = typeof request.body.CallStatus === "string" ? request.body.CallStatus : undefined;
-    const session = store.getOperation().callSessions.find((item) => item.callSid === callSid);
-    if (session && callStatus) store.updateCallSession(session.id, mapTwilioStatus(callStatus as Parameters<typeof mapTwilioStatus>[0]));
+    const callSid =
+      typeof request.body.CallSid === "string"
+        ? request.body.CallSid
+        : undefined;
+    const callStatus =
+      typeof request.body.CallStatus === "string"
+        ? request.body.CallStatus
+        : undefined;
+    const session = store
+      .getOperation()
+      .callSessions.find((item) => item.callSid === callSid);
+    if (session && callStatus)
+      store.updateCallSession(
+        session.id,
+        mapTwilioStatus(callStatus as Parameters<typeof mapTwilioStatus>[0])
+      );
     response.sendStatus(204);
   });
 
@@ -182,7 +209,10 @@ export function mountTelephonyRoutes(app: Express, dependencies: TelephonyDepend
   });
 }
 
-export function attachTelephonyWebSockets(server: Server, dependencies: TelephonyDependencies): WebSocketServer {
+export function attachTelephonyWebSockets(
+  server: Server,
+  dependencies: TelephonyDependencies
+): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
 
   server.on("upgrade", (request, socket, head) => {
@@ -198,20 +228,45 @@ export function attachTelephonyWebSockets(server: Server, dependencies: Telephon
 
   wss.on("connection", (client) => {
     console.log("[twilio] media stream connected");
-    openMediaStreamSession(toRelaySocket(client, { label: "twilio" }), dependencies);
+    openMediaStreamSession(
+      toRelaySocket(client, { label: "twilio" }),
+      dependencies
+    );
   });
 
   return wss;
 }
 
-function openMediaStreamSession(twilioSocket: ClosableRelaySocket, dependencies: TelephonyDependencies): void {
+function openMediaStreamSession(
+  twilioSocket: ClosableRelaySocket,
+  dependencies: TelephonyDependencies
+): void {
   const { store } = dependencies;
   const registry = createCallRegistry();
-  const dialled = dependencies.dialled ?? new Map(store.getOperation().callSessions
-    .filter((session): session is typeof session & { callSid: string; carrierId: string; driverName: string } => Boolean(session.callSid && session.carrierId && session.driverName))
-    .map((session) => [session.callSid, { id: session.carrierId, name: session.driverName }]));
+  const dialled =
+    dependencies.dialled ??
+    new Map(
+      store
+        .getOperation()
+        .callSessions.filter(
+          (
+            session
+          ): session is typeof session & {
+            callSid: string;
+            carrierId: string;
+            driverName: string;
+          } =>
+            Boolean(session.callSid && session.carrierId && session.driverName)
+        )
+        .map((session) => [
+          session.callSid,
+          { id: session.carrierId, name: session.driverName }
+        ])
+    );
   let auction = auctionFromOperation(store.getOperation());
-  store.subscribe((event) => { if (event.type === "quote.registered") auction.recordQuote(event.quote); });
+  store.subscribe((event) => {
+    if (event.type === "quote.registered") auction.recordQuote(event.quote);
+  });
   if (!env.OPENAI_API_KEY) {
     console.error("[session] OPENAI_API_KEY missing; dropping the call");
     twilioSocket.close();
@@ -258,8 +313,14 @@ function openMediaStreamSession(twilioSocket: ClosableRelaySocket, dependencies:
         direction: "outbound",
         startedAt: new Date().toISOString()
       });
-      const session = store.getOperation().callSessions.find((item) => item.callSid === (callSid ?? streamSid));
-      if (session) store.updateCallSession(session.id, { status: "in_progress", startedAt: runtime.startedAt });
+      const session = store
+        .getOperation()
+        .callSessions.find((item) => item.callSid === (callSid ?? streamSid));
+      if (session)
+        store.updateCallSession(session.id, {
+          status: "in_progress",
+          startedAt: runtime.startedAt
+        });
       console.log(
         `[call] started stream=${streamSid} call=${callSid ?? "?"} carrier=${carrier?.name ?? "unknown"}`
       );
@@ -301,8 +362,14 @@ function openMediaStreamSession(twilioSocket: ClosableRelaySocket, dependencies:
   twilioSocket.on("close", () => {
     if (runtime) {
       registry.close(runtime.streamSid);
-      const session = store.getOperation().callSessions.find((item) => item.callSid === runtime?.callSid);
-      if (session && session.status === "in_progress") store.updateCallSession(session.id, { status: "completed", endedAt: new Date().toISOString() });
+      const session = store
+        .getOperation()
+        .callSessions.find((item) => item.callSid === runtime?.callSid);
+      if (session && session.status === "in_progress")
+        store.updateCallSession(session.id, {
+          status: "completed",
+          endedAt: new Date().toISOString()
+        });
     }
     realtime.close();
   });

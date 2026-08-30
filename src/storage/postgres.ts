@@ -51,9 +51,11 @@ export class PostgresAgentRepository implements AgentRepository {
         derivePipelineStage(operation)
       ]
     );
-    await Promise.all(operation.callSessions.map((callSession) =>
-      this.saveCallSession(organizationId, callSession)
-    ));
+    await Promise.all(
+      operation.callSessions.map((callSession) =>
+        this.saveCallSession(organizationId, callSession)
+      )
+    );
   }
 
   async saveCallSession(organizationId: string, callSession: CallSession) {
@@ -62,25 +64,66 @@ export class PostgresAgentRepository implements AgentRepository {
       `INSERT INTO call_sessions (organization_id, id, operation_id, carrier_id, driver_name, direction, status, audio_url, quote_id, ended_reason, started_at, ended_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        ON CONFLICT (organization_id, id) DO UPDATE SET carrier_id = EXCLUDED.carrier_id, driver_name = EXCLUDED.driver_name, status = EXCLUDED.status, audio_url = EXCLUDED.audio_url, quote_id = EXCLUDED.quote_id, ended_reason = EXCLUDED.ended_reason, started_at = EXCLUDED.started_at, ended_at = EXCLUDED.ended_at`,
-      [organizationId, callSession.id, callSession.operationId, callSession.carrierId ?? null, callSession.driverName ?? null, callSession.direction, callSession.status, callSession.audioUrl ?? null, callSession.quoteId ?? null, callSession.endedReason ?? null, callSession.startedAt, callSession.endedAt ?? null]
+      [
+        organizationId,
+        callSession.id,
+        callSession.operationId,
+        callSession.carrierId ?? null,
+        callSession.driverName ?? null,
+        callSession.direction,
+        callSession.status,
+        callSession.audioUrl ?? null,
+        callSession.quoteId ?? null,
+        callSession.endedReason ?? null,
+        callSession.startedAt,
+        callSession.endedAt ?? null
+      ]
     );
   }
 
   async listCarriers(organizationId: string) {
     await this.initialize();
-    const result = await this.pool.query<CarrierRow>(`SELECT organization_id, id, name, phone, lanes, active, created_at FROM carriers WHERE organization_id = $1 ORDER BY created_at DESC`, [organizationId]);
+    const result = await this.pool.query<CarrierRow>(
+      `SELECT organization_id, id, name, phone, lanes, active, created_at FROM carriers WHERE organization_id = $1 ORDER BY created_at DESC`,
+      [organizationId]
+    );
     return result.rows.map(carrierFromRow);
   }
 
   async createCarrier(carrier: Carrier) {
     await this.initialize();
-    await this.pool.query(`INSERT INTO carriers (organization_id, id, name, phone, lanes, active, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`, [carrier.organizationId, carrier.id, carrier.name, carrier.phone, carrier.lanes, carrier.active, carrier.createdAt]);
+    await this.pool.query(
+      `INSERT INTO carriers (organization_id, id, name, phone, lanes, active, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        carrier.organizationId,
+        carrier.id,
+        carrier.name,
+        carrier.phone,
+        carrier.lanes,
+        carrier.active,
+        carrier.createdAt
+      ]
+    );
     return carrier;
   }
 
-  async updateCarrier(organizationId: string, carrierId: string, patch: Partial<Pick<Carrier, "name" | "phone" | "lanes" | "active">>) {
+  async updateCarrier(
+    organizationId: string,
+    carrierId: string,
+    patch: Partial<Pick<Carrier, "name" | "phone" | "lanes" | "active">>
+  ) {
     await this.initialize();
-    const result = await this.pool.query<CarrierRow>(`UPDATE carriers SET name = coalesce($3, name), phone = coalesce($4, phone), lanes = coalesce($5, lanes), active = coalesce($6, active) WHERE organization_id = $1 AND id = $2 RETURNING organization_id, id, name, phone, lanes, active, created_at`, [organizationId, carrierId, patch.name ?? null, patch.phone ?? null, patch.lanes ?? null, patch.active ?? null]);
+    const result = await this.pool.query<CarrierRow>(
+      `UPDATE carriers SET name = coalesce($3, name), phone = coalesce($4, phone), lanes = coalesce($5, lanes), active = coalesce($6, active) WHERE organization_id = $1 AND id = $2 RETURNING organization_id, id, name, phone, lanes, active, created_at`,
+      [
+        organizationId,
+        carrierId,
+        patch.name ?? null,
+        patch.phone ?? null,
+        patch.lanes ?? null,
+        patch.active ?? null
+      ]
+    );
     return result.rows[0] ? carrierFromRow(result.rows[0]) : undefined;
   }
 

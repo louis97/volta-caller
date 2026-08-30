@@ -21,7 +21,10 @@ export type CreateConversationInput = OrganizationContext & { title?: string };
 
 export type AgentRepository = {
   syncOperation(organizationId: string, operation: Operation): Promise<void>;
-  saveCallSession(organizationId: string, callSession: CallSession): Promise<void>;
+  saveCallSession(
+    organizationId: string,
+    callSession: CallSession
+  ): Promise<void>;
   listCarriers(organizationId: string): Promise<Carrier[]>;
   createCarrier(carrier: Carrier): Promise<Carrier>;
   updateCarrier(
@@ -94,26 +97,38 @@ export class MemoryAgentRepository implements AgentRepository {
   async saveCallSession(organizationId: string, callSession: CallSession) {
     // The operation snapshot is the read model in memory; this separate write
     // mirrors the relational persistence contract used by Postgres.
-    const operation = this.operations.get(organizationId)?.get(callSession.operationId);
+    const operation = this.operations
+      .get(organizationId)
+      ?.get(callSession.operationId);
     if (operation) {
-      const index = operation.callSessions.findIndex((item) => item.id === callSession.id);
-      if (index === -1) operation.callSessions.push(structuredClone(callSession));
+      const index = operation.callSessions.findIndex(
+        (item) => item.id === callSession.id
+      );
+      if (index === -1)
+        operation.callSessions.push(structuredClone(callSession));
       else operation.callSessions[index] = structuredClone(callSession);
     }
   }
 
   async listCarriers(organizationId: string) {
-    return [...(this.carriers.get(organizationId)?.values() ?? [])].map((item) => structuredClone(item));
+    return [...(this.carriers.get(organizationId)?.values() ?? [])].map(
+      (item) => structuredClone(item)
+    );
   }
 
   async createCarrier(carrier: Carrier) {
-    const organization = this.carriers.get(carrier.organizationId) ?? new Map<string, Carrier>();
+    const organization =
+      this.carriers.get(carrier.organizationId) ?? new Map<string, Carrier>();
     organization.set(carrier.id, structuredClone(carrier));
     this.carriers.set(carrier.organizationId, organization);
     return structuredClone(carrier);
   }
 
-  async updateCarrier(organizationId: string, carrierId: string, patch: Partial<Pick<Carrier, "name" | "phone" | "lanes" | "active">>) {
+  async updateCarrier(
+    organizationId: string,
+    carrierId: string,
+    patch: Partial<Pick<Carrier, "name" | "phone" | "lanes" | "active">>
+  ) {
     const carrier = this.carriers.get(organizationId)?.get(carrierId);
     if (!carrier) return undefined;
     const updated = { ...carrier, ...structuredClone(patch) };

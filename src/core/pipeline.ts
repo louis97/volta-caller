@@ -1,8 +1,6 @@
-import type { Operation } from "@volta/contracts";
+import type { Operation, PipelineStage } from "@volta/contracts";
 
-export type PipelineStage =
-  | "open" | "calling" | "quoting" | "awaiting_approval" | "closing"
-  | "committed" | "escalated" | "failed";
+export type { PipelineStage } from "@volta/contracts";
 
 /** The indexed stage is a projection of canonical operation state. */
 export function derivePipelineStage(operation: Operation): PipelineStage {

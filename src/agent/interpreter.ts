@@ -141,7 +141,10 @@ export async function executeToolCall(
         });
         return { outcome: "approval_requested", approval };
       } catch (error) {
-        if (error instanceof Error && error.message === "approval_already_pending") {
+        if (
+          error instanceof Error &&
+          error.message === "approval_already_pending"
+        ) {
           return { outcome: "rejected", reason: "approval_already_pending" };
         }
         return { outcome: "rejected", reason: "invalid_arguments" };

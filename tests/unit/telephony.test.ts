@@ -5,7 +5,10 @@ import {
   createRealtimeSessionConfig,
   type RelaySocket
 } from "../../src/telephony/mediaStream";
-import { createInboundTwiML, mapTwilioStatus } from "../../src/telephony/twilio";
+import {
+  createInboundTwiML,
+  mapTwilioStatus
+} from "../../src/telephony/twilio";
 import { createMockTelephonyGateway } from "../../src/mocks/telephony";
 
 class FakeSocket implements RelaySocket {
@@ -157,7 +160,13 @@ describe("telephony adapters", () => {
   it("maps terminal Twilio statuses to explicit call outcomes", () => {
     expect(mapTwilioStatus("answered")).toEqual({ status: "in_progress" });
     expect(mapTwilioStatus("completed")).toMatchObject({ status: "completed" });
-    expect(mapTwilioStatus("no-answer")).toMatchObject({ status: "failed", endedReason: "no-answer" });
-    expect(mapTwilioStatus("busy")).toMatchObject({ status: "failed", endedReason: "busy" });
+    expect(mapTwilioStatus("no-answer")).toMatchObject({
+      status: "failed",
+      endedReason: "no-answer"
+    });
+    expect(mapTwilioStatus("busy")).toMatchObject({
+      status: "failed",
+      endedReason: "busy"
+    });
   });
 });

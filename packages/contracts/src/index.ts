@@ -173,6 +173,25 @@ export type Operation = {
   escalations: Escalation[];
 };
 
+/**
+ * Persisted read projection for operation lists and detail views. The
+ * canonical aggregate retains its source facts; this field is derived from
+ * them and indexed by storage for pipeline queries.
+ */
+export type PipelineStage =
+  | "open"
+  | "calling"
+  | "quoting"
+  | "awaiting_approval"
+  | "closing"
+  | "committed"
+  | "escalated"
+  | "failed";
+
+export type OperationReadModel = Operation & {
+  pipelineStage: PipelineStage;
+};
+
 export type OperationEvent =
   | { type: "mandate.created"; operationId: string; mandate: Mandate }
   | { type: "quote.registered"; operationId: string; quote: Quote }
