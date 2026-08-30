@@ -628,6 +628,27 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   );
 
+  app.delete(
+    "/api/agent/conversations/:conversationId",
+    async (request, response) => {
+      const context = contextFromRequest(request, response);
+      if (!context) return;
+      try {
+        const deleted = await agent.deleteConversation(
+          context,
+          request.params.conversationId
+        );
+        if (!deleted) {
+          response.status(404).json({ error: "conversation_not_found" });
+          return;
+        }
+        response.status(204).end();
+      } catch (error) {
+        storageFailure(response, error);
+      }
+    }
+  );
+
   app.post(
     "/api/agent/conversations/:conversationId/messages",
     async (request, response) => {

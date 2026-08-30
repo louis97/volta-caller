@@ -252,6 +252,49 @@ export class PostgresAgentRepository implements AgentRepository {
       : undefined;
   }
 
+  async deleteConversation(
+    context: OrganizationContext,
+    conversationId: string
+  ) {
+    await this.initialize();
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const existing = await client.query(
+        `SELECT 1 FROM agent_conversations
+         WHERE organization_id = $1 AND id = $2
+         FOR UPDATE`,
+        [context.organizationId, conversationId]
+      );
+      if (existing.rowCount !== 1) {
+        await client.query("COMMIT");
+        return false;
+      }
+      await client.query(
+        `DELETE FROM agent_actions
+         WHERE organization_id = $1 AND conversation_id = $2`,
+        [context.organizationId, conversationId]
+      );
+      await client.query(
+        `DELETE FROM agent_messages
+         WHERE organization_id = $1 AND conversation_id = $2`,
+        [context.organizationId, conversationId]
+      );
+      await client.query(
+        `DELETE FROM agent_conversations
+         WHERE organization_id = $1 AND id = $2`,
+        [context.organizationId, conversationId]
+      );
+      await client.query("COMMIT");
+      return true;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async appendMessage(context: OrganizationContext, message: AgentMessage) {
     await this.initialize();
     const result = await this.pool.query(

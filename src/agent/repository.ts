@@ -50,6 +50,10 @@ export type AgentRepository = {
     conversationId: string,
     title: string
   ): Promise<AgentConversation | undefined>;
+  deleteConversation(
+    context: OrganizationContext,
+    conversationId: string
+  ): Promise<boolean>;
   appendMessage(
     context: OrganizationContext,
     message: AgentMessage
@@ -214,6 +218,23 @@ export class MemoryAgentRepository implements AgentRepository {
     conversation.title = title;
     conversation.updatedAt = new Date().toISOString();
     return structuredClone(conversation);
+  }
+
+  async deleteConversation(
+    context: OrganizationContext,
+    conversationId: string
+  ) {
+    const conversationKey = key(context.organizationId, conversationId);
+    if (!this.conversations.delete(conversationKey)) return false;
+    for (const [actionKey, action] of this.actions) {
+      if (
+        action.organizationId === context.organizationId &&
+        action.conversationId === conversationId
+      ) {
+        this.actions.delete(actionKey);
+      }
+    }
+    return true;
   }
 
   async appendMessage(context: OrganizationContext, message: AgentMessage) {

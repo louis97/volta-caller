@@ -149,6 +149,35 @@ it("renames a durable Volta conversation", async () => {
   ]);
 });
 
+it("deletes a durable Volta conversation", async () => {
+  const app = createApp({
+    mandatesRepository: new MemoryRepository(),
+    repository: new MemoryAgentRepository(),
+    answerer: new DeterministicAgentAnswerer()
+  });
+  const createResponse = await request(app, "/api/agent/conversations", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title: "Discard this chat" })
+  });
+  const created = (await createResponse.json()) as { id: string };
+
+  const deleteResponse = await request(
+    app,
+    `/api/agent/conversations/${created.id}`,
+    { method: "DELETE" }
+  );
+  expect(deleteResponse.status).toBe(204);
+
+  const detailResponse = await request(
+    app,
+    `/api/agent/conversations/${created.id}`
+  );
+  expect(detailResponse.status).toBe(404);
+  const listResponse = await request(app, "/api/agent/conversations");
+  await expect(listResponse.json()).resolves.toEqual([]);
+});
+
 it("streams readable central-brain activity before the grounded answer", async () => {
   const app = createApp({
     mandatesRepository: new MemoryRepository(),

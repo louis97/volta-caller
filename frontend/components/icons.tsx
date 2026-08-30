@@ -67,6 +67,14 @@ export function EditIcon(props: IconProps) {
   );
 }
 
+export function TrashIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M4 7h16M10 11v6M14 11v6M9 7V4h6v3M6 7l1 14h10l1-14" />
+    </svg>
+  );
+}
+
 export function ArrowIcon(props: IconProps) {
   return (
     <svg {...base} {...props}>

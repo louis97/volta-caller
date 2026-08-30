@@ -294,6 +294,10 @@ export function createOperationalAgent({
       return repository.renameConversation(context, conversationId, title);
     },
 
+    deleteConversation(context: OrganizationContext, conversationId: string) {
+      return repository.deleteConversation(context, conversationId);
+    },
+
     async ask(
       context: OrganizationContext,
       conversationId: string,

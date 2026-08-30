@@ -1689,7 +1689,7 @@ button.ledger__row:hover {
 .brain__conversation {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 28px;
+  grid-template-columns: minmax(0, 1fr) 28px 28px;
   align-items: center;
   min-height: 54px;
   border: 1px solid transparent;
@@ -1762,8 +1762,11 @@ button.ledger__row:hover {
 }
 
 .brain__conversation:hover .brain__rename,
+.brain__conversation:hover .brain__delete,
 .brain__conversation:focus-within .brain__rename,
-.brain__conversation.is-active .brain__rename {
+.brain__conversation:focus-within .brain__delete,
+.brain__conversation.is-active .brain__rename,
+.brain__conversation.is-active .brain__delete {
   opacity: 1;
 }
 
@@ -1773,6 +1776,32 @@ button.ledger__row:hover {
 }
 
 .brain__rename svg {
+  width: 13px;
+  height: 13px;
+}
+
+.brain__delete {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--ink-3);
+  opacity: 0;
+  transition:
+    opacity 140ms ease,
+    color 140ms ease,
+    background-color 140ms ease;
+}
+
+.brain__delete:hover {
+  background: color-mix(in srgb, var(--halt) 14%, transparent);
+  color: var(--halt);
+}
+
+.brain__delete svg {
   width: 13px;
   height: 13px;
 }
@@ -1792,6 +1821,49 @@ button.ledger__row:hover {
   outline: none;
   box-shadow: 0 0 0 3px var(--signal-soft);
   font-size: 12px;
+}
+
+.brain__delete-confirm {
+  grid-column: 1 / -1;
+  padding: 9px 10px;
+  color: var(--ink-2);
+}
+
+.brain__delete-confirm p {
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.brain__delete-confirm > div {
+  display: flex;
+  gap: 6px;
+}
+
+.brain__delete-confirm button {
+  min-height: 27px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-xs);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.brain__delete-confirm .brain__delete-confirm-action {
+  border-color: color-mix(in srgb, var(--halt) 50%, var(--line));
+  background: color-mix(in srgb, var(--halt) 15%, var(--surface));
+  color: var(--halt);
+}
+
+.brain__delete-confirm small {
+  display: block;
+  margin-top: 7px;
+  color: var(--halt);
+  font-size: 10.5px;
+  line-height: 1.35;
 }
 
 .brain__history-empty {

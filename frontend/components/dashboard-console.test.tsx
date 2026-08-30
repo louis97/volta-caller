@@ -236,6 +236,62 @@ describe("DashboardConsole", () => {
     );
   });
 
+  it("deletes a conversation only after confirmation", async () => {
+    const conversation = {
+      id: "conversation-delete",
+      organizationId: "textiles-pacifico",
+      createdBy: "dispatcher",
+      title: "Discarded triage",
+      messages: [],
+      createdAt: "2026-09-01T14:00:00.000Z",
+      updatedAt: "2026-09-01T15:00:00.000Z"
+    };
+    const operation = { ...seedOperation(), pipelineStage: "open" };
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(async (input: string, init?: RequestInit) => {
+        if (input === "/api/operation") {
+          return { ok: true, json: async () => operation };
+        }
+        if (input === "/api/agent/conversations") {
+          return { ok: true, json: async () => [conversation] };
+        }
+        if (
+          input === "/api/agent/conversations/conversation-delete" &&
+          init?.method === "DELETE"
+        ) {
+          return { ok: true, status: 204 };
+        }
+        if (input === "/api/agent/conversations/conversation-delete") {
+          return { ok: true, json: async () => conversation };
+        }
+        throw new Error(`Unexpected request: ${input}`);
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<DashboardConsole />);
+
+    openNavigationItem("Volta");
+    expect(await screen.findByText("Discarded triage")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Delete Discarded triage" })
+    );
+    expect(
+      screen.getByText("Delete this chat and its pending proposals?")
+    ).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "/api/agent/conversations/conversation-delete",
+      expect.objectContaining({ method: "DELETE" })
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Delete chat" }));
+
+    await screen.findByText("What should we look at?");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/agent/conversations/conversation-delete",
+      expect.objectContaining({ method: "DELETE" })
+    );
+    expect(screen.queryByText("Discarded triage")).not.toBeInTheDocument();
+  });
+
   it("recovers conversation history after a transient read failure", async () => {
     const operation = { ...seedOperation(), pipelineStage: "open" };
     const conversation = {
