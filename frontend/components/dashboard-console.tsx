@@ -433,7 +433,10 @@ function EmptyState({
 /* --------------------------------------------------------------- shell ---- */
 
 function ThemeToggle() {
-  const [theme, setTheme] = useState<"light" | "dark">("light");
+  // Dark is the console's ground, matching the public surface. This mirrors
+  // the CSS exactly: light wins only on an explicit choice or an explicit
+  // system preference for light. "No preference" stays dark.
+  const [theme, setTheme] = useState<"light" | "dark">("dark");
 
   useEffect(() => {
     let stored: string | null = null;
@@ -446,10 +449,10 @@ function ThemeToggle() {
       setTheme(stored);
       return;
     }
-    const prefersDark =
+    const prefersLight =
       typeof window.matchMedia === "function" &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches;
-    setTheme(prefersDark ? "dark" : "light");
+      window.matchMedia("(prefers-color-scheme: light)").matches;
+    setTheme(prefersLight ? "light" : "dark");
   }, []);
 
   function apply(next: "light" | "dark") {
