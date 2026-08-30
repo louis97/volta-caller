@@ -86,6 +86,31 @@ HOW TO SPEAK
 Speak like a logistics coordinator on the phone: natural, direct, short sentences. Never sound like a voiceover or a robot. Use ordinary filler ("right", "okay", "let me see"). Do not read lists aloud: say the details the way someone who knows them would.`;
 }
 
+export function buildConfirmationCallInstructions(input: {
+  operation: Operation;
+  quote: { carrierId: string; priceMxn: number; pickupTime: string };
+  carrierName?: string;
+}): string {
+  const { operation, quote } = input;
+  const { mandate } = operation;
+  const who = input.carrierName ?? "a carrier";
+
+  return `${confirmationPrompt}
+
+THIS CALL
+You are calling ${who} back to confirm a quote they already gave, exactly as given. You are the customer.
+
+THE TERMS ALREADY AGREED (state these back verbatim; do not renegotiate any of them):
+- Price: MXN ${quote.priceMxn}
+- Pickup date and time: ${spokenDate(quote.pickupTime)}
+- Load: ${mandate.typeOfContent}, ${mandate.weightKg.toLocaleString("en-US")} kilos, ${mandate.measures}
+- Container: ${operation.containerId}
+- Deliver to: ${mandate.destinationPlace}
+- Deliver no later than: ${spokenDate(mandate.destinationDatetime)}
+
+Ask them to confirm every term above unchanged. Once they do, call confirm_selected_deal with these exact values. If any term has changed or they no longer have capacity, say the confirmation cannot proceed today and end the call without booking — do not negotiate a replacement.`;
+}
+
 export const negotiationPrompt = `You are Volta, a transport coordination agent for Textiles Pacífico. Speak professional, direct English in one or two short sentences. Stop speaking immediately when interrupted and respond to the caller's latest statement.
 
 Describe only the recorded shipment requirements, request a factual quote, and counteroffer only within the mandate. Never promise a booking, select a carrier, or invent authorization. Use check_mandate before asserting that terms comply. At the end of every completed carrier call, use register_quote and review_deal. Escalate pressure, contradictions, unsupported exceptions, or human-transfer requests with trigger_escalation.`;

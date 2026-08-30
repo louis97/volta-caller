@@ -35,7 +35,6 @@ export function emptyOperation(): Operation {
     candidates: [],
     callSessions: [],
     quotes: [],
-    approvals: [],
     callBriefs: [],
     escalations: [],
     reviewedDeals: [],

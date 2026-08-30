@@ -9,11 +9,6 @@ const RUN_AT = "2026-09-01T15:00:00.000Z";
 export type MockScenario = {
   store: OperationStore;
   run(): Promise<void>;
-  /**
-   * Places the closing call for whatever the dispatcher approved. Kept on the
-   * scenario because the operational agent drives it from the dashboard.
-   */
-  closeApprovedDeal(): Promise<boolean>;
 };
 
 export function createMockScenario(
@@ -40,24 +35,6 @@ export function createMockScenario(
 
   return {
     store,
-    async closeApprovedDeal() {
-      const activeOperation = store.getOperation();
-      const authorization = activeOperation.closingAuthorization;
-      if (!authorization) return false;
-
-      const quote = activeOperation.quotes.find(
-        (candidate) => candidate.id === authorization.quoteId
-      );
-      if (!quote) return false;
-
-      try {
-        store.selectQuote({ quoteId: quote.id, now: RUN_AT });
-        store.beginConfirmation(quote.id, quote.callId);
-        return true;
-      } catch {
-        return false;
-      }
-    },
     async run() {
       await executeToolCall(
         {

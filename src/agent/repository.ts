@@ -129,7 +129,8 @@ export function operationVersion(operation: Operation): string {
     status: operation.status,
     pipelineStage: derivePipelineStage(operation),
     quotes: operation.quotes,
-    approvals: operation.approvals,
+    reviewedDeals: operation.reviewedDeals,
+    selection: operation.selection,
     commitment: operation.commitment,
     escalations: operation.escalations
   });
@@ -450,19 +451,6 @@ export function operationCitations(operation: Operation): EvidenceCitation[] {
       })
     );
   }
-  for (const approval of operation.approvals) {
-    citations.push(
-      citation({
-        id: `approval:${approval.id}`,
-        sourceType: "approval",
-        sourceId: approval.id,
-        operationId: operation.id,
-        title: `Aprobación · ${approval.type}`,
-        excerpt: `Estado ${approval.status}; cotizaciones ${approval.quoteIds.join(", ")}; decisión ${approval.decidedBy ?? "pendiente"}.`,
-        occurredAt: approval.decidedAt ?? approval.createdAt
-      })
-    );
-  }
   for (const brief of operation.callBriefs) {
     citations.push(
       citation({
@@ -607,9 +595,7 @@ function normalize(value: string) {
 function latestOperationTime(operation: Operation) {
   const times = [
     ...operation.quotes.map((quote) => quote.createdAt),
-    ...operation.approvals.map(
-      (approval) => approval.decidedAt ?? approval.createdAt
-    ),
+    ...operation.reviewedDeals.map((deal) => deal.reviewedAt),
     ...operation.callBriefs.map((brief) => brief.createdAt),
     ...operation.escalations.map((escalation) => escalation.requestedAt),
     operation.commitment?.finalizedAt
