@@ -17,6 +17,7 @@ import { derivePipelineStage } from "../core/pipeline";
 import {
   type AgentRepository,
   type CreateConversationInput,
+  type InboundMessageClaim,
   type OrganizationContext,
   eventCitation,
   operationCitations,
@@ -469,6 +470,61 @@ export class PostgresAgentRepository implements AgentRepository {
     await this.saveAction(action);
   }
 
+  async claimInboundMessage(
+    channel: string,
+    messageId: string
+  ): Promise<InboundMessageClaim> {
+    await this.initialize();
+    const inserted = await this.pool.query(
+      `INSERT INTO inbound_message_receipts
+       (channel, message_id, status, claimed_at)
+       VALUES ($1, $2, 'processing', now())
+       ON CONFLICT (channel, message_id) DO NOTHING
+       RETURNING message_id`,
+      [channel, messageId]
+    );
+    if (inserted.rowCount === 1) return "claimed";
+
+    const reclaimed = await this.pool.query(
+      `UPDATE inbound_message_receipts
+       SET claimed_at = now()
+       WHERE channel = $1 AND message_id = $2
+         AND status = 'processing'
+         AND claimed_at < now() - interval '2 minutes'
+       RETURNING message_id`,
+      [channel, messageId]
+    );
+    if (reclaimed.rowCount === 1) return "claimed";
+
+    const existing = await this.pool.query<{ status: InboundMessageClaim }>(
+      `SELECT status FROM inbound_message_receipts
+       WHERE channel = $1 AND message_id = $2`,
+      [channel, messageId]
+    );
+    return existing.rows[0]?.status === "completed"
+      ? "completed"
+      : "processing";
+  }
+
+  async completeInboundMessage(channel: string, messageId: string) {
+    await this.initialize();
+    await this.pool.query(
+      `UPDATE inbound_message_receipts
+       SET status = 'completed', completed_at = now()
+       WHERE channel = $1 AND message_id = $2`,
+      [channel, messageId]
+    );
+  }
+
+  async releaseInboundMessage(channel: string, messageId: string) {
+    await this.initialize();
+    await this.pool.query(
+      `DELETE FROM inbound_message_receipts
+       WHERE channel = $1 AND message_id = $2 AND status = 'processing'`,
+      [channel, messageId]
+    );
+  }
+
   private initialize() {
     this.initialization ??= this.runMigrations();
     return this.initialization;
@@ -479,7 +535,8 @@ export class PostgresAgentRepository implements AgentRepository {
       "001_agent_knowledge.sql",
       "002_mandates_security.sql",
       "003_carriers_and_pipeline.sql",
-      "004_agent_action_payload.sql"
+      "004_agent_action_payload.sql",
+      "005_inbound_message_receipts.sql"
     ];
     for (const migration of migrations) {
       const sql = await readFile(

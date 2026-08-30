@@ -19,6 +19,8 @@ export type OrganizationContext = {
 
 export type CreateConversationInput = OrganizationContext & { title?: string };
 
+export type InboundMessageClaim = "claimed" | "processing" | "completed";
+
 export type AgentRepository = {
   syncOperation(organizationId: string, operation: Operation): Promise<void>;
   listOperations(context: OrganizationContext): Promise<Operation[]>;
@@ -71,6 +73,12 @@ export type AgentRepository = {
     actionId: string
   ): Promise<ProposedAction | undefined>;
   updateAction(action: ProposedAction): Promise<void>;
+  claimInboundMessage(
+    channel: string,
+    messageId: string
+  ): Promise<InboundMessageClaim>;
+  completeInboundMessage(channel: string, messageId: string): Promise<void>;
+  releaseInboundMessage(channel: string, messageId: string): Promise<void>;
 };
 
 export function operationVersion(operation: Operation): string {
@@ -97,6 +105,10 @@ export class MemoryAgentRepository implements AgentRepository {
   private readonly transcripts = new Map<string, TranscriptSegment[]>();
   private readonly actions = new Map<string, ProposedAction>();
   private readonly carriers = new Map<string, Map<string, Carrier>>();
+  private readonly inboundMessages = new Map<
+    string,
+    { status: "processing" | "completed"; claimedAt: number }
+  >();
 
   async syncOperation(organizationId: string, operation: Operation) {
     const organization = this.operations.get(organizationId) ?? new Map();
@@ -268,6 +280,34 @@ export class MemoryAgentRepository implements AgentRepository {
 
   async updateAction(action: ProposedAction) {
     await this.saveAction(action);
+  }
+
+  async claimInboundMessage(channel: string, messageId: string) {
+    const receiptKey = key(channel, messageId);
+    const receipt = this.inboundMessages.get(receiptKey);
+    if (receipt?.status === "completed") return "completed" as const;
+    if (receipt && Date.now() - receipt.claimedAt < 120_000) {
+      return "processing" as const;
+    }
+    this.inboundMessages.set(receiptKey, {
+      status: "processing",
+      claimedAt: Date.now()
+    });
+    return "claimed" as const;
+  }
+
+  async completeInboundMessage(channel: string, messageId: string) {
+    this.inboundMessages.set(key(channel, messageId), {
+      status: "completed",
+      claimedAt: Date.now()
+    });
+  }
+
+  async releaseInboundMessage(channel: string, messageId: string) {
+    const receiptKey = key(channel, messageId);
+    if (this.inboundMessages.get(receiptKey)?.status === "processing") {
+      this.inboundMessages.delete(receiptKey);
+    }
   }
 }
 
