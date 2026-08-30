@@ -214,6 +214,15 @@ export function createApp(options: CreateAppOptions = {}) {
   scenario.store.subscribe(publish);
   app.locals.operationStore = scenario.store;
   app.locals.telephonyDialled = dialled;
+  app.locals.saveTranscriptSegment = (
+    segment: import("@volta/contracts").TranscriptSegment
+  ) => {
+    void repository
+      .addTranscriptSegments([segment])
+      .catch((error: unknown) =>
+        console.error("[transcript] persist failed:", error)
+      );
+  };
   app.locals.saveCallSession = (
     session: import("@volta/contracts").CallSession
   ) => repository.saveCallSession(activeOrganizationId, session);
@@ -716,8 +725,10 @@ export function createApp(options: CreateAppOptions = {}) {
   mountTelephonyRoutes(app, {
     store: scenario.store,
     dialled,
+    organizationId: activeOrganizationId,
     onCallSessionChanged: (session) =>
-      void repository.saveCallSession(activeOrganizationId, session)
+      void repository.saveCallSession(activeOrganizationId, session),
+    onTranscriptAppended: (segment) => app.locals.saveTranscriptSegment(segment)
   });
 
   return app;
@@ -791,7 +802,8 @@ if (isMainModule(import.meta.url, process.argv[1])) {
   attachTelephonyWebSockets(server, {
     store: app.locals.operationStore,
     dialled: app.locals.telephonyDialled,
-    onCallSessionChanged: (session) => void app.locals.saveCallSession(session)
+    onCallSessionChanged: (session) => void app.locals.saveCallSession(session),
+    onTranscriptAppended: (segment) => app.locals.saveTranscriptSegment(segment)
   });
 
   const missing = missingTelephonyConfig();

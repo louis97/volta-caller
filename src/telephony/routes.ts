@@ -38,6 +38,14 @@ export type TelephonyDependencies = {
   onCallSessionChanged?: (
     session: import("@volta/contracts").CallSession
   ) => void;
+  /**
+   * Durable home for an utterance. The store keeps transcript in memory for
+   * the live floor; without this it dies with the process and the
+   * transcript_segments table stays empty.
+   */
+  onTranscriptAppended?: (
+    segment: import("@volta/contracts").TranscriptSegment
+  ) => void;
 };
 
 /**
@@ -446,7 +454,7 @@ function openMediaStreamSession(
     onTranscript: ({ speaker, text, atMs }) => {
       const call = runtime;
       if (!call) return;
-      store.appendTranscript({
+      const segment = {
         id: `seg-${call.callSid}-${atMs}`,
         organizationId: dependencies.organizationId ?? "textiles-pacifico",
         operationId: call.operationId,
@@ -456,7 +464,16 @@ function openMediaStreamSession(
         startMs: atMs,
         endMs: atMs,
         createdAt: new Date().toISOString()
-      });
+      };
+
+      store.appendTranscript(segment);
+      // Persisted separately, and never in the call's way: a database that is
+      // down must not take the conversation with it.
+      try {
+        dependencies.onTranscriptAppended?.(segment);
+      } catch (error) {
+        console.error("[transcript] persist failed:", error);
+      }
     },
     instructionsFor: (call) =>
       buildCallInstructions(store.getOperation(), call.carrierName),
