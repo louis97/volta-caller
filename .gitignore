@@ -15,3 +15,11 @@ api/migrations/
 .env.backup
 .env.*
 !.env.example
+
+# scratch files from debugging sessions
+*.tmp.ts
+*.tmp.mjs
+*.tmp.json
+*.tmp.log
+volta.log
+web.log
