@@ -10,6 +10,7 @@ import type {
 import OpenAI from "openai";
 import { zodResponsesFunction, zodTextFormat } from "openai/helpers/zod";
 import type {
+  ParsedResponseOutputItem,
   ResponseInput,
   ResponseInputItem
 } from "openai/resources/responses/responses";
@@ -43,6 +44,24 @@ export type AnswerRequest = {
 export type AgentAnswerer = {
   answer(request: AnswerRequest): Promise<GroundedAnswer>;
 };
+
+export function responseOutputAsInput(
+  output: ParsedResponseOutputItem<unknown>[]
+): ResponseInputItem[] {
+  return output.map((item) => {
+    if (item.type !== "function_call") return item as ResponseInputItem;
+    return {
+      type: item.type,
+      arguments: item.arguments,
+      call_id: item.call_id,
+      name: item.name,
+      ...(item.id !== undefined ? { id: item.id } : {}),
+      ...(item.caller !== undefined ? { caller: item.caller } : {}),
+      ...(item.namespace !== undefined ? { namespace: item.namespace } : {}),
+      ...(item.status !== undefined ? { status: item.status } : {})
+    };
+  });
+}
 
 export class OpenAIAgentAnswerer implements AgentAnswerer {
   private readonly client: OpenAI;
@@ -130,11 +149,7 @@ export class OpenAIAgentAnswerer implements AgentAnswerer {
         });
       }
       if (toolCalls >= 6) allowTools = false;
-      input = [
-        ...input,
-        ...(response.output as ResponseInputItem[]),
-        ...outputs
-      ];
+      input = [...input, ...responseOutputAsInput(response.output), ...outputs];
     }
     throw new Error("agent_tool_loop_exhausted");
   }
@@ -157,13 +172,17 @@ export class DeterministicAgentAnswerer implements AgentAnswerer {
       return result.output;
     };
 
-    await execute("search_operational_records", { query: request.question });
+    await execute("search_operational_records", {
+      query: request.question,
+      operationId: null,
+      sourceTypes: null
+    });
     if (
       /(pendiente|atenci[oó]n|attention|bloque|triage|prioridad|qu[eé] pasa|needs me)/i.test(
         request.question
       )
     ) {
-      await execute("list_attention_items", {});
+      await execute("list_attention_items", { operationId: null });
     }
     if (
       /(cotiz|quote|carrier|transportista|oferta|compar)/i.test(

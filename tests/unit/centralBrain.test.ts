@@ -68,7 +68,9 @@ describe("central brain tools", () => {
     });
 
     const result = await tool(tools, "search_operational_records").execute({
-      query: "operation"
+      query: "operation",
+      operationId: null,
+      sourceTypes: null
     });
 
     expect(result.citations.length).toBeGreaterThan(0);
@@ -145,7 +147,8 @@ describe("central brain tools", () => {
     });
     const proposal = await tool(tools, "propose_carrier_selection").execute({
       approvalId: "approval-001",
-      selectedQuoteId: "quote-approved"
+      selectedQuoteId: "quote-approved",
+      rationale: null
     });
     store.registerQuote({
       ...operation.quotes[0],
