@@ -291,10 +291,15 @@ export function mountTelephonyRoutes(
       new URL(request.originalUrl, "http://localhost")
     );
     if (!reference) {
-      console.error("[twilio] outbound TwiML rejected: call context missing");
+      // The URL is the whole diagnosis: either Twilio dropped the token or it
+      // was never appended when the call was placed.
+      console.error(
+        `[twilio] outbound TwiML rejected: no callToken in ${request.originalUrl}`
+      );
       hangUp(response);
       return;
     }
+    console.log(`[twilio] outbound TwiML accepted for ${request.originalUrl}`);
     response
       .type("text/xml")
       .send(createInboundTwiML(mediaStreamUrl(reference)));
@@ -1119,6 +1124,9 @@ function openMediaStreamSession(
   // Neither side owns the other: closing one must tear down the other, or the
   // Realtime session keeps billing after the caller hangs up.
   twilioSocket.on("close", () => {
+    console.log(
+      `[twilio] media stream closed after ${runtime ? runtime.frameCount * 20 : 0}ms of audio`
+    );
     if (runtime) {
       closeBridge(runtime.callSid);
       registry.close(runtime.streamSid);
