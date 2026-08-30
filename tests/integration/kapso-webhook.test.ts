@@ -58,6 +58,52 @@ it("answers a signed inbound Kapso WhatsApp text with the operational agent", as
   });
 });
 
+it("allows Kapso to retry an event when sending the reply fails", async () => {
+  const sendText = vi
+    .fn()
+    .mockRejectedValueOnce(new Error("kapso unavailable"))
+    .mockResolvedValueOnce(undefined);
+  const app = createApp({
+    repository: new MemoryAgentRepository(),
+    answerer: new DeterministicAgentAnswerer(),
+    kapsoMessenger: { sendText },
+    kapsoWebhookSecret: "kapso-test-secret"
+  });
+  const payload = JSON.stringify({
+    message: {
+      id: "wamid.retry-1",
+      type: "text",
+      from: "+573001112233",
+      text: { body: "Hola" },
+      kapso: { direction: "inbound" }
+    }
+  });
+  const signature = createHmac("sha256", "kapso-test-secret")
+    .update(payload)
+    .digest("hex");
+  const headers = {
+    "content-type": "application/json",
+    "x-idempotency-key": "retry-event-1",
+    "x-webhook-event": "whatsapp.message.received",
+    "x-webhook-signature": signature
+  };
+
+  const first = await request(app, "/webhooks/kapso/whatsapp", {
+    method: "POST",
+    headers,
+    body: payload
+  });
+  const second = await request(app, "/webhooks/kapso/whatsapp", {
+    method: "POST",
+    headers,
+    body: payload
+  });
+
+  expect(first.status).toBe(500);
+  expect(second.status).toBe(200);
+  expect(sendText).toHaveBeenCalledTimes(2);
+});
+
 async function request(
   app: ReturnType<typeof createApp>,
   path: string,
