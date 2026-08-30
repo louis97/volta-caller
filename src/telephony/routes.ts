@@ -297,19 +297,24 @@ export function mountTelephonyRoutes(
     const reference = callContextFromUrl(
       new URL(request.originalUrl, "http://localhost")
     );
+    // Fails open on purpose. Refusing a callback whose context cannot be read
+    // hangs up on a carrier who has already answered, and a deploy landing
+    // mid-round is enough to cause it. Serving the instance's current
+    // operation is what this did before contexts existed; the risk it guards
+    // against — speaking the wrong mandate — is real but far rarer than the
+    // calls the guard was killing.
     if (!reference) {
-      // The URL is the whole diagnosis: either Twilio dropped the token or it
-      // was never appended when the call was placed.
-      console.error(
-        `[twilio] outbound TwiML rejected: no callToken in ${request.originalUrl}`
+      console.warn(
+        `[twilio] no call context in ${request.originalUrl}; using the active operation`
       );
-      hangUp(response);
-      return;
     }
-    console.log(`[twilio] outbound TwiML accepted for ${request.originalUrl}`);
     response
       .type("text/xml")
-      .send(createInboundTwiML(mediaStreamUrl(reference)));
+      .send(
+        createInboundTwiML(
+          reference ? mediaStreamUrl(reference) : mediaStreamUrl()
+        )
+      );
   });
 
   // Inbound calls deliberately use the instance's active intake context. The
@@ -712,11 +717,19 @@ export function attachTelephonyWebSockets(
       let resolved = dependencies;
       if (pathname === MEDIA_STREAM_PATH) {
         const reference = callContextFromUrl(url);
-        const inbound = url.searchParams.get("direction") === "inbound";
         if (reference) {
-          resolved = await resolveCallDependencies(dependencies, reference);
-        } else if (!inbound) {
-          throw new Error("telephony_call_context_missing");
+          // Falls back rather than throwing: a context that cannot be read
+          // used to abort the upgrade, which drops the audio of a call the
+          // carrier already answered. The instance's active operation is a
+          // worse answer than the right one and a far better answer than
+          // silence.
+          try {
+            resolved = await resolveCallDependencies(dependencies, reference);
+          } catch (error) {
+            console.warn(
+              `[twilio] call context unresolved (${error instanceof Error ? error.message : "unknown"}); using the active operation`
+            );
+          }
         }
       }
       wss.handleUpgrade(request, socket, head, (client) => {
