@@ -115,6 +115,45 @@ export function createLiveTelephonyGateway() {
   return createTwilioGateway({ client: getTwilioClient() });
 }
 
+/**
+ * Every live call needs a CallSession, whatever opened it: the floor renders
+ * from sessions, and a transcript whose call has no session is invisible.
+ *
+ * A round dialled through fanOutCalls already created one and stamped it with
+ * the Twilio sid; this adopts it. Anything else — a single test call, an
+ * inbound call — gets one created here, keyed by the sid so the transcript
+ * lines up with it.
+ */
+function bindCallSession(
+  store: OperationStore,
+  input: {
+    callSid: string;
+    carrier?: { id: string; name: string };
+    direction: "inbound" | "outbound";
+  }
+): string {
+  const existing = store
+    .getOperation()
+    .callSessions.find((session) => session.callSid === input.callSid);
+
+  if (existing) {
+    store.updateCallSession(existing.id, { status: "in_progress" });
+    return existing.id;
+  }
+
+  store.openCallSession({
+    id: input.callSid,
+    callSid: input.callSid,
+    operationId: store.getOperation().id,
+    carrierId: input.carrier?.id,
+    driverName: input.carrier?.name,
+    direction: input.direction,
+    status: "in_progress",
+    startedAt: new Date().toISOString()
+  });
+  return input.callSid;
+}
+
 function mediaStreamUrl(): string {
   if (!env.PUBLIC_WS_URL) throw new Error("public_ws_url_missing");
   return `${env.PUBLIC_WS_URL.replace(/\/$/, "")}${MEDIA_STREAM_PATH}`;
@@ -346,6 +385,24 @@ export function mountTelephonyRoutes(
           : {}),
         record: env.TWILIO_RECORD_CALLS
       });
+      // Open the session as soon as it rings, not when audio arrives: the
+      // floor should show a line being dialled, not appear once it connects.
+      const carrier = store
+        .getOperation()
+        .candidates.find((candidate) => candidate.phone === to);
+      store.openCallSession({
+        id: session.id,
+        callSid: session.id,
+        operationId: store.getOperation().id,
+        carrierId: carrier?.id,
+        driverName: carrier?.name ?? "Test call",
+        direction: "outbound",
+        status: "pending",
+        startedAt: session.startedAt
+      });
+      if (carrier)
+        dialled.set(session.id, { id: carrier.id, name: carrier.name });
+
       response.status(201).json(session);
     } catch (error) {
       // Surface Twilio's own code: its messages alone rarely name the culprit.
@@ -472,6 +529,12 @@ function openMediaStreamSession(
           status: "in_progress",
           startedAt: runtime.startedAt
         });
+      bindCallSession(store, {
+        callSid: callSid ?? streamSid,
+        carrier,
+        direction: "outbound"
+      });
+
       console.log(
         `[call] started stream=${streamSid} call=${callSid ?? "?"} carrier=${carrier?.name ?? "unknown"}`
       );
