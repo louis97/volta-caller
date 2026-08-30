@@ -104,8 +104,23 @@ const envSchema = z
 
 export type Env = z.infer<typeof envSchema>;
 
+function withRenderPublicUrls(
+  values: NodeJS.ProcessEnv
+): NodeJS.ProcessEnv {
+  const renderExternalUrl = values.RENDER_EXTERNAL_URL?.replace(/\/$/, "");
+  if (!renderExternalUrl) return values;
+
+  return {
+    ...values,
+    PUBLIC_BASE_URL: values.PUBLIC_BASE_URL ?? renderExternalUrl,
+    PUBLIC_WS_URL:
+      values.PUBLIC_WS_URL ??
+      renderExternalUrl.replace(/^http/i, "ws")
+  };
+}
+
 export function loadEnv(values: NodeJS.ProcessEnv = process.env): Env {
-  return envSchema.parse(values);
+  return envSchema.parse(withRenderPublicUrls(values));
 }
 
 export const env = loadEnv();

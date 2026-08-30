@@ -18,6 +18,7 @@
     "typecheck": "tsc --noEmit && npm --workspace @volta/contracts run typecheck && npm --workspace frontend run typecheck",
     "test": "vitest run",
     "format:check": "prettier --check .",
+    "start:api": "tsx src/server.ts",
     "vercel-build": "node scripts/build-api.mjs"
   },
   "dependencies": {

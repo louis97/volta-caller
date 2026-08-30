@@ -1,0 +1,64 @@
+# Blueprint de Render para la API de Volta (SSE + WebSockets de telefonía).
+# Tras el primer deploy, configura VOLTA_API_URL en Vercel con la URL onrender.com.
+services:
+  - type: web
+    name: volta-api
+    runtime: node
+    plan: free
+    region: virginia
+    buildCommand: npm ci
+    startCommand: npm run start:api
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: VOLTA_MODE
+        value: live
+      - key: VOLTA_DEFAULT_ORGANIZATION_ID
+        value: textiles-pacifico
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false
+      - key: CALL_TIME_LIMIT_SECONDS
+        value: "90"
+      - key: TWILIO_RECORD_CALLS
+        value: "true"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_REALTIME_MODEL
+        sync: false
+      - key: OPENAI_REALTIME_VOICE
+        sync: false
+      - key: REALTIME_VAD_THRESHOLD
+        value: "0.9"
+      - key: REALTIME_VAD_SILENCE_MS
+        value: "700"
+      - key: REALTIME_VAD_PREFIX_MS
+        value: "300"
+      - key: REALTIME_NOISE_REDUCTION
+        value: far_field
+      - key: REALTIME_TURN_DETECTION
+        value: server_vad
+      - key: REALTIME_VAD_EAGERNESS
+        value: low
+      - key: SUPERVISOR_PHONE
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: VOLTA_INTERNAL_API_KEY
+        sync: false
+      - key: KAPSO_API_KEY
+        sync: false
+      - key: KAPSO_PHONE_NUMBER_ID
+        sync: false
+      - key: KAPSO_WEBHOOK_SECRET
+        sync: false

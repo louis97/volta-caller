@@ -39,6 +39,11 @@ async function proxy(request: Request, context: ProxyContext) {
   const responseHeaders = new Headers(upstream.headers);
   responseHeaders.delete("content-encoding");
   responseHeaders.delete("content-length");
+  if (upstream.headers.get("content-type")?.includes("text/event-stream")) {
+    responseHeaders.set("Cache-Control", "no-cache, no-transform");
+    responseHeaders.set("Connection", "keep-alive");
+    responseHeaders.set("X-Accel-Buffering", "no");
+  }
 
   return new Response(upstream.body, {
     status: upstream.status,

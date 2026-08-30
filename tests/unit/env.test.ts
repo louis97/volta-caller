@@ -16,4 +16,15 @@ describe("loadEnv", () => {
       SUPABASE_PUBLISHABLE_KEY: "sb_publishable_example"
     });
   });
+
+  it("derives public telephony URLs from Render when unset", () => {
+    expect(
+      loadEnv({
+        RENDER_EXTERNAL_URL: "https://volta-api.onrender.com/"
+      })
+    ).toMatchObject({
+      PUBLIC_BASE_URL: "https://volta-api.onrender.com",
+      PUBLIC_WS_URL: "wss://volta-api.onrender.com"
+    });
+  });
 });
