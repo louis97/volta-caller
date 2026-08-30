@@ -4,7 +4,11 @@ import type { AddressInfo } from "node:net";
 
 import { afterEach, expect, it, vi } from "vitest";
 
-import { DeterministicAgentAnswerer } from "../../src/agent/operationalAgent";
+import {
+  DeterministicAgentAnswerer,
+  type AgentAnswerer,
+  type GroundedAnswer
+} from "../../src/agent/operationalAgent";
 import { MemoryAgentRepository } from "../../src/agent/repository";
 import { createApp } from "../../src/server";
 
@@ -143,6 +147,80 @@ it("allows Kapso to retry an event when sending the reply fails", async () => {
   expect(first.status).toBe(500);
   expect(second.status).toBe(200);
   expect(sendText).toHaveBeenCalledTimes(2);
+});
+
+it("rejects a concurrent retry until the original message is completed", async () => {
+  const sendText = vi.fn().mockResolvedValue(undefined);
+  let releaseAnswer: (() => void) | undefined;
+  const answerer: AgentAnswerer = {
+    answer: vi.fn(
+      () =>
+        new Promise<GroundedAnswer>((resolve) => {
+          releaseAnswer = () =>
+            resolve({
+              answer: "Respuesta única",
+              citationIds: [],
+              evidence: [],
+              proposedActions: []
+            });
+        })
+    )
+  };
+  const app = createApp({
+    repository: new MemoryAgentRepository(),
+    answerer,
+    kapsoMessenger: { sendText },
+    kapsoWebhookSecret: "kapso-test-secret"
+  });
+  const payload = JSON.stringify({
+    message: {
+      id: "wamid.concurrent-1",
+      type: "text",
+      from: "+573001112233",
+      text: { body: "Hola" },
+      kapso: { direction: "inbound" }
+    }
+  });
+  const signature = createHmac("sha256", "kapso-test-secret")
+    .update(payload)
+    .digest("hex");
+  const headers = {
+    "content-type": "application/json",
+    "x-idempotency-key": "concurrent-event-1",
+    "x-webhook-event": "whatsapp.message.received",
+    "x-webhook-signature": signature
+  };
+
+  const original = request(app, "/webhooks/kapso/whatsapp", {
+    method: "POST",
+    headers,
+    body: payload
+  });
+  await vi.waitFor(() => expect(answerer.answer).toHaveBeenCalledTimes(1));
+
+  const concurrentRetry = await request(app, "/webhooks/kapso/whatsapp", {
+    method: "POST",
+    headers,
+    body: payload
+  });
+  expect(concurrentRetry.status).toBe(503);
+  expect(sendText).not.toHaveBeenCalled();
+
+  releaseAnswer?.();
+  expect((await original).status).toBe(200);
+
+  const completedRetry = await request(app, "/webhooks/kapso/whatsapp", {
+    method: "POST",
+    headers,
+    body: payload
+  });
+  expect(completedRetry.status).toBe(200);
+  expect(await completedRetry.json()).toMatchObject({
+    processed: 0,
+    duplicates: 1
+  });
+  expect(answerer.answer).toHaveBeenCalledTimes(1);
+  expect(sendText).toHaveBeenCalledTimes(1);
 });
 
 async function request(

@@ -28,6 +28,23 @@ const groundedAnswerSchema = z.object({
   citationIds: z.array(z.string()).max(12)
 });
 
+export const CENTRAL_BRAIN_INSTRUCTIONS = [
+  "Eres Volta, el central brain operacional de una empresa de logística.",
+  "Responde en el idioma de la pregunta y usa exclusivamente hechos devueltos por las tools.",
+  "Antes de responder una pregunta factual, llama una o más tools de lectura.",
+  "No inventes ubicación, estado, llamadas, negociaciones ni acciones.",
+  "Cuando un dato no exista, dilo de forma directa.",
+  "Cada afirmación factual debe respaldarse con los IDs de evidencia exactos.",
+  "Las tools propose_* solo preparan acciones; nunca digas que una acción fue ejecutada.",
+  "Cuando el usuario esté creando un mandato, recoge exactamente estos ocho campos del contrato CreateMandateRequest: presupuesto máximo en MXN, fecha y hora de entrega, lugar de entrega, tipo de contenido, peso en kg, medidas, dirección de recolección, y fecha y hora de recolección.",
+  "Para un mandato no exijas BL, booking, DO, liberación, naviera, NIT, contactos, slot, seguro, devolución de vacío ni datos adicionales; esos datos no forman parte del contrato vigente.",
+  "Conserva los valores ya confirmados en el historial y pregunta solo por campos faltantes o ambiguos, máximo tres por respuesta. Nunca repitas una pregunta ya resuelta.",
+  "Si los ocho campos están completos, resume el mandato con esos ocho valores. No afirmes que lo creaste o que pediste cotizaciones porque todavía no tienes una tool para crear mandatos.",
+  "Sé concreto y útil para un dispatcher."
+].join("\n");
+
+export const MAX_CONVERSATION_HISTORY = 20;
+
 export type GroundedAnswer = z.infer<typeof groundedAnswerSchema> & {
   evidence: EvidenceCitation[];
   proposedActions: ProposedAction[];
@@ -85,10 +102,12 @@ export class OpenAIAgentAnswerer implements AgentAnswerer {
 
   async answer(request: AnswerRequest): Promise<GroundedAnswer> {
     const definitions = createResponsesToolDefinitions(request.tools);
-    let input: ResponseInput = request.history.slice(-8).map((message) => ({
-      role: message.role,
-      content: message.content
-    }));
+    let input: ResponseInput = request.history
+      .slice(-MAX_CONVERSATION_HISTORY)
+      .map((message) => ({
+        role: message.role,
+        content: message.content
+      }));
     const evidence: EvidenceCitation[] = [];
     const proposedActions: ProposedAction[] = [];
     let toolCalls = 0;
@@ -99,16 +118,7 @@ export class OpenAIAgentAnswerer implements AgentAnswerer {
         model: this.model,
         store: false,
         include: ["reasoning.encrypted_content"],
-        instructions: [
-          "Eres Volta, el central brain operacional de una empresa de logística.",
-          "Responde en el idioma de la pregunta y usa exclusivamente hechos devueltos por las tools.",
-          "Antes de responder una pregunta factual, llama una o más tools de lectura.",
-          "No inventes ubicación, estado, llamadas, negociaciones ni acciones.",
-          "Cuando un dato no exista, dilo de forma directa.",
-          "Cada afirmación factual debe respaldarse con los IDs de evidencia exactos.",
-          "Las tools propose_* solo preparan acciones; nunca digas que una acción fue ejecutada.",
-          "Sé concreto y útil para un dispatcher."
-        ].join("\n"),
+        instructions: CENTRAL_BRAIN_INSTRUCTIONS,
         input,
         parallel_tool_calls: false,
         tool_choice: allowTools ? "auto" : "none",

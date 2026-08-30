@@ -220,7 +220,6 @@ export function createApp(options: CreateAppOptions = {}) {
       : undefined);
   const kapsoWebhookSecret =
     options.kapsoWebhookSecret ?? env.KAPSO_WEBHOOK_SECRET;
-  const processedKapsoEvents = new Set<string>();
 
   app.post(
     "/webhooks/kapso/whatsapp",
@@ -240,10 +239,6 @@ export function createApp(options: CreateAppOptions = {}) {
         return;
       }
       const idempotencyKey = request.header("x-idempotency-key");
-      if (idempotencyKey && processedKapsoEvents.has(idempotencyKey)) {
-        response.status(200).json({ duplicate: true });
-        return;
-      }
       let payload: KapsoWebhookPayload;
       try {
         payload = JSON.parse(
@@ -254,28 +249,73 @@ export function createApp(options: CreateAppOptions = {}) {
         return;
       }
       try {
-        for (const item of receivedKapsoMessages(payload)) {
+        let processed = 0;
+        let completedDuplicates = 0;
+        let processingDuplicates = 0;
+        const items = receivedKapsoMessages(payload);
+        for (const [index, item] of items.entries()) {
           const inbound = inboundKapsoMessage(item);
           if (!inbound) continue;
+          const receiptId =
+            inbound.id ??
+            (idempotencyKey ? `${idempotencyKey}:${index}` : undefined);
+          if (receiptId) {
+            const claim = await repository.claimInboundMessage(
+              "kapso-whatsapp",
+              receiptId
+            );
+            if (claim === "completed") {
+              completedDuplicates += 1;
+              continue;
+            }
+            if (claim === "processing") {
+              processingDuplicates += 1;
+              continue;
+            }
+          }
           const context: OrganizationContext = {
             organizationId: env.VOLTA_DEFAULT_ORGANIZATION_ID,
             userId: `whatsapp:${inbound.from}`
           };
-          const title = `WhatsApp · ${inbound.from}`;
-          const conversation =
-            (await agent.listConversations(context)).find(
-              (item) => item.title === title
-            ) ?? (await agent.createConversation(context, title));
-          const reply = inbound.content
-            ? (await agent.ask(context, conversation.id, inbound.content))
-                .content
-            : inbound.type === "audio"
-              ? "No pude transcribir ese audio. Intenta enviarlo de nuevo o escríbeme tu consulta."
-              : "Por ahora puedo responder mensajes de texto o audios que Kapso pueda transcribir.";
-          await kapsoMessenger.sendText({ to: inbound.from, text: reply });
+          try {
+            const title = `WhatsApp · ${inbound.from}`;
+            const conversation =
+              (await agent.listConversations(context)).find(
+                (item) => item.title === title
+              ) ?? (await agent.createConversation(context, title));
+            const reply = inbound.content
+              ? (await agent.ask(context, conversation.id, inbound.content))
+                  .content
+              : inbound.type === "audio"
+                ? "No pude transcribir ese audio. Intenta enviarlo de nuevo o escríbeme tu consulta."
+                : "Por ahora puedo responder mensajes de texto o audios que Kapso pueda transcribir.";
+            await kapsoMessenger.sendText({ to: inbound.from, text: reply });
+            if (receiptId) {
+              await repository.completeInboundMessage(
+                "kapso-whatsapp",
+                receiptId
+              );
+            }
+            processed += 1;
+          } catch (error) {
+            if (receiptId) {
+              await repository.releaseInboundMessage(
+                "kapso-whatsapp",
+                receiptId
+              );
+            }
+            throw error;
+          }
         }
-        if (idempotencyKey) processedKapsoEvents.add(idempotencyKey);
-        response.status(200).json({ received: true });
+        if (processingDuplicates > 0) {
+          response.status(503).json({ processing: true });
+          return;
+        }
+        response.status(200).json({
+          received: true,
+          processed,
+          duplicates: completedDuplicates
+        });
       } catch (error) {
         console.error("Kapso WhatsApp webhook failed", error);
         response.status(500).json({ error: "kapso_webhook_processing_failed" });
