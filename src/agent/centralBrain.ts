@@ -279,6 +279,30 @@ export function createCentralBrainTools({
       async execute(argumentsValue) {
         const parsed = mandateSchema.safeParse(argumentsValue);
         if (!parsed.success) return invalidArguments();
+        const conversation = await repository.getConversation(
+          context,
+          conversationId
+        );
+        if (
+          !conversation ||
+          !conversation.messages.some(
+            (message) =>
+              message.role === "user" &&
+              confirmsNumericMxnBudget(
+                message.content,
+                parsed.data.budget_cap
+              )
+          )
+        ) {
+          return {
+            output: {
+              error: "budget_not_confirmed",
+              message:
+                "Ask the user for an explicit numeric budget in MXN before proposing the mandate."
+            },
+            citations: []
+          };
+        }
         const operation = getCurrentOperation();
         const payload: CreateMandateRequest = parsed.data;
         const action: ProposedAction = {
@@ -416,6 +440,32 @@ export function createCentralBrainTools({
       }
     }
   ];
+}
+
+function confirmsNumericMxnBudget(content: string, expected: number) {
+  const normalized = content
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  const currency = "(?:mxn|pesos?\\s+mexicanos?)";
+  const patterns = [
+    new RegExp(`${currency}\\s*\\$?\\s*(\\d[\\d.,\\s]*)`, "g"),
+    new RegExp(`\\$?\\s*(\\d[\\d.,\\s]*)\\s*${currency}`, "g")
+  ];
+  return patterns.some((pattern) =>
+    [...normalized.matchAll(pattern)].some((match) => {
+      const amount = match[1]?.replace(/\s/g, "");
+      if (!amount) return false;
+      const interpretations = [
+        amount,
+        amount.replace(/,/g, ""),
+        amount.replace(/\./g, ""),
+        amount.replace(/,/g, "."),
+        amount.replace(/[.,]/g, "")
+      ];
+      return interpretations.some((value) => Number(value) === expected);
+    })
+  );
 }
 
 function operationSnapshot(operation: Operation) {

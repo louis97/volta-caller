@@ -146,7 +146,8 @@ it("approves a mandate with native WhatsApp buttons without calling the model ag
     id: "wamid.mandate-proposal",
     from: "+573001112233",
     type: "text",
-    content: "Crea el mandato con los datos completos"
+    content:
+      "Crea el mandato con los datos completos y presupuesto máximo de 40000000 MXN"
   });
   expect(proposal.status).toBe(200);
   expect(sendInteractiveButtons).toHaveBeenLastCalledWith({

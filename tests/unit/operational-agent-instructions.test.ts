@@ -27,6 +27,9 @@ describe("central brain mandate intake", () => {
     expect(CENTRAL_BRAIN_INSTRUCTIONS).toContain(
       "No conviertas monedas silenciosamente"
     );
+    expect(CENTRAL_BRAIN_INSTRUCTIONS).toContain(
+      "Nunca uses un valor mínimo, estimado o de relleno"
+    );
     expect(CENTRAL_BRAIN_INSTRUCTIONS).toContain("America/Bogota (-05:00)");
   });
 

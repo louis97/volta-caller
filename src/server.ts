@@ -239,6 +239,12 @@ function whatsappDecisionReply(action: ProposedAction) {
   if (action.status === "expired") {
     return "La propuesta venció porque la operación cambió. Pídeme generar una nueva propuesta.";
   }
+  if (action.failureReason === "mandate_saved_activation_failed") {
+    return "El mandato sí quedó guardado, pero no pude activar la ronda de llamadas. No lo vuelvas a crear: revisa la operación en Volta para reanudarla.";
+  }
+  if (action.type === "create_mandate" && action.status === "failed") {
+    return "No pude confirmar que el mandato aprobado quedara completo. No lo dupliques; revisa Mandates en Volta antes de intentarlo de nuevo.";
+  }
   return "No pude ejecutar la acción aprobada. Revisa el detalle en Volta antes de intentarlo de nuevo.";
 }
 
@@ -696,50 +702,58 @@ export function createApp(options: CreateAppOptions = {}) {
     input: unknown
   ) => {
     const mandate = await persistMandate(mandatesRepository, input);
-    activeOrganizationId = context.organizationId;
-    const carriers = await repository.listCarriers(context.organizationId);
-    const operation = createOperationFromMandate(
-      mandate,
-      `operation-${mandate.id}`
-    );
-    const active = carriers
-      .filter((carrier) => carrier.active)
-      .map(({ id, name, phone }) => ({ id, name, phone }));
-    if (active.length === 0) {
-      console.warn(
-        "[mandates] no active carriers in the directory; falling back to the seeded pool"
+    try {
+      activeOrganizationId = context.organizationId;
+      const carriers = await repository.listCarriers(context.organizationId);
+      const operation = createOperationFromMandate(
+        mandate,
+        `operation-${mandate.id}`
       );
+      const active = carriers
+        .filter((carrier) => carrier.active)
+        .map(({ id, name, phone }) => ({ id, name, phone }));
+      if (active.length === 0) {
+        console.warn(
+          "[mandates] no active carriers in the directory; falling back to the seeded pool"
+        );
+      }
+      operation.candidates =
+        active.length > 0 ? active : seedOperation().candidates;
+      scenario.store.replaceOperation(operation);
+      await persistCurrentOperation(context);
+      const telephony = telephonyContext(scenario.store);
+      telephony.resetAuction();
+      console.log(
+        `[mandates] dialling ${operation.candidates.length}: ${operation.candidates
+          .map((candidate) => candidate.name)
+          .join(", ")}`
+      );
+      await fanOutCalls({
+        store: scenario.store,
+        mode: env.VOLTA_MODE,
+        publicBaseUrl: env.PUBLIC_BASE_URL,
+        from: env.TWILIO_FROM_NUMBER,
+        gateway:
+          env.VOLTA_MODE === "live" ? createLiveTelephonyGateway() : undefined,
+        timeLimitSeconds: env.CALL_TIME_LIMIT_SECONDS,
+        record: env.TWILIO_RECORD_CALLS,
+        detectAnsweringMachine: true,
+        onDialled: (callId, carrier) => {
+          telephony.dialled.set(callId, carrier);
+          telephony.auction.startCall(carrier.id, callId);
+        },
+        onRoundReviewed: publishQuotesReady
+      });
+      await persistCallSessions(context);
+      await persistCurrentOperation(context);
+      return scenario.store.getOperation();
+    } catch (error) {
+      console.error("Mandate was saved but activation failed", {
+        mandateId: mandate.id,
+        error
+      });
+      throw new Error("mandate_saved_activation_failed", { cause: error });
     }
-    operation.candidates =
-      active.length > 0 ? active : seedOperation().candidates;
-    scenario.store.replaceOperation(operation);
-    await persistCurrentOperation(context);
-    const telephony = telephonyContext(scenario.store);
-    telephony.resetAuction();
-    console.log(
-      `[mandates] dialling ${operation.candidates.length}: ${operation.candidates
-        .map((candidate) => candidate.name)
-        .join(", ")}`
-    );
-    await fanOutCalls({
-      store: scenario.store,
-      mode: env.VOLTA_MODE,
-      publicBaseUrl: env.PUBLIC_BASE_URL,
-      from: env.TWILIO_FROM_NUMBER,
-      gateway:
-        env.VOLTA_MODE === "live" ? createLiveTelephonyGateway() : undefined,
-      timeLimitSeconds: env.CALL_TIME_LIMIT_SECONDS,
-      record: env.TWILIO_RECORD_CALLS,
-      detectAnsweringMachine: true,
-      onDialled: (callId, carrier) => {
-        telephony.dialled.set(callId, carrier);
-        telephony.auction.startCall(carrier.id, callId);
-      },
-      onRoundReviewed: publishQuotesReady
-    });
-    await persistCallSessions(context);
-    await persistCurrentOperation(context);
-    return scenario.store.getOperation();
   };
 
   const agent = createOperationalAgent({

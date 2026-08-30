@@ -232,6 +232,15 @@ describe("central brain tools", () => {
     const repository = new MemoryAgentRepository();
     await repository.syncOperation(context.organizationId, operation);
     const conversation = await repository.createConversation(context);
+    await repository.appendMessage(context, {
+      id: "message-budget-confirmed",
+      conversationId: conversation.id,
+      role: "user",
+      content: "Confirmo un presupuesto máximo de 40000000 MXN.",
+      citations: [],
+      proposedActions: [],
+      createdAt: NOW
+    });
     const tools = createCentralBrainTools({
       context,
       conversationId: conversation.id,
@@ -280,6 +289,43 @@ describe("central brain tools", () => {
 
     expect(decided.status).toBe("executed");
     expect(executedPayload).toEqual(mandate);
+  });
+
+  it("rejects a model-invented minimum budget without user evidence", async () => {
+    const operation = quoteRound();
+    const repository = new MemoryAgentRepository();
+    const conversation = await repository.createConversation(context);
+    await repository.appendMessage(context, {
+      id: "message-without-budget",
+      conversationId: conversation.id,
+      role: "user",
+      content:
+        "Mueve mañana el contenedor de Santa Marta a Medellín; todavía no te he dado presupuesto.",
+      citations: [],
+      proposedActions: [],
+      createdAt: NOW
+    });
+    const tools = createCentralBrainTools({
+      context,
+      conversationId: conversation.id,
+      repository,
+      getCurrentOperation: () => operation,
+      now: () => NOW
+    });
+
+    const result = await tool(tools, "propose_create_mandate").execute({
+      budget_cap: 1,
+      destination_datetime: "2026-09-01T17:00:00-05:00",
+      destination_place: "Medellín",
+      type_of_content: "Carga general",
+      weight: 40000,
+      measures: "20 m x 20 m x 10 m",
+      pickup_address: "Puerto de Santa Marta",
+      pickup_datetime: "2026-08-31T08:00:00-05:00"
+    });
+
+    expect(result.output).toMatchObject({ error: "budget_not_confirmed" });
+    expect(result.proposedAction).toBeUndefined();
   });
 
   it("rejects ambiguous or inverted mandate dates before proposing", async () => {

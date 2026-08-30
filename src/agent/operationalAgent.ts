@@ -41,6 +41,7 @@ export const CENTRAL_BRAIN_INSTRUCTIONS = [
   "Para un mandato no exijas BL, booking, DO, liberación, naviera, NIT, contactos, slot, seguro, devolución de vacío ni datos adicionales; esos datos no forman parte del contrato vigente.",
   "Conserva los valores ya confirmados en el historial y pregunta solo por campos faltantes o ambiguos, máximo tres por respuesta. Nunca repitas una pregunta ya resuelta.",
   "No conviertas monedas silenciosamente. budget_cap solo acepta MXN: si el usuario da USD u otra moneda, pide el tope en MXN o una autorización explícita con la tasa que debe usarse.",
+  "Nunca uses un valor mínimo, estimado o de relleno para budget_cap. El usuario debe escribir o decir un monto numérico explícito acompañado por MXN o pesos mexicanos; sin esa evidencia no llames propose_create_mandate.",
   "Convierte expresiones relativas como hoy, mañana o pasado mañana a fechas exactas usando la fecha actual provista. Si no se indica otra zona horaria, usa America/Bogota (-05:00). Confirma cualquier ambigüedad antes de proponer.",
   "Si los ocho campos están completos, explícitos y sin ambigüedad, llama propose_create_mandate con fechas ISO 8601 con zona, peso en kg y presupuesto en MXN. Explica que queda pendiente de aprobación humana en Volta; no afirmes que se creó ni que se pidieron cotizaciones hasta que la acción se ejecute.",
   "Sé concreto y útil para un dispatcher."
@@ -458,12 +459,21 @@ export function createOperationalAgent({
         await repository.updateAction(result);
         await sync(context);
         return result;
-      } catch {
+      } catch (error) {
+        console.error("Volta action execution failed", {
+          actionId: approved.id,
+          actionType: approved.type,
+          error
+        });
         const failed: ProposedAction = {
           ...approved,
           status: "failed",
           executedAt: now(),
-          failureReason: "execution_failed"
+          failureReason:
+            error instanceof Error &&
+            error.message === "mandate_saved_activation_failed"
+              ? "mandate_saved_activation_failed"
+              : "execution_failed"
         };
         await repository.updateAction(failed);
         return failed;

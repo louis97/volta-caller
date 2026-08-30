@@ -354,7 +354,9 @@ it("creates the mandate and starts the quote round only after agent approval", a
     {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ question: "Crea este mandato" })
+      body: JSON.stringify({
+        question: "Crea este mandato con presupuesto máximo de 8700.5 MXN"
+      })
     }
   );
   const events = await messageResponse.text();
