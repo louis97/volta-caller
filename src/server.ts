@@ -3,10 +3,12 @@ import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import express, { type Request, type Response } from "express";
 import type {
+  AgentConversation,
   Carrier,
   OperationEvent,
   Operation,
   OperationReadModel,
+  ProposedAction,
   ShipmentEvent,
   TranscriptSegment
 } from "@volta/contracts";
@@ -53,6 +55,7 @@ import {
   inboundKapsoMessage,
   receivedKapsoMessages,
   verifyKapsoSignature,
+  whatsappActionDecision,
   type KapsoMessenger,
   type KapsoWebhookPayload
 } from "./whatsapp/kapso";
@@ -163,6 +166,64 @@ function writeEvent(response: Response, event: OperationEvent): void {
 function writeAgentEvent(response: Response, event: string, data: unknown) {
   response.write(`event: ${event}\n`);
   response.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+async function whatsappPendingActions(
+  repository: AgentRepository,
+  context: OrganizationContext,
+  conversation: AgentConversation,
+  reference?: string
+) {
+  const actionIds = [
+    ...new Set(
+      conversation.messages.flatMap((message) =>
+        message.proposedActions.map((action) => action.id)
+      )
+    )
+  ];
+  const actions = await Promise.all(
+    actionIds.map((actionId) => repository.getAction(context, actionId))
+  );
+  const normalizedReference = reference?.toLowerCase();
+  return actions.filter(
+    (action): action is ProposedAction =>
+      action !== undefined &&
+      action.status === "pending" &&
+      action.conversationId === conversation.id &&
+      action.requestedBy === context.userId &&
+      (!normalizedReference ||
+        action.id.toLowerCase().startsWith(normalizedReference))
+  );
+}
+
+function whatsappApprovalInstructions(actions: ProposedAction[]) {
+  if (actions.length === 0) return undefined;
+  if (actions.length === 1) {
+    return `Para ejecutarla desde WhatsApp responde *APROBAR*. Para descartarla, responde *RECHAZAR*. Código: ${actions[0].id.slice(0, 8)}.`;
+  }
+  return [
+    "Hay varias acciones pendientes. Responde APROBAR o RECHAZAR seguido del código:",
+    ...actions.map((action) => `• ${action.id.slice(0, 8)} — ${action.summary}`)
+  ].join("\n");
+}
+
+function whatsappDecisionReply(action: ProposedAction) {
+  if (action.status === "declined") {
+    return "Acción rechazada. No se realizaron cambios operativos.";
+  }
+  if (action.status === "executed") {
+    if (action.type === "create_mandate") {
+      return "✅ Mandato aprobado y creado. Ya inicié la ronda de cotizaciones con los transportistas activos.";
+    }
+    if (action.type === "resolve_carrier_selection") {
+      return "✅ Selección de transportista aprobada y ejecutada.";
+    }
+    return "✅ Llamada de cierre aprobada y ejecutada.";
+  }
+  if (action.status === "expired") {
+    return "La propuesta venció porque la operación cambió. Pídeme generar una nueva propuesta.";
+  }
+  return "No pude ejecutar la acción aprobada. Revisa el detalle en Volta antes de intentarlo de nuevo.";
 }
 
 export function createApp(options: CreateAppOptions = {}) {
@@ -281,14 +342,77 @@ export function createApp(options: CreateAppOptions = {}) {
             const title = `WhatsApp · ${inbound.from}`;
             const conversation =
               (await agent.listConversations(context)).find(
-                (item) => item.title === title
+                (item) =>
+                  item.title === title && item.createdBy === context.userId
               ) ?? (await agent.createConversation(context, title));
-            const reply = inbound.content
-              ? (await agent.ask(context, conversation.id, inbound.content))
-                  .content
-              : inbound.type === "audio"
-                ? "No pude transcribir ese audio. Intenta enviarlo de nuevo o escríbeme tu consulta."
-                : "Por ahora puedo responder mensajes de texto o audios que Kapso pueda transcribir.";
+            const decision = whatsappActionDecision(inbound.content);
+            let reply: string;
+            if (decision && inbound.content) {
+              const currentConversation = await agent.getConversation(
+                context,
+                conversation.id
+              );
+              if (!currentConversation)
+                throw new Error("conversation_not_found");
+              const pendingActions = await whatsappPendingActions(
+                repository,
+                context,
+                currentConversation,
+                decision.reference
+              );
+              await agent.recordChannelMessage(
+                context,
+                conversation.id,
+                "user",
+                inbound.content
+              );
+              if (pendingActions.length !== 1) {
+                reply =
+                  pendingActions.length === 0
+                    ? "No encontré una acción pendiente de este chat que coincida. Revisa la propuesta o escribe tu solicitud de nuevo."
+                    : "Hay varias acciones pendientes. Responde APROBAR seguido del código mostrado en la propuesta, por ejemplo: APROBAR 1a2b3c4d.";
+              } else {
+                const action = await agent.decideAction(
+                  context,
+                  pendingActions[0].id,
+                  decision.decision
+                );
+                reply = whatsappDecisionReply(action);
+              }
+              await agent.recordChannelMessage(
+                context,
+                conversation.id,
+                "assistant",
+                reply
+              );
+            } else if (inbound.content) {
+              const message = await agent.ask(
+                context,
+                conversation.id,
+                inbound.content
+              );
+              const instructions = whatsappApprovalInstructions(
+                message.proposedActions.filter(
+                  (action) => action.status === "pending"
+                )
+              );
+              if (instructions) {
+                await agent.recordChannelMessage(
+                  context,
+                  conversation.id,
+                  "assistant",
+                  instructions
+                );
+              }
+              reply = instructions
+                ? `${message.content}\n\n${instructions}`
+                : message.content;
+            } else {
+              reply =
+                inbound.type === "audio"
+                  ? "No pude transcribir ese audio. Intenta enviarlo de nuevo o escríbeme tu consulta."
+                  : "Por ahora puedo responder mensajes de texto o audios que Kapso pueda transcribir.";
+            }
             await kapsoMessenger.sendText({ to: inbound.from, text: reply });
             if (receiptId) {
               await repository.completeInboundMessage(
