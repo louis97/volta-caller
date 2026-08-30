@@ -141,3 +141,33 @@ describe("get_leverage tool", () => {
     expect(result).toEqual({ outcome: "leverage", quotes: [] });
   });
 });
+
+describe("telephony context", () => {
+  it("gives every leg of a round the same auction and registry", async () => {
+    const { telephonyContext } = await import("../../src/telephony/routes");
+    const { seedOperation } = await import("../../src/core/seed");
+    const { createOperationStore } = await import("../../src/core/state");
+
+    const store = createOperationStore(seedOperation());
+
+    // The routes and the WebSocket handler are wired separately; both resolve
+    // their context from the store they were handed.
+    const fromRoutes = telephonyContext(store);
+    const fromSocket = telephonyContext(store);
+
+    expect(fromSocket).toBe(fromRoutes);
+    expect(fromSocket.auction).toBe(fromRoutes.auction);
+    expect(fromSocket.registry).toBe(fromRoutes.registry);
+  });
+
+  it("keeps separate operations isolated from each other", async () => {
+    const { telephonyContext } = await import("../../src/telephony/routes");
+    const { seedOperation } = await import("../../src/core/seed");
+    const { createOperationStore } = await import("../../src/core/state");
+
+    const first = telephonyContext(createOperationStore(seedOperation()));
+    const second = telephonyContext(createOperationStore(seedOperation()));
+
+    expect(second).not.toBe(first);
+  });
+});

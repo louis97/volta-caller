@@ -13,7 +13,12 @@ import { MockSmsGateway } from "../mocks/sms";
 import { auctionFromOperation, type Auction } from "./auction";
 import { fanOutCalls } from "./orchestrator";
 import { attachMediaStreamRelay } from "./mediaStream";
-import { callClockMs, createCallRegistry, type CallRuntime } from "./registry";
+import {
+  callClockMs,
+  createCallRegistry,
+  type CallRegistry,
+  type CallRuntime
+} from "./registry";
 import {
   createRealtimeSocket,
   toRelaySocket,
@@ -36,6 +41,51 @@ export type TelephonyDependencies = {
     session: import("@volta/contracts").CallSession
   ) => void;
 };
+
+/**
+ * The auction and the call registry are the shared context of a negotiation
+ * round: every leg must read and write the same one, or a quote taken on one
+ * call is invisible to the agent negotiating on another and get_leverage
+ * silently returns nothing.
+ *
+ * Keyed by store rather than passed around, because the routes and the
+ * WebSocket handler are wired separately and nothing at those call sites can
+ * enforce that they were handed the same instance.
+ */
+export type TelephonyContext = {
+  registry: CallRegistry;
+  dialled: Map<string, { id: string; name: string }>;
+  auction: Auction;
+  /** Starts a fresh round; quotes from the previous one stop counting. */
+  resetAuction(): void;
+};
+
+const contextsByStore = new WeakMap<OperationStore, TelephonyContext>();
+
+export function telephonyContext(store: OperationStore): TelephonyContext {
+  const existing = contextsByStore.get(store);
+  if (existing) return existing;
+
+  const context: TelephonyContext = {
+    registry: createCallRegistry(),
+    dialled: new Map(),
+    auction: auctionFromOperation(store.getOperation()),
+    resetAuction() {
+      context.auction = auctionFromOperation(store.getOperation());
+      context.dialled.clear();
+    }
+  };
+
+  // Subscribed once per store, so a quote is recorded exactly once however
+  // many calls are in flight.
+  store.subscribe((event) => {
+    if (event.type === "quote.registered")
+      context.auction.recordQuote(event.quote);
+  });
+
+  contextsByStore.set(store, context);
+  return context;
+}
 
 function getTwilioClient(): TwilioCallClient {
   if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN) {
@@ -61,12 +111,9 @@ export function mountTelephonyRoutes(
   dependencies: TelephonyDependencies
 ): void {
   const { store } = dependencies;
-  const registry = createCallRegistry();
-  let auction: Auction = auctionFromOperation(store.getOperation());
-  const dialled =
-    dependencies.dialled ?? new Map<string, { id: string; name: string }>();
+  const context = telephonyContext(store);
+  const dialled = dependencies.dialled ?? context.dialled;
   store.subscribe((event) => {
-    if (event.type === "quote.registered") auction.recordQuote(event.quote);
     if (event.type === "call.started" || event.type === "call.updated")
       dependencies.onCallSessionChanged?.(event.callSession);
   });
@@ -121,7 +168,7 @@ export function mountTelephonyRoutes(
    * which is what makes this a market rather than three separate calls.
    */
   app.post("/api/calls/negotiate", jsonBody, async (_request, response) => {
-    auction = auctionFromOperation(store.getOperation());
+    context.resetAuction();
     dialled.clear();
     await fanOutCalls({
       store,
@@ -132,18 +179,22 @@ export function mountTelephonyRoutes(
         env.VOLTA_MODE === "live" ? createLiveTelephonyGateway() : undefined,
       onDialled: (callId, carrier) => {
         dialled.set(callId, carrier);
-        auction.startCall(carrier.id, callId);
+        context.auction.startCall(carrier.id, callId);
       }
     });
     response
       .status(202)
-      .json({ status: auction.status(), operation: store.getOperation() });
+      .json({
+        status: context.auction.status(),
+        operation: store.getOperation()
+      });
   });
 
   app.get("/api/auction", (_request, response) => {
-    response
-      .status(200)
-      .json({ status: auction.status(), standings: auction.standings() });
+    response.status(200).json({
+      status: context.auction.status(),
+      standings: context.auction.standings()
+    });
   });
 
   app.post("/twiml/status", twiml, (request, response) => {
@@ -243,7 +294,8 @@ function openMediaStreamSession(
   dependencies: TelephonyDependencies
 ): void {
   const { store } = dependencies;
-  const registry = createCallRegistry();
+  const context = telephonyContext(store);
+  const registry = context.registry;
   const dialled =
     dependencies.dialled ??
     new Map(
@@ -264,10 +316,6 @@ function openMediaStreamSession(
           { id: session.carrierId, name: session.driverName }
         ])
     );
-  let auction = auctionFromOperation(store.getOperation());
-  store.subscribe((event) => {
-    if (event.type === "quote.registered") auction.recordQuote(event.quote);
-  });
   if (!env.OPENAI_API_KEY) {
     console.error("[session] OPENAI_API_KEY missing; dropping the call");
     twilioSocket.close();
@@ -340,7 +388,9 @@ function openMediaStreamSession(
         // Only quotes other carriers actually gave. Nothing here lets the
         // agent cite a price that was never offered.
         leverage: () =>
-          current?.carrierId ? auction.leverageFor(current.carrierId) : [],
+          current?.carrierId
+            ? context.auction.leverageFor(current.carrierId)
+            : [],
         callContext: current
           ? {
               callId: current.callSid,
