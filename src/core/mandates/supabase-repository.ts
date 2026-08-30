@@ -15,7 +15,10 @@ export type SupabaseMandatesClient = {
     };
     select(): {
       eq(column: "id", id: string): { maybeSingle(): Promise<SupabaseResult> };
-      order(column: "created_at", options: { ascending: false }): Promise<SupabaseResult>;
+      order(
+        column: "created_at",
+        options: { ascending: false }
+      ): Promise<SupabaseResult>;
     };
   };
 };
@@ -25,11 +28,19 @@ export function createSupabaseMandatesRepository(
 ): MandatesRepository {
   return {
     async create(input) {
-      const result = await client.from("mandates").insert(input).select().single();
+      const result = await client
+        .from("mandates")
+        .insert(input)
+        .select()
+        .single();
       return readRecord(result);
     },
     async findById(id) {
-      const result = await client.from("mandates").select().eq("id", id).maybeSingle();
+      const result = await client
+        .from("mandates")
+        .select()
+        .eq("id", id)
+        .maybeSingle();
       if (result.error) throw new Error(result.error.message);
       return result.data === null ? null : mapRecord(result.data);
     },
@@ -39,7 +50,8 @@ export function createSupabaseMandatesRepository(
         .select()
         .order("created_at", { ascending: false });
       if (result.error) throw new Error(result.error.message);
-      if (!Array.isArray(result.data)) throw new Error("Invalid mandates response");
+      if (!Array.isArray(result.data))
+        throw new Error("Invalid mandates response");
       return result.data.map(mapRecord);
     }
   };

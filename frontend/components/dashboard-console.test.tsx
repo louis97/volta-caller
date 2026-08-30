@@ -52,9 +52,86 @@ describe("DashboardConsole", () => {
     });
     expect(
       within(copilot).getByText(
-        "I can explain the mandate, call progress, quotes, exceptions, and the next safe action."
+        "I can explain every shipment, negotiation, call, transcript, exception, and the next safe action."
       )
     ).toBeInTheDocument();
+  });
+
+  it("creates a backend conversation and renders navigable evidence", async () => {
+    const finalMessage = {
+      id: "assistant-001",
+      conversationId: "conversation-001",
+      role: "assistant",
+      content: "The shipment is still at the origin terminal.",
+      citations: [
+        {
+          id: "shipment_event:event-001",
+          sourceType: "shipment_event",
+          sourceId: "event-001",
+          operationId: "operation-001",
+          title: "Carga en origen",
+          excerpt: "at_origin en Manzanillo",
+          occurredAt: "2026-09-01T15:00:00.000Z",
+          href: "/api/evidence/shipment_event/event-001"
+        }
+      ],
+      proposedActions: [],
+      createdAt: "2026-09-01T15:00:01.000Z"
+    };
+    const stream = [
+      'event: status\ndata: {"stage":"retrieving"}\n\n',
+      `event: final\ndata: ${JSON.stringify(finalMessage)}\n\n`
+    ].join("");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => []
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ id: "conversation-001" })
+      })
+      .mockResolvedValueOnce(
+        new Response(stream, {
+          status: 200,
+          headers: { "content-type": "text/event-stream" }
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<DashboardConsole />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Ask Volta" }));
+    fireEvent.change(
+      await screen.findByLabelText("Ask across operational history"),
+      {
+        target: { value: "Where is the shipment?" }
+      }
+    );
+    await vi.waitFor(() =>
+      expect(
+        within(
+          screen.getByRole("complementary", { name: "Volta Copilot" })
+        ).getByRole("button", { name: "Ask Volta" })
+      ).toBeEnabled()
+    );
+    fireEvent.click(
+      within(
+        screen.getByRole("complementary", { name: "Volta Copilot" })
+      ).getByRole("button", { name: "Ask Volta" })
+    );
+
+    expect(
+      await screen.findByText("The shipment is still at the origin terminal.")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Carga en origen" })
+    ).toHaveAttribute("href", "/api/evidence/shipment_event/event-001");
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/agent/conversations/conversation-001/messages",
+      expect.objectContaining({ method: "POST" })
+    );
   });
 
   it("posts the complete mandate to the API before showing it as created", async () => {

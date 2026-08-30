@@ -190,3 +190,95 @@ export type OperationEvent =
       operationId: string;
       escalation: Escalation;
     };
+
+export type EvidenceSourceType =
+  | "operation"
+  | "shipment_event"
+  | "quote"
+  | "approval"
+  | "call"
+  | "transcript"
+  | "commitment"
+  | "escalation";
+
+export type EvidenceCitation = {
+  id: string;
+  sourceType: EvidenceSourceType;
+  sourceId: string;
+  operationId: string;
+  title: string;
+  excerpt: string;
+  occurredAt: string;
+  href: string;
+};
+
+export type ShipmentEvent = {
+  id: string;
+  organizationId: string;
+  operationId: string;
+  type:
+    | "created"
+    | "pickup_scheduled"
+    | "at_origin"
+    | "picked_up"
+    | "in_transit"
+    | "checkpoint"
+    | "delivered"
+    | "exception";
+  label: string;
+  location?: string;
+  source: string;
+  occurredAt: string;
+  receivedAt: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type TranscriptSegment = {
+  id: string;
+  organizationId: string;
+  operationId: string;
+  callId: string;
+  speaker: "agent" | "carrier" | "dispatcher" | "unknown";
+  text: string;
+  startMs: number;
+  endMs: number;
+  createdAt: string;
+};
+
+export type ProposedAction = {
+  id: string;
+  organizationId: string;
+  conversationId: string;
+  operationId: string;
+  type: "close_approved_deal";
+  status:
+    "pending" | "approved" | "declined" | "executed" | "failed" | "expired";
+  summary: string;
+  expectedOperationVersion: string;
+  requestedBy: string;
+  decidedBy?: string;
+  createdAt: string;
+  decidedAt?: string;
+  executedAt?: string;
+  failureReason?: string;
+};
+
+export type AgentMessage = {
+  id: string;
+  conversationId: string;
+  role: "assistant" | "user";
+  content: string;
+  citations: EvidenceCitation[];
+  proposedActions: ProposedAction[];
+  createdAt: string;
+};
+
+export type AgentConversation = {
+  id: string;
+  organizationId: string;
+  createdBy: string;
+  title: string;
+  messages: AgentMessage[];
+  createdAt: string;
+  updatedAt: string;
+};

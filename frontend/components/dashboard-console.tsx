@@ -1,9 +1,12 @@
 "use client";
 
 import type {
+  AgentConversation,
+  AgentMessage,
   ApprovalRequest,
   CreateMandateRequest,
   Operation,
+  ProposedAction,
   Quote
 } from "@volta/contracts";
 import {
@@ -37,11 +40,7 @@ type MandateSaveState =
   | { status: "saved"; operationId: string }
   | { status: "error"; message: string };
 
-type CopilotMessage = {
-  id: string;
-  content: string;
-  role: "assistant" | "user";
-};
+type CopilotMessage = AgentMessage;
 
 const MANDATE_TIMEZONE_OFFSET = "-06:00";
 
@@ -1146,82 +1145,188 @@ function ApprovalsView() {
   );
 }
 
+function localMessage(
+  id: string,
+  role: CopilotMessage["role"],
+  content: string
+): CopilotMessage {
+  return {
+    id,
+    conversationId: "local",
+    role,
+    content,
+    citations: [],
+    proposedActions: [],
+    createdAt: new Date().toISOString()
+  };
+}
+
+async function readAgentMessage(response: Response): Promise<AgentMessage> {
+  if (!response.ok) throw new Error("agent_request_rejected");
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("agent_stream_unavailable");
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalMessage: AgentMessage | undefined;
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() ?? "";
+    for (const event of events) {
+      const eventName = event
+        .split("\n")
+        .find((line) => line.startsWith("event: "))
+        ?.slice(7);
+      const data = event
+        .split("\n")
+        .find((line) => line.startsWith("data: "))
+        ?.slice(6);
+      if (eventName === "error") throw new Error("agent_stream_failed");
+      if (eventName === "final" && data) {
+        finalMessage = JSON.parse(data) as AgentMessage;
+      }
+    }
+    if (done) break;
+  }
+  if (!finalMessage) throw new Error("agent_answer_missing");
+  return finalMessage;
+}
+
 function DispatchCopilot() {
   const [isOpen, setIsOpen] = useState(false);
   const [question, setQuestion] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
+  const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<CopilotMessage[]>([
-    {
-      id: "copilot-welcome",
-      role: "assistant",
-      content:
-        "I can explain the mandate, call progress, quotes, exceptions, and the next safe action."
-    }
+    localMessage(
+      "copilot-welcome",
+      "assistant",
+      "I can explain every shipment, negotiation, call, transcript, exception, and the next safe action."
+    )
   ]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const historyRestoredRef = useRef(false);
 
   useEffect(() => {
     if (isOpen) inputRef.current?.focus();
   }, [isOpen]);
 
+  useEffect(() => {
+    if (!isOpen || conversationId || historyRestoredRef.current) return;
+    historyRestoredRef.current = true;
+    let cancelled = false;
+    async function restoreHistory() {
+      setIsRestoring(true);
+      try {
+        const listResponse = await fetch("/api/agent/conversations");
+        if (!listResponse.ok) return;
+        const conversations =
+          (await listResponse.json()) as AgentConversation[];
+        const latest = conversations[0];
+        if (!latest || cancelled) return;
+        const detailResponse = await fetch(
+          `/api/agent/conversations/${latest.id}`
+        );
+        if (!detailResponse.ok) return;
+        const detail = (await detailResponse.json()) as AgentConversation;
+        if (cancelled) return;
+        setConversationId(detail.id);
+        setMessages((current) => [current[0], ...detail.messages]);
+      } catch {
+        // A new conversation will be created on the first question.
+      } finally {
+        if (!cancelled) setIsRestoring(false);
+      }
+    }
+    void restoreHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId, isOpen]);
+
   async function askCopilot(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmedQuestion = question.trim();
-    if (!trimmedQuestion || isSending) return;
+    if (!trimmedQuestion || isSending || isRestoring) return;
 
-    const history = messages;
-    const userMessage: CopilotMessage = {
-      id: "user-" + Date.now(),
-      role: "user",
-      content: trimmedQuestion
-    };
+    const userMessage = localMessage(
+      "user-" + Date.now(),
+      "user",
+      trimmedQuestion
+    );
     setMessages((current) => [...current, userMessage]);
     setQuestion("");
     setIsSending(true);
 
     try {
-      const response = await fetch("/api/copilot", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          question: trimmedQuestion,
-          history: history.slice(-8).map(({ role, content }) => ({
-            role,
-            content
-          }))
-        })
-      });
-      const payload = (await response.json()) as {
-        answer?: unknown;
-        message?: unknown;
-      };
-      const answer =
-        typeof payload.answer === "string"
-          ? payload.answer
-          : typeof payload.message === "string"
-            ? payload.message
-            : "Volta Copilot could not answer right now. Try again shortly.";
-
-      setMessages((current) => [
-        ...current,
+      let activeConversationId = conversationId;
+      if (!activeConversationId) {
+        const conversationResponse = await fetch("/api/agent/conversations", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ title: trimmedQuestion.slice(0, 120) })
+        });
+        if (!conversationResponse.ok) throw new Error("conversation_failed");
+        const conversation =
+          (await conversationResponse.json()) as AgentConversation;
+        activeConversationId = conversation.id;
+        setConversationId(conversation.id);
+      }
+      const response = await fetch(
+        `/api/agent/conversations/${activeConversationId}/messages`,
         {
-          id: "assistant-" + Date.now(),
-          role: "assistant",
-          content: answer
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ question: trimmedQuestion })
         }
-      ]);
+      );
+      const assistantMessage = await readAgentMessage(response);
+      setMessages((current) => [...current, assistantMessage]);
     } catch {
       setMessages((current) => [
         ...current,
-        {
-          id: "assistant-" + Date.now(),
-          role: "assistant",
-          content:
-            "I could not reach the dispatch API. Keep the mandate unchanged and try again."
-        }
+        localMessage(
+          "assistant-" + Date.now(),
+          "assistant",
+          "I could not reach the operational agent. No action was taken; try again shortly."
+        )
       ]);
     } finally {
       setIsSending(false);
+    }
+  }
+
+  async function decideAction(
+    action: ProposedAction,
+    decision: "approve" | "decline"
+  ) {
+    try {
+      const response = await fetch(`/api/agent/actions/${action.id}/decision`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision })
+      });
+      if (!response.ok) throw new Error("action_decision_failed");
+      const payload = (await response.json()) as { action: ProposedAction };
+      setMessages((current) =>
+        current.map((message) => ({
+          ...message,
+          proposedActions: message.proposedActions.map((item) =>
+            item.id === action.id ? payload.action : item
+          )
+        }))
+      );
+    } catch {
+      setMessages((current) => [
+        ...current,
+        localMessage(
+          "action-error-" + Date.now(),
+          "assistant",
+          "The action could not be decided safely. Refresh the operation before trying again."
+        )
+      ]);
     }
   }
 
@@ -1272,14 +1377,14 @@ function DispatchCopilot() {
                 </button>
               </header>
               <p className="copilot-context">
-                Grounded in the API-owned operation, never authorized to change
-                a mandate or make a booking.
+                Backend agent grounded in operational records. Every factual
+                answer links to its evidence; actions wait for your approval.
               </p>
               <div className="copilot-prompts" aria-label="Suggested questions">
                 {[
-                  "What is the current risk?",
-                  "What can Volta negotiate?",
-                  "What needs my approval?"
+                  "Where is the shipment?",
+                  "Compare every negotiation",
+                  "What did the carriers say?"
                 ].map((prompt) => (
                   <button
                     key={prompt}
@@ -1304,6 +1409,50 @@ function DispatchCopilot() {
                     >
                       <b>{message.role === "assistant" ? "VOLTA" : "YOU"}</b>
                       <p>{message.content}</p>
+                      {message.citations.length > 0 && (
+                        <ol className="copilot-citations" aria-label="Evidence">
+                          {message.citations.map((citation) => (
+                            <li key={citation.id}>
+                              <a href={citation.href} target="_blank">
+                                {citation.title}
+                              </a>
+                              <time dateTime={citation.occurredAt}>
+                                {new Date(citation.occurredAt).toLocaleString()}
+                              </time>
+                            </li>
+                          ))}
+                        </ol>
+                      )}
+                      {message.proposedActions.map((action) => (
+                        <section className="copilot-action" key={action.id}>
+                          <span>Human approval required</span>
+                          <p>{action.summary}</p>
+                          {action.status === "pending" ? (
+                            <div>
+                              <button
+                                className="button button--primary"
+                                onClick={() =>
+                                  void decideAction(action, "approve")
+                                }
+                                type="button"
+                              >
+                                Approve action
+                              </button>
+                              <button
+                                className="button button--secondary"
+                                onClick={() =>
+                                  void decideAction(action, "decline")
+                                }
+                                type="button"
+                              >
+                                Decline
+                              </button>
+                            </div>
+                          ) : (
+                            <strong>Action {action.status}</strong>
+                          )}
+                        </section>
+                      ))}
                     </m.article>
                   ))}
                 </AnimatePresence>
@@ -1316,23 +1465,27 @@ function DispatchCopilot() {
               </section>
               <form className="copilot-composer" onSubmit={askCopilot}>
                 <label htmlFor="copilot-question">
-                  Ask about this dispatch
+                  Ask across operational history
                 </label>
                 <textarea
                   id="copilot-question"
                   onChange={(event) => setQuestion(event.target.value)}
-                  placeholder="What changed in this operation?"
+                  placeholder="Where is MSCU-TP-001 and what was negotiated?"
                   ref={inputRef}
                   rows={3}
                   value={question}
                 />
                 <m.button
                   className="button button--primary"
-                  disabled={!question.trim() || isSending}
+                  disabled={!question.trim() || isSending || isRestoring}
                   type="submit"
                   whileTap={{ scale: 0.98 }}
                 >
-                  {isSending ? "Reviewing…" : "Ask Volta"}
+                  {isSending
+                    ? "Reviewing…"
+                    : isRestoring
+                      ? "Loading history…"
+                      : "Ask Volta"}
                   <ArrowIcon />
                 </m.button>
               </form>

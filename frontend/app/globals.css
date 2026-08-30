@@ -1483,6 +1483,63 @@ main {
   font-size: 12px;
   line-height: 1.5;
 }
+.copilot-citations {
+  margin: 10px 0 0;
+  padding: 9px 0 0;
+  border-top: 1px solid #e0e7ef;
+  list-style: none;
+}
+.copilot-citations li {
+  display: grid;
+  gap: 2px;
+  margin-top: 7px;
+}
+.copilot-citations a {
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 650;
+  text-decoration: none;
+}
+.copilot-citations a:hover {
+  text-decoration: underline;
+}
+.copilot-citations time {
+  color: var(--muted);
+  font:
+    500 9px/1.3 "JetBrains Mono",
+    monospace;
+}
+.copilot-action {
+  margin-top: 11px;
+  padding: 11px;
+  border: 1px solid #efc872;
+  background: #fff8e7;
+}
+.copilot-action > span {
+  color: #986100;
+  font:
+    700 9px/1 "JetBrains Mono",
+    monospace;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.copilot-action > div {
+  display: flex;
+  gap: 7px;
+  margin-top: 10px;
+}
+.copilot-action .button {
+  min-height: 32px;
+  padding: 7px 10px;
+  font-size: 10px;
+}
+.copilot-action > strong {
+  display: block;
+  margin-top: 9px;
+  color: #654100;
+  font-size: 11px;
+  text-transform: capitalize;
+}
 .copilot-thinking {
   display: flex;
   align-items: center;

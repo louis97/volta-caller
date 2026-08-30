@@ -10,13 +10,22 @@ const envSchema = z
     SUPABASE_URL: z.string().url().optional(),
     SUPABASE_PUBLISHABLE_KEY: z.string().min(1).optional(),
     SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
-    VOLTA_COPILOT_MODEL: z.string().min(1).default("gpt-5")
+    VOLTA_COPILOT_MODEL: z.string().min(1).default("gpt-5"),
+    DATABASE_URL: z.string().url().optional(),
+    VOLTA_DEFAULT_ORGANIZATION_ID: z
+      .string()
+      .min(1)
+      .default("textiles-pacifico"),
+    VOLTA_INTERNAL_API_KEY: z.string().min(16).optional()
   })
   .superRefine((value, context) => {
-    if (Boolean(value.TWILIO_ACCOUNT_SID) !== Boolean(value.TWILIO_AUTH_TOKEN)) {
+    if (
+      Boolean(value.TWILIO_ACCOUNT_SID) !== Boolean(value.TWILIO_AUTH_TOKEN)
+    ) {
       context.addIssue({
         code: "custom",
-        message: "TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be provided together"
+        message:
+          "TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be provided together"
       });
     }
     const hasSupabaseKey = Boolean(

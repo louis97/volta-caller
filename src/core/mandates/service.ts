@@ -17,7 +17,10 @@ const createMandateSchema = z
     pickup_datetime: dateTime
   })
   .superRefine((value, context) => {
-    if (Date.parse(value.pickup_datetime) >= Date.parse(value.destination_datetime)) {
+    if (
+      Date.parse(value.pickup_datetime) >=
+      Date.parse(value.destination_datetime)
+    ) {
       context.addIssue({
         code: "custom",
         message: "pickup_datetime must be before destination_datetime",

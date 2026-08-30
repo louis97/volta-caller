@@ -222,7 +222,153 @@ describe("mock demo API", () => {
     });
     expect(resetRound.commitment).toBeUndefined();
   });
+
+  it("answers across shipment events and transcripts with navigable evidence", async () => {
+    const app = createApp();
+    await request(app, "/api/demo/run", { method: "POST" });
+    const conversationResponse = await request(
+      app,
+      "/api/agent/conversations",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: "Seguimiento y negociación" })
+      }
+    );
+    expect(conversationResponse.status).toBe(201);
+    const conversation = (await conversationResponse.json()) as { id: string };
+
+    const locationResponse = await request(
+      app,
+      `/api/agent/conversations/${conversation.id}/messages`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question: "¿En qué parte está el envío?" })
+      }
+    );
+    const locationMessage = finalAgentMessage(await locationResponse.text());
+    expect(locationMessage.citations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceType: "shipment_event",
+          excerpt: expect.stringContaining("Manzanillo")
+        })
+      ])
+    );
+
+    const transcriptResponse = await request(
+      app,
+      `/api/agent/conversations/${conversation.id}/messages`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question: "¿Qué dijeron en las negociaciones?" })
+      }
+    );
+    const transcriptMessage = finalAgentMessage(
+      await transcriptResponse.text()
+    );
+    expect(transcriptMessage.citations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourceType: "transcript" }),
+        expect.objectContaining({ sourceType: "quote" })
+      ])
+    );
+    expect(transcriptMessage.citations[0].href).toMatch(/^\/api\/evidence\//);
+  });
+
+  it("isolates conversations by organization and executes an action only after approval", async () => {
+    const app = createApp();
+    await request(app, "/api/demo/run", { method: "POST" });
+    const operation = await getOperation(app);
+    const approvalId = operation.approvals[0].id;
+    await request(app, `/api/approvals/${approvalId}/decision`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        action: "approve",
+        selectedQuoteId: "quote-ruta-occidente-001",
+        decidedBy: "Bryan Riano"
+      })
+    });
+    const createResponse = await request(app, "/api/agent/conversations", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-volta-org-id": "organization-a",
+        "x-volta-user-id": "dispatcher-a"
+      },
+      body: JSON.stringify({})
+    });
+    const conversation = (await createResponse.json()) as { id: string };
+    const otherOrganization = await request(
+      app,
+      `/api/agent/conversations/${conversation.id}`,
+      {
+        headers: {
+          "x-volta-org-id": "organization-b",
+          "x-volta-user-id": "dispatcher-b"
+        }
+      }
+    );
+    expect(otherOrganization.status).toBe(404);
+
+    const askResponse = await request(
+      app,
+      `/api/agent/conversations/${conversation.id}/messages`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-volta-org-id": "organization-a",
+          "x-volta-user-id": "dispatcher-a"
+        },
+        body: JSON.stringify({ question: "Ejecuta la llamada de cierre" })
+      }
+    );
+    const message = finalAgentMessage(await askResponse.text());
+    expect(message.proposedActions).toMatchObject([
+      { type: "close_approved_deal", status: "pending" }
+    ]);
+    expect((await getOperation(app)).commitment).toBeUndefined();
+
+    const actionResponse = await request(
+      app,
+      `/api/agent/actions/${message.proposedActions[0].id}/decision`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-volta-org-id": "organization-a",
+          "x-volta-user-id": "dispatcher-a"
+        },
+        body: JSON.stringify({ decision: "approve" })
+      }
+    );
+    expect(actionResponse.status).toBe(200);
+    await expect(actionResponse.json()).resolves.toMatchObject({
+      action: { status: "executed", decidedBy: "dispatcher-a" },
+      operation: { commitment: { finalPriceMxn: 8500 } }
+    });
+  });
 });
+
+function finalAgentMessage(stream: string) {
+  const finalEvent = stream
+    .split("\n\n")
+    .find((event) => event.startsWith("event: final\n"));
+  if (!finalEvent) throw new Error(`Final agent event missing: ${stream}`);
+  const data = finalEvent
+    .split("\n")
+    .find((line) => line.startsWith("data: "))
+    ?.slice(6);
+  if (!data) throw new Error("Final agent data missing");
+  return JSON.parse(data) as {
+    citations: Array<{ sourceType: string; excerpt: string; href: string }>;
+    proposedActions: Array<{ id: string; type: string; status: string }>;
+  };
+}
 
 async function getOperation(
   app: ReturnType<typeof createApp>

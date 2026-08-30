@@ -1,0 +1,512 @@
+import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import type {
+  AgentConversation,
+  AgentMessage,
+  EvidenceCitation,
+  Operation,
+  ProposedAction,
+  ShipmentEvent,
+  TranscriptSegment
+} from "@volta/contracts";
+import { Pool } from "pg";
+
+import {
+  type AgentRepository,
+  type CreateConversationInput,
+  type OrganizationContext,
+  eventCitation,
+  operationCitations,
+  operationVersion,
+  rankCitations,
+  transcriptCitation
+} from "../agent/repository";
+
+export class PostgresAgentRepository implements AgentRepository {
+  private readonly pool: Pool;
+  private initialization?: Promise<void>;
+
+  constructor(connectionString: string) {
+    this.pool = new Pool({ connectionString });
+  }
+
+  async syncOperation(organizationId: string, operation: Operation) {
+    await this.initialize();
+    await this.pool.query(
+      `INSERT INTO operations (organization_id, id, version, snapshot)
+       VALUES ($1, $2, $3, $4::jsonb)
+       ON CONFLICT (organization_id, id) DO UPDATE
+       SET version = EXCLUDED.version,
+           snapshot = EXCLUDED.snapshot,
+           updated_at = now()`,
+      [
+        organizationId,
+        operation.id,
+        operationVersion(operation),
+        JSON.stringify(operation)
+      ]
+    );
+  }
+
+  async createConversation(input: CreateConversationInput) {
+    await this.initialize();
+    const now = new Date().toISOString();
+    const conversation: AgentConversation = {
+      id: randomUUID(),
+      organizationId: input.organizationId,
+      createdBy: input.userId,
+      title: input.title?.trim() || "Nueva consulta operativa",
+      messages: [],
+      createdAt: now,
+      updatedAt: now
+    };
+    await this.pool.query(
+      `INSERT INTO agent_conversations
+       (organization_id, id, created_by, title, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $5)`,
+      [
+        conversation.organizationId,
+        conversation.id,
+        conversation.createdBy,
+        conversation.title,
+        now
+      ]
+    );
+    return conversation;
+  }
+
+  async getConversation(context: OrganizationContext, conversationId: string) {
+    await this.initialize();
+    const conversationResult = await this.pool.query<ConversationRow>(
+      `SELECT id, organization_id, created_by, title, created_at, updated_at
+       FROM agent_conversations
+       WHERE organization_id = $1 AND id = $2`,
+      [context.organizationId, conversationId]
+    );
+    const row = conversationResult.rows[0];
+    if (!row) return undefined;
+    const messages = await this.pool.query<MessageRow>(
+      `SELECT id, conversation_id, role, content, citations,
+              proposed_actions, created_at
+       FROM agent_messages
+       WHERE organization_id = $1 AND conversation_id = $2
+       ORDER BY created_at`,
+      [context.organizationId, conversationId]
+    );
+    return {
+      id: row.id,
+      organizationId: row.organization_id,
+      createdBy: row.created_by,
+      title: row.title,
+      messages: messages.rows.map(messageFromRow),
+      createdAt: iso(row.created_at),
+      updatedAt: iso(row.updated_at)
+    } satisfies AgentConversation;
+  }
+
+  async listConversations(context: OrganizationContext) {
+    await this.initialize();
+    const result = await this.pool.query<ConversationRow>(
+      `SELECT id, organization_id, created_by, title, created_at, updated_at
+       FROM agent_conversations
+       WHERE organization_id = $1
+       ORDER BY updated_at DESC
+       LIMIT 50`,
+      [context.organizationId]
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      organizationId: row.organization_id,
+      createdBy: row.created_by,
+      title: row.title,
+      messages: [],
+      createdAt: iso(row.created_at),
+      updatedAt: iso(row.updated_at)
+    }));
+  }
+
+  async appendMessage(context: OrganizationContext, message: AgentMessage) {
+    await this.initialize();
+    const result = await this.pool.query(
+      `INSERT INTO agent_messages
+       (organization_id, id, conversation_id, role, content, citations,
+        proposed_actions, created_at)
+       SELECT $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8
+       WHERE EXISTS (
+         SELECT 1 FROM agent_conversations
+         WHERE organization_id = $1 AND id = $3
+       )`,
+      [
+        context.organizationId,
+        message.id,
+        message.conversationId,
+        message.role,
+        message.content,
+        JSON.stringify(message.citations),
+        JSON.stringify(message.proposedActions),
+        message.createdAt
+      ]
+    );
+    if (result.rowCount !== 1) throw new Error("conversation_not_found");
+    await this.pool.query(
+      `UPDATE agent_conversations SET updated_at = $3
+       WHERE organization_id = $1 AND id = $2`,
+      [context.organizationId, message.conversationId, message.createdAt]
+    );
+  }
+
+  async searchEvidence(context: OrganizationContext, question: string) {
+    await this.initialize();
+    const term = strongestTerm(question);
+    const operationRows = await this.pool.query<{ snapshot: Operation }>(
+      `SELECT snapshot
+       FROM operations
+       WHERE organization_id = $1
+         AND ($2 = '' OR snapshot::text ILIKE '%' || $2 || '%')
+       ORDER BY updated_at DESC
+       LIMIT 100`,
+      [context.organizationId, term]
+    );
+    const eventRows = await this.pool.query<ShipmentEventRow>(
+      `SELECT organization_id, id, operation_id, type, label, location,
+              source, occurred_at, received_at, metadata
+       FROM shipment_events
+       WHERE organization_id = $1
+         AND ($2 = '' OR label ILIKE '%' || $2 || '%'
+              OR coalesce(location, '') ILIKE '%' || $2 || '%'
+              OR operation_id ILIKE '%' || $2 || '%')
+       ORDER BY occurred_at DESC
+       LIMIT 100`,
+      [context.organizationId, term]
+    );
+    const transcriptRows = await this.pool.query<TranscriptRow>(
+      `SELECT organization_id, id, operation_id, call_id, speaker, text,
+              start_ms, end_ms, created_at
+       FROM transcript_segments
+       WHERE organization_id = $1
+         AND ($2 = '' OR search_vector @@ websearch_to_tsquery('spanish', $2)
+              OR text ILIKE '%' || $2 || '%'
+              OR operation_id ILIKE '%' || $2 || '%')
+       ORDER BY created_at DESC
+       LIMIT 100`,
+      [context.organizationId, term]
+    );
+    const citations = [
+      ...operationRows.rows.flatMap(({ snapshot }) =>
+        operationCitations(snapshot)
+      ),
+      ...eventRows.rows.map((row) => eventCitation(eventFromRow(row))),
+      ...transcriptRows.rows.map((row) =>
+        transcriptCitation(transcriptFromRow(row))
+      )
+    ];
+    return rankCitations(citations, question).slice(0, 24);
+  }
+
+  async getEvidence(
+    context: OrganizationContext,
+    sourceType: string,
+    sourceId: string
+  ) {
+    await this.initialize();
+    if (sourceType === "shipment_event") {
+      const result = await this.pool.query<ShipmentEventRow>(
+        `SELECT organization_id, id, operation_id, type, label, location,
+                source, occurred_at, received_at, metadata
+         FROM shipment_events
+         WHERE organization_id = $1 AND id = $2`,
+        [context.organizationId, sourceId]
+      );
+      return result.rows[0]
+        ? eventCitation(eventFromRow(result.rows[0]))
+        : undefined;
+    }
+    if (sourceType === "transcript") {
+      const result = await this.pool.query<TranscriptRow>(
+        `SELECT organization_id, id, operation_id, call_id, speaker, text,
+                start_ms, end_ms, created_at
+         FROM transcript_segments
+         WHERE organization_id = $1 AND id = $2`,
+        [context.organizationId, sourceId]
+      );
+      return result.rows[0]
+        ? transcriptCitation(transcriptFromRow(result.rows[0]))
+        : undefined;
+    }
+    const operationResult = await this.pool.query<{ snapshot: Operation }>(
+      `SELECT snapshot FROM operations
+       WHERE organization_id = $1 AND snapshot::text ILIKE '%' || $2 || '%'
+       ORDER BY updated_at DESC LIMIT 1`,
+      [context.organizationId, sourceId]
+    );
+    return operationResult.rows
+      .flatMap(({ snapshot }) => operationCitations(snapshot))
+      .find(
+        (item) => item.sourceType === sourceType && item.sourceId === sourceId
+      );
+  }
+
+  async addShipmentEvent(event: ShipmentEvent) {
+    await this.initialize();
+    await this.pool.query(
+      `INSERT INTO shipment_events
+       (organization_id, id, operation_id, type, label, location, source,
+        occurred_at, received_at, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+       ON CONFLICT (organization_id, id) DO UPDATE
+       SET type = EXCLUDED.type, label = EXCLUDED.label,
+           location = EXCLUDED.location, source = EXCLUDED.source,
+           occurred_at = EXCLUDED.occurred_at,
+           received_at = EXCLUDED.received_at,
+           metadata = EXCLUDED.metadata`,
+      [
+        event.organizationId,
+        event.id,
+        event.operationId,
+        event.type,
+        event.label,
+        event.location ?? null,
+        event.source,
+        event.occurredAt,
+        event.receivedAt,
+        JSON.stringify(event.metadata ?? {})
+      ]
+    );
+  }
+
+  async addTranscriptSegments(segments: TranscriptSegment[]) {
+    await this.initialize();
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const segment of segments) {
+        await client.query(
+          `INSERT INTO transcript_segments
+           (organization_id, id, operation_id, call_id, speaker, text,
+            start_ms, end_ms, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           ON CONFLICT (organization_id, id) DO UPDATE
+           SET speaker = EXCLUDED.speaker, text = EXCLUDED.text,
+               start_ms = EXCLUDED.start_ms, end_ms = EXCLUDED.end_ms,
+               created_at = EXCLUDED.created_at`,
+          [
+            segment.organizationId,
+            segment.id,
+            segment.operationId,
+            segment.callId,
+            segment.speaker,
+            segment.text,
+            segment.startMs,
+            segment.endMs,
+            segment.createdAt
+          ]
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async saveAction(action: ProposedAction) {
+    await this.initialize();
+    await this.pool.query(
+      `INSERT INTO agent_actions
+       (organization_id, id, conversation_id, operation_id, type, status,
+        summary, expected_operation_version, requested_by, decided_by,
+        created_at, decided_at, executed_at, failure_reason)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       ON CONFLICT (organization_id, id) DO UPDATE
+       SET status = EXCLUDED.status, decided_by = EXCLUDED.decided_by,
+           decided_at = EXCLUDED.decided_at, executed_at = EXCLUDED.executed_at,
+           failure_reason = EXCLUDED.failure_reason`,
+      actionValues(action)
+    );
+  }
+
+  async getAction(context: OrganizationContext, actionId: string) {
+    await this.initialize();
+    const result = await this.pool.query<ActionRow>(
+      `SELECT * FROM agent_actions
+       WHERE organization_id = $1 AND id = $2`,
+      [context.organizationId, actionId]
+    );
+    return result.rows[0] ? actionFromRow(result.rows[0]) : undefined;
+  }
+
+  async updateAction(action: ProposedAction) {
+    await this.saveAction(action);
+  }
+
+  private initialize() {
+    this.initialization ??= this.runMigrations();
+    return this.initialization;
+  }
+
+  private async runMigrations() {
+    const sql = await readFile(
+      new URL("./migrations/001_agent_knowledge.sql", import.meta.url),
+      "utf8"
+    );
+    await this.pool.query(sql);
+  }
+}
+
+type ConversationRow = {
+  id: string;
+  organization_id: string;
+  created_by: string;
+  title: string;
+  created_at: Date | string;
+  updated_at: Date | string;
+};
+
+type MessageRow = {
+  id: string;
+  conversation_id: string;
+  role: AgentMessage["role"];
+  content: string;
+  citations: EvidenceCitation[];
+  proposed_actions: ProposedAction[];
+  created_at: Date | string;
+};
+
+type ShipmentEventRow = {
+  organization_id: string;
+  id: string;
+  operation_id: string;
+  type: ShipmentEvent["type"];
+  label: string;
+  location: string | null;
+  source: string;
+  occurred_at: Date | string;
+  received_at: Date | string;
+  metadata: Record<string, unknown>;
+};
+
+type TranscriptRow = {
+  organization_id: string;
+  id: string;
+  operation_id: string;
+  call_id: string;
+  speaker: TranscriptSegment["speaker"];
+  text: string;
+  start_ms: number;
+  end_ms: number;
+  created_at: Date | string;
+};
+
+type ActionRow = {
+  organization_id: string;
+  id: string;
+  conversation_id: string;
+  operation_id: string;
+  type: ProposedAction["type"];
+  status: ProposedAction["status"];
+  summary: string;
+  expected_operation_version: string;
+  requested_by: string;
+  decided_by: string | null;
+  created_at: Date | string;
+  decided_at: Date | string | null;
+  executed_at: Date | string | null;
+  failure_reason: string | null;
+};
+
+function messageFromRow(row: MessageRow): AgentMessage {
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    role: row.role,
+    content: row.content,
+    citations: row.citations,
+    proposedActions: row.proposed_actions,
+    createdAt: iso(row.created_at)
+  };
+}
+
+function eventFromRow(row: ShipmentEventRow): ShipmentEvent {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    operationId: row.operation_id,
+    type: row.type,
+    label: row.label,
+    location: row.location ?? undefined,
+    source: row.source,
+    occurredAt: iso(row.occurred_at),
+    receivedAt: iso(row.received_at),
+    metadata: row.metadata
+  };
+}
+
+function transcriptFromRow(row: TranscriptRow): TranscriptSegment {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    operationId: row.operation_id,
+    callId: row.call_id,
+    speaker: row.speaker,
+    text: row.text,
+    startMs: row.start_ms,
+    endMs: row.end_ms,
+    createdAt: iso(row.created_at)
+  };
+}
+
+function actionFromRow(row: ActionRow): ProposedAction {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    conversationId: row.conversation_id,
+    operationId: row.operation_id,
+    type: row.type,
+    status: row.status,
+    summary: row.summary,
+    expectedOperationVersion: row.expected_operation_version,
+    requestedBy: row.requested_by,
+    decidedBy: row.decided_by ?? undefined,
+    createdAt: iso(row.created_at),
+    decidedAt: row.decided_at ? iso(row.decided_at) : undefined,
+    executedAt: row.executed_at ? iso(row.executed_at) : undefined,
+    failureReason: row.failure_reason ?? undefined
+  };
+}
+
+function actionValues(action: ProposedAction) {
+  return [
+    action.organizationId,
+    action.id,
+    action.conversationId,
+    action.operationId,
+    action.type,
+    action.status,
+    action.summary,
+    action.expectedOperationVersion,
+    action.requestedBy,
+    action.decidedBy ?? null,
+    action.createdAt,
+    action.decidedAt ?? null,
+    action.executedAt ?? null,
+    action.failureReason ?? null
+  ];
+}
+
+function strongestTerm(question: string) {
+  return (
+    question
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .split(/[^a-zA-Z0-9-]+/)
+      .filter((term) => term.length > 3)
+      .sort((left, right) => right.length - left.length)[0]
+      ?.slice(0, 120) ?? ""
+  );
+}
+
+function iso(value: Date | string) {
+  return value instanceof Date ? value.toISOString() : value;
+}
