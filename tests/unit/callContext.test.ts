@@ -33,22 +33,21 @@ describe("durable telephony call context", () => {
         store: staleStore,
         resolveCallContext: async (reference) => {
           expect(reference).toEqual({
-            operationId: "operation-santa-marta",
-            carrierId: "carrier-001",
-            organizationId: "textiles-pacifico"
+            callToken: "durable-token"
           });
           return {
             store: correctStore,
+            context: {
+              operationId: "operation-santa-marta",
+              carrierId: "carrier-001",
+              organizationId: "textiles-pacifico"
+            },
             organizationId: "textiles-pacifico",
             carrier: correctOperation.candidates[0]
           };
         }
       },
-      {
-        operationId: "operation-santa-marta",
-        carrierId: "carrier-001",
-        organizationId: "textiles-pacifico"
-      }
+      { callToken: "durable-token" }
     );
 
     expect(resolved.store.getOperation()).toMatchObject({
@@ -70,7 +69,7 @@ describe("durable telephony call context", () => {
           store: createOperationStore(seedOperation()),
           resolveCallContext: async () => undefined
         },
-        { operationId: "operation-missing" }
+        { callToken: "missing-token" }
       )
     ).rejects.toThrow("telephony_call_context_not_found");
   });
@@ -78,14 +77,20 @@ describe("durable telephony call context", () => {
   it("reads the durable identifiers propagated to the media WebSocket", () => {
     expect(
       callContextFromUrl(
-        new URL(
-          "wss://volta.example.test/media-stream?operationId=operation-1&carrierId=carrier-2&organizationId=textiles-pacifico"
-        )
+        new URL("wss://volta.example.test/media-stream?callToken=opaque-token")
       )
     ).toEqual({
-      operationId: "operation-1",
-      carrierId: "carrier-2",
-      organizationId: "textiles-pacifico"
+      callToken: "opaque-token"
     });
+  });
+
+  it("does not infer a call context from durable identifiers in the URL", () => {
+    expect(
+      callContextFromUrl(
+        new URL(
+          "wss://volta.example.test/media-stream?operationId=operation-1&carrierId=carrier-2"
+        )
+      )
+    ).toBeUndefined();
   });
 });

@@ -38,6 +38,11 @@ import {
 import { createSupabaseMandatesRepositoryFromConfig } from "./core/mandates/supabase-repository";
 import type { MandatesRepository } from "./core/mandates/types";
 import { createOperationStore, type OperationStore } from "./core/state";
+import {
+  createTelephonyCallToken,
+  hashTelephonyCallToken,
+  telephonyContextExpiry
+} from "./core/telephonyContext";
 import type { TelephonyGateway } from "./telephony/twilio";
 import {
   ConfirmationCoordinatorError,
@@ -50,7 +55,8 @@ import { createOperationFromMandate, seedOperation } from "./core/seed";
 import { derivePipelineStage } from "./core/pipeline";
 import {
   fanOutCalls,
-  type OutboundCallContext
+  type OutboundCallContext,
+  type OutboundCallReference
 } from "./telephony/orchestrator";
 import { PostgresAgentRepository } from "./storage/postgres";
 import {
@@ -289,6 +295,22 @@ export function createApp(options: CreateAppOptions = {}) {
     (env.DATABASE_URL
       ? new PostgresAgentRepository(env.DATABASE_URL)
       : new MemoryAgentRepository());
+  const createTelephonyCallReference = async (
+    context: OutboundCallContext
+  ): Promise<OutboundCallReference> => {
+    const callToken = createTelephonyCallToken();
+    const createdAt = options.now?.() ?? new Date().toISOString();
+    await repository.saveTelephonyCallContext({
+      tokenHash: hashTelephonyCallToken(callToken),
+      organizationId:
+        context.organizationId ?? env.VOLTA_DEFAULT_ORGANIZATION_ID,
+      operationId: context.operationId,
+      carrierId: context.carrierId,
+      createdAt,
+      expiresAt: telephonyContextExpiry(createdAt)
+    });
+    return { callToken };
+  };
   const answerer =
     options.answerer ??
     (env.OPENAI_API_KEY
@@ -690,32 +712,37 @@ export function createApp(options: CreateAppOptions = {}) {
     Promise<OperationStore | undefined>
   >();
   const resolveTelephonyCallContext = async (
-    reference: OutboundCallContext
+    reference: OutboundCallReference
   ) => {
-    const organizationId = reference.organizationId ?? activeOrganizationId;
+    const durableContext = await repository.getTelephonyCallContext(
+      hashTelephonyCallToken(reference.callToken)
+    );
+    if (!durableContext) return undefined;
+    const organizationId = durableContext.organizationId;
     const current = scenario.store.getOperation();
     if (
-      current.id === reference.operationId &&
+      current.id === durableContext.operationId &&
       organizationId === activeOrganizationId
     ) {
       return {
         store: scenario.store,
+        context: durableContext,
         organizationId,
-        carrier: reference.carrierId
+        carrier: durableContext.carrierId
           ? current.candidates.find(
-              (candidate) => candidate.id === reference.carrierId
+              (candidate) => candidate.id === durableContext.carrierId
             )
           : undefined
       };
     }
 
-    const key = `${organizationId}:${reference.operationId}`;
+    const key = `${organizationId}:${durableContext.operationId}`;
     let pending = persistedCallStores.get(key);
     if (!pending) {
       pending = (async () => {
         const operation = await repository.getOperation(
           { organizationId, userId: "twilio" },
-          reference.operationId
+          durableContext.operationId
         );
         if (!operation) return undefined;
         const callStore = createOperationStore(operation);
@@ -743,10 +770,11 @@ export function createApp(options: CreateAppOptions = {}) {
     const operation = callStore.getOperation();
     return {
       store: callStore,
+      context: durableContext,
       organizationId,
-      carrier: reference.carrierId
+      carrier: durableContext.carrierId
         ? operation.candidates.find(
-            (candidate) => candidate.id === reference.carrierId
+            (candidate) => candidate.id === durableContext.carrierId
           )
         : undefined
     };
@@ -806,7 +834,11 @@ export function createApp(options: CreateAppOptions = {}) {
         publicBaseUrl: env.PUBLIC_BASE_URL,
         from: env.TWILIO_FROM_NUMBER,
         gateway:
-          env.VOLTA_MODE === "live" ? createLiveTelephonyGateway() : undefined,
+          options.telephony ??
+          (env.VOLTA_MODE === "live"
+            ? createLiveTelephonyGateway()
+            : undefined),
+        createCallReference: createTelephonyCallReference,
         timeLimitSeconds: env.CALL_TIME_LIMIT_SECONDS,
         record: env.TWILIO_RECORD_CALLS,
         detectAnsweringMachine: true,
@@ -1440,6 +1472,7 @@ export function createApp(options: CreateAppOptions = {}) {
     listActiveCarriers: () => app.locals.listActiveCarriers(),
     listTranscript: (callId?: string) =>
       repository.listTranscript(activeOrganizationId, callId),
+    createCallReference: createTelephonyCallReference,
     resolveCallContext: resolveTelephonyCallContext
   });
 

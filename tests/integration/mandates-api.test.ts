@@ -11,6 +11,13 @@ import {
 } from "../../src/agent/operationalAgent";
 import { MemoryAgentRepository } from "../../src/agent/repository";
 import { seedOperation } from "../../src/core/seed";
+import { createOperationStore } from "../../src/core/state";
+import { buildCallInstructions } from "../../src/agent/prompt";
+import { createMockTelephonyGateway } from "../../src/mocks/telephony";
+import {
+  callContextFromUrl,
+  resolveCallDependencies
+} from "../../src/telephony/routes";
 import type {
   MandateRecord,
   MandatesRepository
@@ -63,6 +70,89 @@ it("creates a real operation, then retains the mandate record", async () => {
 
   const listResponse = await request(app, "/api/mandates");
   await expect(listResponse.json()).resolves.toEqual([created]);
+});
+
+it("carries a mandate through a durable token into another instance's prompt", async () => {
+  const repository = new MemoryAgentRepository();
+  await repository.createCarrier({
+    id: "carrier-santa-marta",
+    organizationId: "textiles-pacifico",
+    name: "Transportes del Caribe",
+    phone: "+573001234567",
+    lanes: ["Santa Marta → Bogotá"],
+    active: true,
+    createdAt: "2026-08-30T08:00:00.000Z"
+  });
+  const gateway = createMockTelephonyGateway();
+  const mandateBackend = createApp({
+    repository,
+    telephony: gateway,
+    mandatesRepository: new MemoryRepository()
+  });
+  const santaMartaMandate: CreateMandateRequest = {
+    budget_cap: 5000,
+    pickup_address: "Santa Marta",
+    pickup_datetime: "2026-08-31T05:00:00-05:00",
+    destination_place: "Centro comercial Tintal, Bogotá",
+    destination_datetime: "2026-09-03T17:00:00-05:00",
+    type_of_content: "frágil",
+    weight: 40000,
+    measures: "20 m de largo × 20 m de alto × 10 m de ancho"
+  };
+
+  const createResponse = await request(mandateBackend, "/api/mandates", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(santaMartaMandate)
+  });
+  expect(createResponse.status).toBe(201);
+
+  const outbound = gateway.calls.find((event) => event.type === "created");
+  if (!outbound || outbound.type !== "created") {
+    throw new Error("missing_outbound_call");
+  }
+  const reference = callContextFromUrl(
+    new URL(outbound.input.twimlUrl, "https://voice.example.test")
+  );
+  expect(reference?.callToken).toBeTruthy();
+  expect(outbound.input.twimlUrl).not.toContain("operation-mandate-1");
+
+  // A separate process starts on the Manzanillo seed, just like the Render
+  // instance in the incident. The persisted token must override that state.
+  const voiceBackend = createApp({
+    repository,
+    store: createOperationStore(seedOperation()),
+    mandatesRepository: new MemoryRepository()
+  });
+  if (!reference) throw new Error("missing_call_reference");
+  const resolved = await resolveCallDependencies(
+    {
+      store: voiceBackend.locals.operationStore,
+      resolveCallContext: voiceBackend.locals.resolveTelephonyCallContext
+    },
+    reference
+  );
+  const instructions = buildCallInstructions(resolved.store.getOperation());
+
+  expect(resolved.store.getOperation()).toMatchObject({
+    id: "operation-mandate-1",
+    origin: "Santa Marta",
+    destination: "Centro comercial Tintal, Bogotá"
+  });
+  expect(instructions).toContain("Santa Marta");
+  expect(instructions).toContain("Centro comercial Tintal, Bogotá");
+  expect(instructions).not.toContain("Manzanillo");
+});
+
+it("hangs up a context-free outbound callback before opening media", async () => {
+  const app = createApp({
+    repository: new MemoryAgentRepository(),
+    mandatesRepository: new MemoryRepository()
+  });
+  const response = await request(app, "/twiml/outbound", { method: "POST" });
+
+  expect(response.status).toBe(200);
+  expect(await response.text()).toContain("<Hangup/>");
 });
 
 it("lists shipment notifications for the dashboard organization", async () => {

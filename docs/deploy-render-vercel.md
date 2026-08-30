@@ -64,7 +64,7 @@ Variables de entorno en Vercel:
 
 | Variable | Valor |
 | --- | --- |
-| `VOLTA_API_URL` | `https://volta-api.onrender.com` (tu URL real de Render) |
+| `VOLTA_API_URL` | `https://volta-api-jkax.onrender.com` |
 | `VOLTA_ORGANIZATION_ID` | `textiles-pacifico` |
 | `VOLTA_DASHBOARD_USER_ID` | `volta-dashboard` |
 
@@ -75,7 +75,7 @@ El frontend abre `EventSource("/api/events")` en el mismo dominio de Vercel. La 
 ## 6. Verificación
 
 ```powershell
-curl https://volta-api.onrender.com/health
+curl https://volta-api-jkax.onrender.com/health
 curl -N -H "x-volta-org-id: textiles-pacifico" -H "x-volta-user-id: volta-dashboard" https://TU-DOMINIO.vercel.app/api/events
 ```
 
@@ -85,5 +85,5 @@ Deberías ver líneas `retry:` y heartbeats `: ping`.
 
 Actualiza los webhooks de Twilio para apuntar a la URL de Render:
 
-- Voice webhook: `https://volta-api.onrender.com/...`
-- Media stream WebSocket: `wss://volta-api.onrender.com/...`
+- Voice webhook: `https://volta-api-jkax.onrender.com/...`
+- Media stream WebSocket: `wss://volta-api-jkax.onrender.com/...`

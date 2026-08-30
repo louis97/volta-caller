@@ -32,7 +32,10 @@ describe("fanOutCalls", () => {
       organizationId: "textiles-pacifico",
       mode: "live",
       publicBaseUrl: "https://volta.example.test",
-      gateway
+      gateway,
+      createCallReference: async (context) => ({
+        callToken: `token-${context.carrierId}`
+      })
     });
 
     const created = gateway.calls.filter((call) => call.type === "created");
@@ -41,14 +44,36 @@ describe("fanOutCalls", () => {
       if (call.type !== "created") continue;
       const twiml = new URL(call.input.twimlUrl);
       const status = new URL(call.input.statusCallbackUrl ?? "");
-      expect(twiml.searchParams.get("operationId")).toBe(
-        store.getOperation().id
+      expect(twiml.searchParams.get("callToken")).toBe(
+        `token-${call.input.carrierId}`
       );
-      expect(twiml.searchParams.get("carrierId")).toBe(call.input.carrierId);
-      expect(twiml.searchParams.get("organizationId")).toBe(
-        "textiles-pacifico"
-      );
+      expect(twiml.searchParams.has("operationId")).toBe(false);
+      expect(twiml.searchParams.has("carrierId")).toBe(false);
+      expect(twiml.searchParams.has("organizationId")).toBe(false);
       expect(status.search).toBe(twiml.search);
     }
+  });
+
+  it("does not dial live without a persisted call reference", async () => {
+    const store = createOperationStore(seedOperation());
+    const gateway = createMockTelephonyGateway();
+
+    await fanOutCalls({
+      store,
+      organizationId: "textiles-pacifico",
+      mode: "live",
+      publicBaseUrl: "https://volta.example.test",
+      gateway
+    });
+
+    expect(gateway.calls).toHaveLength(0);
+    expect(store.getOperation().callSessions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: "failed",
+          endedReason: "telephony_call_context_persistence_missing"
+        })
+      ])
+    );
   });
 });

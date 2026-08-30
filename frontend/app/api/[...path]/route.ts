@@ -1,4 +1,8 @@
-const API_URL = process.env.VOLTA_API_URL ?? "http://localhost:3001";
+const API_URL =
+  process.env.VOLTA_API_URL ??
+  (process.env.NODE_ENV === "production"
+    ? "https://volta-api-jkax.onrender.com"
+    : "http://localhost:3001");
 const ORGANIZATION_ID =
   process.env.VOLTA_ORGANIZATION_ID ?? "textiles-pacifico";
 const DASHBOARD_USER_ID =

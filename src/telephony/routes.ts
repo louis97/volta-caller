@@ -20,6 +20,7 @@ import {
 import {
   fanOutCalls,
   type OutboundCallContext,
+  type OutboundCallReference,
   withCallContext
 } from "./orchestrator";
 import { attachMediaStreamRelay } from "./mediaStream";
@@ -85,13 +86,17 @@ export type TelephonyDependencies = {
   listTranscript?: (
     callId?: string
   ) => Promise<Array<import("@volta/contracts").TranscriptSegment>>;
+  /** Persists a one-time random identity before Twilio is allowed to dial. */
+  createCallReference?: (
+    context: OutboundCallContext
+  ) => Promise<OutboundCallReference>;
   /**
    * Rehydrates the exact operation named in an outbound callback. Render can
    * restart or route the WebSocket to another process, where the local store
    * and `dialled` map belong to a different round.
    */
   resolveCallContext?: (
-    reference: OutboundCallContext
+    reference: OutboundCallReference
   ) => Promise<ResolvedTelephonyCallContext | undefined>;
   callContext?: OutboundCallContext & {
     carrier?: { id: string; name: string };
@@ -100,6 +105,7 @@ export type TelephonyDependencies = {
 
 export type ResolvedTelephonyCallContext = {
   store: OperationStore;
+  context: OutboundCallContext;
   organizationId?: string;
   carrier?: { id: string; name: string };
 };
@@ -202,39 +208,27 @@ function bindCallSession(
   return input.callSid;
 }
 
-function mediaStreamUrl(reference?: OutboundCallContext): string {
+function mediaStreamUrl(
+  reference?: OutboundCallReference,
+  direction?: "inbound"
+): string {
   if (!env.PUBLIC_WS_URL) throw new Error("public_ws_url_missing");
   const url = `${env.PUBLIC_WS_URL.replace(/\/$/, "")}${MEDIA_STREAM_PATH}`;
-  return reference ? withCallContext(url, reference) : url;
+  if (reference) return withCallContext(url, reference);
+  return direction === "inbound" ? `${url}?direction=inbound` : url;
 }
 
-export function callContextFromUrl(url: URL): OutboundCallContext | undefined {
-  const operationId = url.searchParams.get("operationId")?.trim();
-  if (!operationId) return undefined;
-  const carrierId = url.searchParams.get("carrierId")?.trim() || undefined;
-  const organizationId =
-    url.searchParams.get("organizationId")?.trim() || undefined;
-  return { operationId, carrierId, organizationId };
+export function callContextFromUrl(
+  url: URL
+): OutboundCallReference | undefined {
+  const callToken = url.searchParams.get("callToken")?.trim();
+  return callToken ? { callToken } : undefined;
 }
 
 export async function resolveCallDependencies(
   dependencies: TelephonyDependencies,
-  reference?: OutboundCallContext
+  reference: OutboundCallReference
 ): Promise<TelephonyDependencies> {
-  if (!reference) return dependencies;
-
-  const current = dependencies.store.getOperation();
-  if (current.id === reference.operationId) {
-    const carrier = reference.carrierId
-      ? current.candidates.find((item) => item.id === reference.carrierId)
-      : undefined;
-    return {
-      ...dependencies,
-      organizationId: reference.organizationId ?? dependencies.organizationId,
-      callContext: { ...reference, carrier }
-    };
-  }
-
   const resolved = await dependencies.resolveCallContext?.(reference);
   if (!resolved) throw new Error("telephony_call_context_not_found");
   return {
@@ -243,9 +237,9 @@ export async function resolveCallDependencies(
     dialled: undefined,
     organizationId:
       resolved.organizationId ??
-      reference.organizationId ??
+      resolved.context.organizationId ??
       dependencies.organizationId,
-    callContext: { ...reference, carrier: resolved.carrier }
+    callContext: { ...resolved.context, carrier: resolved.carrier }
   };
 }
 
@@ -265,37 +259,53 @@ export function mountTelephonyRoutes(
   });
   const twiml = express.urlencoded({ extended: false });
 
-  // Twilio fetches these when a call connects; both directions share one relay.
-  app.post(
-    ["/twiml/outbound", "/twiml/inbound"],
-    twiml,
-    (request, response) => {
-      // Twilio reports its answering-machine verdict here when machineDetection
-      // is on. Opening a media stream to a recording spends telephony and model
-      // minutes on a conversation nobody is having.
-      const answeredBy = String(
-        (request.body as { AnsweredBy?: unknown } | undefined)?.AnsweredBy ?? ""
+  const hangUp = (response: express.Response) =>
+    response
+      .type("text/xml")
+      .send(
+        '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
       );
-      if (answeredBy.startsWith("machine") || answeredBy === "fax") {
-        console.log(
-          `[call] ${answeredBy} answered; hanging up without an agent`
-        );
-        response
-          .type("text/xml")
-          .send(
-            '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
-          );
-        return;
-      }
+  const machineAnswered = (request: express.Request) => {
+    const answeredBy = String(
+      (request.body as { AnsweredBy?: unknown } | undefined)?.AnsweredBy ?? ""
+    );
+    if (!answeredBy.startsWith("machine") && answeredBy !== "fax") return false;
+    console.log(`[call] ${answeredBy} answered; hanging up without an agent`);
+    return true;
+  };
 
-      const reference = callContextFromUrl(
-        new URL(request.originalUrl, "http://localhost")
-      );
-      response
-        .type("text/xml")
-        .send(createInboundTwiML(mediaStreamUrl(reference)));
+  // Outbound calls are fail-closed: a generic callback must never inherit the
+  // process's demo/current operation and speak its mandate to the carrier.
+  app.post("/twiml/outbound", twiml, (request, response) => {
+    if (machineAnswered(request)) {
+      hangUp(response);
+      return;
     }
-  );
+    const reference = callContextFromUrl(
+      new URL(request.originalUrl, "http://localhost")
+    );
+    if (!reference) {
+      console.error("[twilio] outbound TwiML rejected: call context missing");
+      hangUp(response);
+      return;
+    }
+    response
+      .type("text/xml")
+      .send(createInboundTwiML(mediaStreamUrl(reference)));
+  });
+
+  // Inbound calls deliberately use the instance's active intake context. The
+  // direction marker is mandatory so a context-free outbound WebSocket cannot
+  // masquerade as a legitimate inbound call.
+  app.post("/twiml/inbound", twiml, (request, response) => {
+    if (machineAnswered(request)) {
+      hangUp(response);
+      return;
+    }
+    response
+      .type("text/xml")
+      .send(createInboundTwiML(mediaStreamUrl(undefined, "inbound")));
+  });
 
   /**
    * What the supervisor hears when they pick up. Polly reads the brief while
@@ -385,6 +395,7 @@ export function mountTelephonyRoutes(
       from: env.TWILIO_FROM_NUMBER,
       gateway:
         env.VOLTA_MODE === "live" ? createLiveTelephonyGateway() : undefined,
+      createCallReference: dependencies.createCallReference,
       timeLimitSeconds: env.CALL_TIME_LIMIT_SECONDS,
       record: env.TWILIO_RECORD_CALLS,
       detectAnsweringMachine: true,
@@ -561,6 +572,13 @@ export function mountTelephonyRoutes(
       const reference = callContextFromUrl(
         new URL(request.originalUrl, "http://localhost")
       );
+      if (!reference) {
+        console.error(
+          "[twilio] status callback rejected: call context missing"
+        );
+        response.sendStatus(204);
+        return;
+      }
       const resolved = await resolveCallDependencies(dependencies, reference);
       const statusStore = resolved.store;
       const session = statusStore
@@ -594,11 +612,32 @@ export function mountTelephonyRoutes(
 
     try {
       const gateway = createTwilioGateway({ client: getTwilioClient() });
+      const operation = store.getOperation();
+      const carrier = operation.candidates.find(
+        (candidate) => candidate.phone === to
+      );
+      const reference =
+        twimlPath === "/twiml/outbound"
+          ? await dependencies.createCallReference?.({
+              operationId: operation.id,
+              carrierId: carrier?.id,
+              organizationId: dependencies.organizationId
+            })
+          : undefined;
+      if (twimlPath === "/twiml/outbound" && !reference) {
+        throw new Error("telephony_call_context_persistence_missing");
+      }
       const session = await gateway.createOutboundCall({
         operationId: store.getOperation().id,
+        carrierId: carrier?.id,
         to,
         from: env.TWILIO_FROM_NUMBER ?? "",
-        twimlUrl: `${(env.PUBLIC_BASE_URL ?? "").replace(/\/$/, "")}${twimlPath}`,
+        twimlUrl: reference
+          ? withCallContext(
+              `${(env.PUBLIC_BASE_URL ?? "").replace(/\/$/, "")}${twimlPath}`,
+              reference
+            )
+          : `${(env.PUBLIC_BASE_URL ?? "").replace(/\/$/, "")}${twimlPath}`,
         ...(env.CALL_TIME_LIMIT_SECONDS > 0
           ? { timeLimitSeconds: env.CALL_TIME_LIMIT_SECONDS }
           : {}),
@@ -606,9 +645,6 @@ export function mountTelephonyRoutes(
       });
       // Open the session as soon as it rings, not when audio arrives: the
       // floor should show a line being dialled, not appear once it connects.
-      const carrier = store
-        .getOperation()
-        .candidates.find((candidate) => candidate.phone === to);
       store.openCallSession({
         id: session.id,
         callSid: session.id,
@@ -655,10 +691,16 @@ export function attachTelephonyWebSockets(
     }
 
     void (async () => {
-      const resolved =
-        pathname === MEDIA_STREAM_PATH
-          ? await resolveCallDependencies(dependencies, callContextFromUrl(url))
-          : dependencies;
+      let resolved = dependencies;
+      if (pathname === MEDIA_STREAM_PATH) {
+        const reference = callContextFromUrl(url);
+        const inbound = url.searchParams.get("direction") === "inbound";
+        if (reference) {
+          resolved = await resolveCallDependencies(dependencies, reference);
+        } else if (!inbound) {
+          throw new Error("telephony_call_context_missing");
+        }
+      }
       wss.handleUpgrade(request, socket, head, (client) => {
         dependenciesBySocket.set(client, resolved);
         wss.emit("connection", client, request);
@@ -678,7 +720,12 @@ export function attachTelephonyWebSockets(
     }
 
     console.log("[twilio] media stream connected");
-    const callDependencies = dependenciesBySocket.get(client) ?? dependencies;
+    const callDependencies = dependenciesBySocket.get(client);
+    if (!callDependencies) {
+      console.error("[twilio] media stream rejected: dependencies missing");
+      client.close();
+      return;
+    }
     openMediaStreamSession(
       toRelaySocket(client, { label: "twilio" }),
       callDependencies

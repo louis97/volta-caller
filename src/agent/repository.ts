@@ -11,6 +11,7 @@ import type {
   TranscriptSegment
 } from "@volta/contracts";
 import { derivePipelineStage } from "../core/pipeline";
+import type { TelephonyCallContextRecord } from "../core/telephonyContext";
 
 export type OrganizationContext = {
   organizationId: string;
@@ -32,6 +33,10 @@ export type AgentRepository = {
     organizationId: string,
     callSession: CallSession
   ): Promise<void>;
+  saveTelephonyCallContext(context: TelephonyCallContextRecord): Promise<void>;
+  getTelephonyCallContext(
+    tokenHash: string
+  ): Promise<TelephonyCallContextRecord | undefined>;
   listCarriers(organizationId: string): Promise<Carrier[]>;
   createCarrier(carrier: Carrier): Promise<Carrier>;
   updateCarrier(
@@ -119,6 +124,10 @@ export class MemoryAgentRepository implements AgentRepository {
   private readonly transcripts = new Map<string, TranscriptSegment[]>();
   private readonly actions = new Map<string, ProposedAction>();
   private readonly carriers = new Map<string, Map<string, Carrier>>();
+  private readonly telephonyCallContexts = new Map<
+    string,
+    TelephonyCallContextRecord
+  >();
   private readonly inboundMessages = new Map<
     string,
     { status: "processing" | "completed"; claimedAt: number }
@@ -159,6 +168,17 @@ export class MemoryAgentRepository implements AgentRepository {
         operation.callSessions.push(structuredClone(callSession));
       else operation.callSessions[index] = structuredClone(callSession);
     }
+  }
+
+  async saveTelephonyCallContext(context: TelephonyCallContextRecord) {
+    this.telephonyCallContexts.set(context.tokenHash, structuredClone(context));
+  }
+
+  async getTelephonyCallContext(tokenHash: string) {
+    const context = this.telephonyCallContexts.get(tokenHash);
+    if (!context || Date.parse(context.expiresAt) <= Date.now())
+      return undefined;
+    return structuredClone(context);
   }
 
   async listCarriers(organizationId: string) {

@@ -13,6 +13,7 @@ import type {
 } from "@volta/contracts";
 import { Pool } from "pg";
 import { derivePipelineStage } from "../core/pipeline";
+import type { TelephonyCallContextRecord } from "../core/telephonyContext";
 
 import {
   type AgentRepository,
@@ -101,6 +102,45 @@ export class PostgresAgentRepository implements AgentRepository {
         callSession.endedAt ?? null
       ]
     );
+  }
+
+  async saveTelephonyCallContext(context: TelephonyCallContextRecord) {
+    await this.initialize();
+    await this.pool.query(
+      `INSERT INTO telephony_call_contexts
+       (token_hash, organization_id, operation_id, carrier_id, created_at, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (token_hash) DO NOTHING`,
+      [
+        context.tokenHash,
+        context.organizationId,
+        context.operationId,
+        context.carrierId ?? null,
+        context.createdAt,
+        context.expiresAt
+      ]
+    );
+  }
+
+  async getTelephonyCallContext(tokenHash: string) {
+    await this.initialize();
+    const result = await this.pool.query<TelephonyCallContextRow>(
+      `SELECT token_hash, organization_id, operation_id, carrier_id,
+              created_at, expires_at
+       FROM telephony_call_contexts
+       WHERE token_hash = $1 AND expires_at > now()`,
+      [tokenHash]
+    );
+    const row = result.rows[0];
+    if (!row) return undefined;
+    return {
+      tokenHash: row.token_hash,
+      organizationId: row.organization_id,
+      operationId: row.operation_id,
+      carrierId: row.carrier_id ?? undefined,
+      createdAt: iso(row.created_at),
+      expiresAt: iso(row.expires_at)
+    } satisfies TelephonyCallContextRecord;
   }
 
   async listCarriers(organizationId: string) {
@@ -626,7 +666,8 @@ export class PostgresAgentRepository implements AgentRepository {
       "002_mandates_security.sql",
       "003_carriers_and_pipeline.sql",
       "004_agent_action_payload.sql",
-      "005_inbound_message_receipts.sql"
+      "005_inbound_message_receipts.sql",
+      "006_telephony_call_contexts.sql"
     ];
     for (const migration of migrations) {
       const sql = await readFile(
@@ -645,6 +686,15 @@ type ConversationRow = {
   title: string;
   created_at: Date | string;
   updated_at: Date | string;
+};
+
+type TelephonyCallContextRow = {
+  token_hash: string;
+  organization_id: string;
+  operation_id: string;
+  carrier_id: string | null;
+  created_at: Date | string;
+  expires_at: Date | string;
 };
 
 type MessageRow = {

@@ -15,6 +15,9 @@ export type FanoutDependencies = {
   from?: string;
   concurrency?: number;
   now?: () => string;
+  createCallReference?: (
+    context: OutboundCallContext
+  ) => Promise<OutboundCallReference>;
   onDialled?: (callId: string, carrier: { id: string; name: string }) => void;
   onRoundReviewed?: (input: {
     operationId: string;
@@ -68,19 +71,29 @@ export async function fanOutCalls(
         carrierId: candidate.id,
         organizationId: dependencies.organizationId
       };
+      if (dependencies.mode === "live" && !dependencies.createCallReference) {
+        throw new Error("telephony_call_context_persistence_missing");
+      }
+      const callReference = dependencies.createCallReference
+        ? await dependencies.createCallReference(callContext)
+        : undefined;
       const created = await gateway.createOutboundCall({
         operationId: operation.id,
         carrierId: candidate.id,
         to: candidate.phone,
         from: dependencies.from ?? "",
-        twimlUrl: withCallContext(
-          `${(dependencies.publicBaseUrl ?? "").replace(/\/$/, "")}/twiml/outbound`,
-          callContext
-        ),
-        statusCallbackUrl: withCallContext(
-          `${(dependencies.publicBaseUrl ?? "").replace(/\/$/, "")}/twiml/status`,
-          callContext
-        ),
+        twimlUrl: callReference
+          ? withCallContext(
+              `${(dependencies.publicBaseUrl ?? "").replace(/\/$/, "")}/twiml/outbound`,
+              callReference
+            )
+          : `${(dependencies.publicBaseUrl ?? "").replace(/\/$/, "")}/twiml/outbound`,
+        statusCallbackUrl: callReference
+          ? withCallContext(
+              `${(dependencies.publicBaseUrl ?? "").replace(/\/$/, "")}/twiml/status`,
+              callReference
+            )
+          : undefined,
         // A round never carried these, so a call that reached voicemail ran
         // the agent against a recording for minutes with no ceiling.
         ...(dependencies.timeLimitSeconds
@@ -190,6 +203,10 @@ export type OutboundCallContext = {
   organizationId?: string;
 };
 
+export type OutboundCallReference = {
+  callToken: string;
+};
+
 /**
  * Twilio may fetch TwiML and open the media WebSocket on another process. The
  * durable identifiers therefore travel with every callback instead of relying
@@ -197,12 +214,9 @@ export type OutboundCallContext = {
  */
 export function withCallContext(
   url: string,
-  context: OutboundCallContext
+  reference: OutboundCallReference
 ): string {
-  const query = new URLSearchParams({ operationId: context.operationId });
-  if (context.carrierId) query.set("carrierId", context.carrierId);
-  if (context.organizationId)
-    query.set("organizationId", context.organizationId);
+  const query = new URLSearchParams({ callToken: reference.callToken });
   return `${url}${url.includes("?") ? "&" : "?"}${query.toString()}`;
 }
 
