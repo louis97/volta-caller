@@ -303,16 +303,42 @@ export function createCentralBrainTools({
             citations: []
           };
         }
-        const missingAddress = conversation.messages
+        const userMessages = conversation.messages
           .filter((message) => message.role === "user")
-          .flatMap((message) => addressesIn(message.content))
-          .find((address) => !payloadPreservesAddress(parsed.data, address));
+          .map((message) => message.content);
+        const missingAddress = userMessages
+          .flatMap((content, messageIndex) =>
+            addressesIn(content).map((address) => ({ address, messageIndex }))
+          )
+          .find(({ address, messageIndex }) => {
+            const confirmedEndpoint = confirmedAddressEndpoint(
+              userMessages,
+              messageIndex
+            );
+            const preserved = confirmedEndpoint
+              ? fieldPreservesAddress(
+                  parsed.data[
+                    confirmedEndpoint === "pickup"
+                      ? "pickup_address"
+                      : "destination_place"
+                  ],
+                  address
+                )
+              : payloadPreservesAddress(parsed.data, address);
+            return (
+              !preserved &&
+              !payloadContainsLaterAddressReplacement(
+                parsed.data,
+                userMessages,
+                messageIndex
+              )
+            );
+          });
         if (missingAddress) {
           return {
             output: {
               error: "address_not_preserved",
-              message:
-                "The user gave a street address that is missing from pickup_address and destination_place. Ask which endpoint it belongs to and preserve it."
+              message: `The proposed mandate omits the still-active address "${missingAddress.address}". Preserve it in its confirmed endpoint, or ask whether a later place explicitly replaces it. Do not ask for the endpoint again if the user already confirmed it.`
             },
             citations: []
           };
@@ -644,12 +670,15 @@ function payloadPreservesAddress(
   payload: CreateMandateRequest,
   address: string
 ): boolean {
+  return fieldPreservesAddress(
+    `${payload.pickup_address} ${payload.destination_place}`,
+    address
+  );
+}
+
+function fieldPreservesAddress(field: string, address: string): boolean {
   const endpointTokens = new Set(
-    `${payload.pickup_address} ${payload.destination_place}`
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase()
-      .match(/[a-z0-9]+/g) ?? []
+    normalizeForComparison(field).match(/[a-z0-9]+/g) ?? []
   );
   const significant = (address.match(/[a-z0-9]+/g) ?? []).filter(
     (token) => !["de", "del", "la", "el", "numero", "nro"].includes(token)
@@ -658,6 +687,91 @@ function payloadPreservesAddress(
     significant.length > 0 &&
     significant.every((token) => endpointTokens.has(token))
   );
+}
+
+type AddressEndpoint = "pickup" | "destination";
+
+function confirmedAddressEndpoint(
+  messages: string[],
+  addressMessageIndex: number
+): AddressEndpoint | undefined {
+  for (const content of messages.slice(addressMessageIndex + 1)) {
+    if (isExplicitAddressReplacement(content)) return undefined;
+    const endpoint = standaloneEndpointConfirmation(content);
+    if (endpoint) return endpoint;
+  }
+  return undefined;
+}
+
+function payloadContainsLaterAddressReplacement(
+  payload: CreateMandateRequest,
+  messages: string[],
+  addressMessageIndex: number
+): boolean {
+  const laterMessages = messages.slice(addressMessageIndex + 1);
+  return laterMessages.some((content, replacementIndex) => {
+    if (!isExplicitAddressReplacement(content)) return false;
+    const normalized = normalizeForComparison(content);
+    const endpoints: Array<[AddressEndpoint, string]> = [
+      ["pickup", payload.pickup_address],
+      ["destination", payload.destination_place]
+    ];
+    return endpoints.some(([endpoint, value]) => {
+      if (!normalized.includes(normalizeForComparison(value))) return false;
+      const confirmedEndpoint =
+        endpointMentionedIn(content) ??
+        laterMessages
+          .slice(replacementIndex + 1)
+          .map(standaloneEndpointConfirmation)
+          .find((item) => item !== undefined);
+      return confirmedEndpoint === endpoint;
+    });
+  });
+}
+
+function isExplicitAddressReplacement(content: string): boolean {
+  const normalized = normalizeForComparison(content);
+  return (
+    /\b(?:cambia(?:r|me|la|lo)?|reemplaza(?:r|la|lo)?|pon(?:le|la|lo)?|usa(?:r)?|deja(?:r|le)?)\b/.test(
+      normalized
+    ) &&
+    /\b(?:direccion|destino|entrega|recoleccion|recogida|pickup|delivery)\b/.test(
+      normalized
+    )
+  );
+}
+
+function endpointMentionedIn(content: string): AddressEndpoint | undefined {
+  const normalized = normalizeForComparison(content);
+  const pickup = /\b(?:recoleccion|recogida|pickup|origen)\b/.test(normalized);
+  const destination = /\b(?:entrega|delivery|destino)\b/.test(normalized);
+  if (pickup === destination) return undefined;
+  return pickup ? "pickup" : "destination";
+}
+
+function standaloneEndpointConfirmation(
+  content: string
+): AddressEndpoint | undefined {
+  const normalized = normalizeForComparison(content).replace(/[^a-z\s]/g, "");
+  if (
+    /^(?:es\s+)?(?:de\s+)?(?:recoleccion|recogida|pickup|origen)$/.test(
+      normalized
+    )
+  ) {
+    return "pickup";
+  }
+  if (/^(?:es\s+)?(?:de\s+)?(?:entrega|delivery|destino)$/.test(normalized)) {
+    return "destination";
+  }
+  return undefined;
+}
+
+function normalizeForComparison(content: string): string {
+  return content
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
 }
 
 function operationSnapshot(operation: Operation) {
