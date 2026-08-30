@@ -2,7 +2,7 @@ import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 
 import type { CreateMandateRequest } from "@volta/contracts";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 
 import { createApp } from "../../src/server";
 import { DeterministicAgentAnswerer } from "../../src/agent/operationalAgent";
@@ -32,6 +32,7 @@ afterEach(async () => {
       await once(server, "close");
     })
   );
+  vi.restoreAllMocks();
 });
 
 it("creates a real operation, then retains the mandate record", async () => {
@@ -177,6 +178,42 @@ it("streams readable central-brain activity before the grounded answer", async (
   expect(stream).toContain("Searching operational records");
   expect(stream).toContain("Reviewing items that need attention");
   expect(stream).toContain("event: final");
+});
+
+it("sanitizes agent failures before streaming them to the browser", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const app = createApp({
+    mandatesRepository: new MemoryRepository(),
+    repository: new MemoryAgentRepository(),
+    answerer: {
+      answer: async () => {
+        throw new Error("private upstream detail: credential and schema data");
+      }
+    }
+  });
+  const createResponse = await request(app, "/api/agent/conversations", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title: "Failure handling" })
+  });
+  const created = (await createResponse.json()) as { id: string };
+
+  const messageResponse = await request(
+    app,
+    `/api/agent/conversations/${created.id}/messages`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ question: "Summarize the active operation" })
+    }
+  );
+  const stream = await messageResponse.text();
+
+  expect(messageResponse.status).toBe(200);
+  expect(stream).toContain("event: error");
+  expect(stream).toContain('"error":"agent_request_failed"');
+  expect(stream).toContain("No action was taken");
+  expect(stream).not.toContain("private upstream detail");
 });
 
 class MemoryRepository implements MandatesRepository {

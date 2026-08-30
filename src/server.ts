@@ -653,9 +653,8 @@ export function createApp(options: CreateAppOptions = {}) {
         );
         writeAgentEvent(response, "final", message);
       } catch (error) {
-        const reason =
-          error instanceof Error ? error.message : "agent_request_failed";
-        writeAgentEvent(response, "error", { error: reason });
+        console.error("Volta agent request failed", error);
+        writeAgentEvent(response, "error", publicAgentFailure(error));
       } finally {
         response.end();
       }
@@ -874,6 +873,50 @@ function authorizeInternalRequest(request: Request, response: Response) {
 function storageFailure(response: Response, error: unknown) {
   console.error("Volta storage request failed", error);
   response.status(503).json({ error: "agent_storage_unavailable" });
+}
+
+function publicAgentFailure(error: unknown) {
+  const reason = error instanceof Error ? error.message : "";
+  if (reason === "conversation_not_found") {
+    return {
+      error: "agent_conversation_missing",
+      message: "This conversation is no longer available. Start a new chat.",
+      retryable: false
+    };
+  }
+  if (reason === "agent_model_unavailable") {
+    return {
+      error: "agent_model_unavailable",
+      message: "Volta's language model is not configured.",
+      retryable: false
+    };
+  }
+  if (
+    reason.includes("Schema field") ||
+    reason.includes("Invalid schema for function")
+  ) {
+    return {
+      error: "agent_configuration_invalid",
+      message: "Volta's operational tools are temporarily unavailable.",
+      retryable: false
+    };
+  }
+  const status =
+    typeof error === "object" && error !== null && "status" in error
+      ? Number(error.status)
+      : undefined;
+  if (status === 429) {
+    return {
+      error: "agent_rate_limited",
+      message: "Volta is receiving too many requests. Try again shortly.",
+      retryable: true
+    };
+  }
+  return {
+    error: "agent_request_failed",
+    message: "Volta could not answer right now. No action was taken.",
+    retryable: true
+  };
 }
 
 export function isMainModule(moduleUrl: string, entrypoint?: string): boolean {

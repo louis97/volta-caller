@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { createCentralBrainTools } from "../../src/agent/centralBrain";
 import {
   DeterministicAgentAnswerer,
+  createResponsesToolDefinitions,
   createOperationalAgent
 } from "../../src/agent/operationalAgent";
 import {
@@ -20,6 +21,28 @@ const context: OrganizationContext = {
 const NOW = "2026-09-01T15:10:00.000Z";
 
 describe("central brain tools", () => {
+  it("exports strict Responses schemas with every property required", () => {
+    const operation = quoteRound();
+    const tools = createCentralBrainTools({
+      context,
+      conversationId: "conversation-001",
+      repository: new MemoryAgentRepository(),
+      getCurrentOperation: () => operation,
+      now: () => NOW
+    });
+
+    expect(() => createResponsesToolDefinitions(tools)).not.toThrow();
+    for (const definition of createResponsesToolDefinitions(tools)) {
+      const parameters = definition.parameters as {
+        properties?: Record<string, unknown>;
+        required?: string[];
+      };
+      expect(new Set(parameters.required)).toEqual(
+        new Set(Object.keys(parameters.properties ?? {}))
+      );
+    }
+  });
+
   it("compares real quotes against the canonical mandate", async () => {
     const operation = quoteRound();
     const repository = new MemoryAgentRepository();
@@ -68,7 +91,9 @@ describe("central brain tools", () => {
     });
 
     const result = await tool(tools, "search_operational_records").execute({
-      query: "operation"
+      query: "operation",
+      operationId: null,
+      sourceTypes: null
     });
 
     expect(result.citations.length).toBeGreaterThan(0);
@@ -145,7 +170,8 @@ describe("central brain tools", () => {
     });
     const proposal = await tool(tools, "propose_carrier_selection").execute({
       approvalId: "approval-001",
-      selectedQuoteId: "quote-approved"
+      selectedQuoteId: "quote-approved",
+      rationale: null
     });
     store.registerQuote({
       ...operation.quotes[0],

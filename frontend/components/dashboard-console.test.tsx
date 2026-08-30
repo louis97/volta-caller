@@ -39,10 +39,17 @@ describe("DashboardConsole", () => {
   });
 
   it("opens Volta as a primary workspace instead of a drawer", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({ ok: true, json: async () => [] })
-    );
+    const operation = { ...seedOperation(), pipelineStage: "open" };
+    const fetchMock = vi.fn().mockImplementation(async (input: string) => {
+      if (input === "/api/operation") {
+        return { ok: true, json: async () => operation };
+      }
+      if (input === "/api/agent/conversations") {
+        return { ok: true, json: async () => [] };
+      }
+      throw new Error(`Unexpected request: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
     render(<DashboardConsole />);
 
     openNavigationItem("Volta");
@@ -60,6 +67,8 @@ describe("DashboardConsole", () => {
     expect(
       screen.queryByRole("button", { name: "Close Volta Copilot" })
     ).not.toBeInTheDocument();
+    expect(await screen.findByText(operation.id)).toBeInTheDocument();
+    expect(screen.queryByText("no operation loaded")).not.toBeInTheDocument();
   });
 
   it("creates a backend conversation and renders navigable evidence", async () => {
@@ -87,30 +96,38 @@ describe("DashboardConsole", () => {
       'event: activity\ndata: {"stage":"searching_records","label":"Searching operational records"}\n\n',
       `event: final\ndata: ${JSON.stringify(finalMessage)}\n\n`
     ].join("");
+    const operation = { ...seedOperation(), pipelineStage: "open" };
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => []
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          id: "conversation-001",
-          organizationId: "textiles-pacifico",
-          createdBy: "dispatcher",
-          title: "Where is the shipment?",
-          messages: [],
-          createdAt: "2026-09-01T15:00:00.000Z",
-          updatedAt: "2026-09-01T15:00:00.000Z"
-        })
-      })
-      .mockResolvedValueOnce(
-        new Response(stream, {
-          status: 200,
-          headers: { "content-type": "text/event-stream" }
-        })
-      );
+      .mockImplementation(async (input: string, init?: RequestInit) => {
+        if (input === "/api/operation") {
+          return { ok: true, json: async () => operation };
+        }
+        if (input === "/api/agent/conversations" && init?.method === "POST") {
+          return {
+            ok: true,
+            json: async () => ({
+              id: "conversation-001",
+              organizationId: "textiles-pacifico",
+              createdBy: "dispatcher",
+              title: "Where is the shipment?",
+              messages: [],
+              createdAt: "2026-09-01T15:00:00.000Z",
+              updatedAt: "2026-09-01T15:00:00.000Z"
+            })
+          };
+        }
+        if (input === "/api/agent/conversations") {
+          return { ok: true, json: async () => [] };
+        }
+        if (input === "/api/agent/conversations/conversation-001/messages") {
+          return new Response(stream, {
+            status: 200,
+            headers: { "content-type": "text/event-stream" }
+          });
+        }
+        throw new Error(`Unexpected request: ${input}`);
+      });
     vi.stubGlobal("fetch", fetchMock);
     render(<DashboardConsole />);
 
@@ -139,8 +156,7 @@ describe("DashboardConsole", () => {
     expect(
       screen.getByRole("link", { name: "Carga en origen" })
     ).toHaveAttribute("href", "/api/evidence/shipment_event/event-001");
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
+    expect(fetchMock).toHaveBeenCalledWith(
       "/api/agent/conversations/conversation-001/messages",
       expect.objectContaining({ method: "POST" })
     );
@@ -170,13 +186,32 @@ describe("DashboardConsole", () => {
         }
       ]
     };
+    const operation = { ...seedOperation(), pipelineStage: "open" };
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true, json: async () => [conversation] })
-      .mockResolvedValueOnce({ ok: true, json: async () => detail })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ ...conversation, title: "Priority approvals" })
+      .mockImplementation(async (input: string, init?: RequestInit) => {
+        if (input === "/api/operation") {
+          return { ok: true, json: async () => operation };
+        }
+        if (input === "/api/agent/conversations") {
+          return { ok: true, json: async () => [conversation] };
+        }
+        if (
+          input === "/api/agent/conversations/conversation-latest" &&
+          init?.method === "PATCH"
+        ) {
+          return {
+            ok: true,
+            json: async () => ({
+              ...conversation,
+              title: "Priority approvals"
+            })
+          };
+        }
+        if (input === "/api/agent/conversations/conversation-latest") {
+          return { ok: true, json: async () => detail };
+        }
+        throw new Error(`Unexpected request: ${input}`);
       });
     vi.stubGlobal("fetch", fetchMock);
     render(<DashboardConsole />);
@@ -195,11 +230,67 @@ describe("DashboardConsole", () => {
     expect(
       (await screen.findAllByText("Priority approvals")).length
     ).toBeGreaterThan(0);
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
+    expect(fetchMock).toHaveBeenCalledWith(
       "/api/agent/conversations/conversation-latest",
       expect.objectContaining({ method: "PATCH" })
     );
+  });
+
+  it("shows a safe actionable message for an agent SSE failure", async () => {
+    const operation = { ...seedOperation(), pipelineStage: "open" };
+    const stream = [
+      'event: error\ndata: {"error":"agent_configuration_invalid","message":"private raw detail"}\n\n'
+    ].join("");
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(async (input: string, init?: RequestInit) => {
+        if (input === "/api/operation") {
+          return { ok: true, json: async () => operation };
+        }
+        if (input === "/api/agent/conversations" && init?.method === "POST") {
+          return {
+            ok: true,
+            json: async () => ({
+              id: "conversation-error",
+              organizationId: "textiles-pacifico",
+              createdBy: "dispatcher",
+              title: "Status",
+              messages: [],
+              createdAt: "2026-09-01T15:00:00.000Z",
+              updatedAt: "2026-09-01T15:00:00.000Z"
+            })
+          };
+        }
+        if (input === "/api/agent/conversations") {
+          return { ok: true, json: async () => [] };
+        }
+        if (input === "/api/agent/conversations/conversation-error/messages") {
+          return new Response(stream, {
+            status: 200,
+            headers: { "content-type": "text/event-stream" }
+          });
+        }
+        throw new Error(`Unexpected request: ${input}`);
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<DashboardConsole />);
+
+    openNavigationItem("Volta");
+    fireEvent.change(
+      await screen.findByLabelText("Ask across operational history"),
+      { target: { value: "Status" } }
+    );
+    await vi.waitFor(() =>
+      expect(screen.getByRole("button", { name: "Ask Volta" })).toBeEnabled()
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Ask Volta" }));
+
+    expect(
+      await screen.findByText(
+        "Volta's operational tools are temporarily unavailable. No action was taken."
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByText("private raw detail")).not.toBeInTheDocument();
   });
 
   it("posts the complete mandate to the API before showing it as created", async () => {
