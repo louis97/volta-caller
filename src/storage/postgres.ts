@@ -401,6 +401,40 @@ export class PostgresAgentRepository implements AgentRepository {
     );
   }
 
+  async listTranscript(
+    organizationId: string,
+    callId?: string
+  ): Promise<TranscriptSegment[]> {
+    await this.initialize();
+    const { rows } = await this.pool.query<{
+      id: string;
+      operation_id: string;
+      call_id: string;
+      speaker: string;
+      text: string;
+      start_ms: number;
+      end_ms: number;
+      created_at: Date;
+    }>(
+      callId
+        ? `select * from transcript_segments where organization_id=$1 and call_id=$2 order by start_ms asc`
+        : `select * from transcript_segments where organization_id=$1 order by created_at asc`,
+      callId ? [organizationId, callId] : [organizationId]
+    );
+
+    return rows.map((row) => ({
+      id: row.id,
+      organizationId,
+      operationId: row.operation_id,
+      callId: row.call_id,
+      speaker: row.speaker as TranscriptSegment["speaker"],
+      text: row.text,
+      startMs: row.start_ms,
+      endMs: row.end_ms,
+      createdAt: new Date(row.created_at).toISOString()
+    }));
+  }
+
   async addTranscriptSegments(segments: TranscriptSegment[]) {
     await this.initialize();
     const client = await this.pool.connect();

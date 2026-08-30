@@ -221,6 +221,8 @@ export function createApp(options: CreateAppOptions = {}) {
   scenario.store.subscribe(publish);
   app.locals.operationStore = scenario.store;
   app.locals.telephonyDialled = dialled;
+  app.locals.listTranscript = (callId?: string) =>
+    repository.listTranscript(activeOrganizationId, callId);
   app.locals.listActiveCarriers = async () => {
     const carriers = await repository.listCarriers(activeOrganizationId);
     return carriers
@@ -812,7 +814,9 @@ export function createApp(options: CreateAppOptions = {}) {
     onTranscriptAppended: (segment) =>
       app.locals.saveTranscriptSegment(segment),
     // The console's carrier directory is what a round dials.
-    listActiveCarriers: () => app.locals.listActiveCarriers()
+    listActiveCarriers: () => app.locals.listActiveCarriers(),
+    listTranscript: (callId?: string) =>
+      repository.listTranscript(activeOrganizationId, callId)
   });
 
   return app;
@@ -890,7 +894,8 @@ if (isMainModule(import.meta.url, process.argv[1])) {
     onTranscriptAppended: (segment) =>
       app.locals.saveTranscriptSegment(segment),
     // The console's carrier directory is what a round dials.
-    listActiveCarriers: () => app.locals.listActiveCarriers()
+    listActiveCarriers: () => app.locals.listActiveCarriers(),
+    listTranscript: (callId?: string) => app.locals.listTranscript(callId)
   });
 
   const missing = missingTelephonyConfig();

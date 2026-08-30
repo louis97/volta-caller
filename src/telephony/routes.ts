@@ -54,6 +54,10 @@ export type TelephonyDependencies = {
   listActiveCarriers?: () => Promise<
     Array<{ id: string; name: string; phone: string }>
   >;
+  /** Durable transcript, so any instance can serve a call it did not handle. */
+  listTranscript?: (
+    callId?: string
+  ) => Promise<Array<import("@volta/contracts").TranscriptSegment>>;
 };
 
 /**
@@ -323,12 +327,30 @@ export function mountTelephonyRoutes(
     }
   });
 
-  app.get("/api/transcript", (request, response) => {
+  app.get("/api/transcript", async (request, response) => {
     const callId =
       typeof request.query.callId === "string"
         ? request.query.callId
         : undefined;
-    response.status(200).json(store.getTranscript(callId));
+    // The store holds this process's live tail; the repository holds every
+    // call ever handled, including by another instance. Merged and deduped so
+    // a segment written moments ago is not missing while its insert lands.
+    const live = store.getTranscript(callId);
+    let stored: Array<import("@volta/contracts").TranscriptSegment> = [];
+    try {
+      stored = (await dependencies.listTranscript?.(callId)) ?? [];
+    } catch (error) {
+      console.error("[transcript] read failed:", error);
+    }
+
+    const byId = new Map(stored.map((segment) => [segment.id, segment]));
+    for (const segment of live) byId.set(segment.id, segment);
+
+    response
+      .status(200)
+      .json(
+        [...byId.values()].sort((left, right) => left.startMs - right.startMs)
+      );
   });
 
   app.get("/api/auction", (_request, response) => {

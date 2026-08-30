@@ -65,6 +65,15 @@ export type AgentRepository = {
   ): Promise<EvidenceCitation | undefined>;
   addShipmentEvent(event: ShipmentEvent): Promise<void>;
   addTranscriptSegments(segments: TranscriptSegment[]): Promise<void>;
+  /**
+   * Reads transcript back. Without this every instance can only show calls it
+   * handled itself: a console served by a different process sees an empty
+   * floor no matter how much is in the table.
+   */
+  listTranscript(
+    organizationId: string,
+    callId?: string
+  ): Promise<TranscriptSegment[]>;
   saveAction(action: ProposedAction): Promise<void>;
   getAction(
     context: OrganizationContext,
@@ -243,6 +252,13 @@ export class MemoryAgentRepository implements AgentRepository {
     const next = events.filter((item) => item.id !== event.id);
     next.push(structuredClone(event));
     this.events.set(event.organizationId, next);
+  }
+
+  async listTranscript(organizationId: string, callId?: string) {
+    const all = this.transcripts.get(organizationId) ?? [];
+    return all
+      .filter((segment) => callId === undefined || segment.callId === callId)
+      .map((segment) => ({ ...segment }));
   }
 
   async addTranscriptSegments(segments: TranscriptSegment[]) {
