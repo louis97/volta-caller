@@ -12,11 +12,13 @@ import * as m from "motion/react-m";
 import {
   type FormEvent,
   type KeyboardEvent,
+  useCallback,
   useEffect,
   useRef,
   useState
 } from "react";
 
+import { fetchOperationalRead } from "./api-client";
 import { ArrowIcon, EditIcon, LinkIcon, PlusIcon } from "./icons";
 
 const QUICK_PROMPTS = [
@@ -60,54 +62,64 @@ export function VoltaChat({ onOperationChange }: VoltaChatProps) {
   const [isSending, setIsSending] = useState(false);
   const [isRestoring, setIsRestoring] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [canRetryLoad, setCanRetryLoad] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameTitle, setRenameTitle] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const loadSequenceRef = useRef(0);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function restoreLatest() {
-      setIsRestoring(true);
-      setLoadError(null);
-      try {
-        const listResponse = await fetch("/api/agent/conversations");
-        if (!listResponse.ok) throw new Error("conversation_list_failed");
-        const list = (await listResponse.json()) as AgentConversation[];
-        if (cancelled) return;
-        setConversations(list);
-        const latest = list[0];
-        if (!latest) return;
-        const detailResponse = await fetch(
-          `/api/agent/conversations/${latest.id}`
-        );
-        if (!detailResponse.ok) throw new Error("conversation_load_failed");
-        const detail = (await detailResponse.json()) as AgentConversation;
-        if (cancelled) return;
-        setConversationId(detail.id);
-        setMessages(detail.messages);
-      } catch {
-        if (!cancelled) {
-          setLoadError(
-            "Volta could not load conversation history. You can still start a new chat."
-          );
-        }
-      } finally {
-        if (!cancelled) setIsRestoring(false);
+  const restoreLatest = useCallback(async () => {
+    const sequence = ++loadSequenceRef.current;
+    setIsRestoring(true);
+    setLoadError(null);
+    setCanRetryLoad(false);
+    try {
+      const listResponse = await fetchOperationalRead(
+        "/api/agent/conversations"
+      );
+      if (!listResponse.ok) throw new Error("conversation_list_failed");
+      const list = (await listResponse.json()) as AgentConversation[];
+      if (sequence !== loadSequenceRef.current) return;
+      setConversations(list);
+      const latest = list[0];
+      if (!latest) {
+        setConversationId(null);
+        setMessages([]);
+        return;
       }
+      const detailResponse = await fetchOperationalRead(
+        `/api/agent/conversations/${latest.id}`
+      );
+      if (!detailResponse.ok) throw new Error("conversation_load_failed");
+      const detail = (await detailResponse.json()) as AgentConversation;
+      if (sequence !== loadSequenceRef.current) return;
+      setConversationId(detail.id);
+      setMessages(detail.messages);
+    } catch {
+      if (sequence === loadSequenceRef.current) {
+        setLoadError(
+          "Volta could not load conversation history. You can still start a new chat."
+        );
+        setCanRetryLoad(true);
+      }
+    } finally {
+      if (sequence === loadSequenceRef.current) setIsRestoring(false);
     }
+  }, []);
+
+  useEffect(() => {
     void restoreLatest();
     return () => {
-      cancelled = true;
+      loadSequenceRef.current += 1;
     };
-  }, []);
+  }, [restoreLatest]);
 
   useEffect(() => {
     let cancelled = false;
     async function loadOperation() {
       try {
-        const response = await fetch("/api/operation");
+        const response = await fetchOperationalRead("/api/operation");
         if (!response.ok || cancelled) return;
         const operation: unknown = await response.json();
         if (!cancelled && isOperationReadModel(operation)) {
@@ -138,7 +150,9 @@ export function VoltaChat({ onOperationChange }: VoltaChatProps) {
     setIsRestoring(true);
     setLoadError(null);
     try {
-      const response = await fetch(`/api/agent/conversations/${id}`);
+      const response = await fetchOperationalRead(
+        `/api/agent/conversations/${id}`
+      );
       if (!response.ok) throw new Error("conversation_load_failed");
       const detail = (await response.json()) as AgentConversation;
       if (sequence !== loadSequenceRef.current) return;
@@ -147,6 +161,7 @@ export function VoltaChat({ onOperationChange }: VoltaChatProps) {
     } catch {
       if (sequence === loadSequenceRef.current) {
         setLoadError("This conversation could not be loaded.");
+        setCanRetryLoad(true);
       }
     } finally {
       if (sequence === loadSequenceRef.current) setIsRestoring(false);
@@ -161,6 +176,7 @@ export function VoltaChat({ onOperationChange }: VoltaChatProps) {
     setQuestion("");
     setActivity(null);
     setLoadError(null);
+    setCanRetryLoad(false);
     setIsRestoring(false);
     requestAnimationFrame(() => inputRef.current?.focus());
   }
@@ -206,6 +222,7 @@ export function VoltaChat({ onOperationChange }: VoltaChatProps) {
     setQuestion("");
     setIsSending(true);
     setLoadError(null);
+    setCanRetryLoad(false);
     setActivity({
       stage: "searching_records",
       label: "Connecting to operational records"
@@ -416,7 +433,20 @@ export function VoltaChat({ onOperationChange }: VoltaChatProps) {
         </header>
 
         <div className="brain__thread" aria-live="polite" ref={threadRef}>
-          {loadError && <p className="brain__notice">{loadError}</p>}
+          {loadError && (
+            <div className="brain__notice" role="alert">
+              <span>{loadError}</span>
+              {canRetryLoad && (
+                <button
+                  disabled={isRestoring}
+                  onClick={() => void restoreLatest()}
+                  type="button"
+                >
+                  Retry
+                </button>
+              )}
+            </div>
+          )}
           {isRestoring ? (
             <div className="brain__loading">
               <i className="pulse" /> Loading operational memory

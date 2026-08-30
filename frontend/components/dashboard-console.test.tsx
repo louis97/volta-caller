@@ -236,6 +236,93 @@ describe("DashboardConsole", () => {
     );
   });
 
+  it("recovers conversation history after a transient read failure", async () => {
+    const operation = { ...seedOperation(), pipelineStage: "open" };
+    const conversation = {
+      id: "conversation-recovered",
+      organizationId: "textiles-pacifico",
+      createdBy: "dispatcher",
+      title: "Recovered history",
+      messages: [],
+      createdAt: "2026-09-01T14:00:00.000Z",
+      updatedAt: "2026-09-01T15:00:00.000Z"
+    };
+    const detail = {
+      ...conversation,
+      messages: [
+        {
+          id: "assistant-recovered",
+          conversationId: conversation.id,
+          role: "assistant",
+          content: "Operational memory is available again.",
+          citations: [],
+          proposedActions: [],
+          createdAt: "2026-09-01T15:00:00.000Z"
+        }
+      ]
+    };
+    let listAttempts = 0;
+    const fetchMock = vi.fn().mockImplementation(async (input: string) => {
+      if (input === "/api/operation") {
+        return { ok: true, json: async () => operation };
+      }
+      if (input === "/api/agent/conversations") {
+        listAttempts += 1;
+        if (listAttempts === 1) throw new Error("temporary_network_failure");
+        return { ok: true, json: async () => [conversation] };
+      }
+      if (input === "/api/agent/conversations/conversation-recovered") {
+        return { ok: true, json: async () => detail };
+      }
+      throw new Error(`Unexpected request: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<DashboardConsole />);
+
+    openNavigationItem("Volta");
+
+    expect(
+      await screen.findByText("Operational memory is available again.")
+    ).toBeInTheDocument();
+    expect(listAttempts).toBe(2);
+    expect(
+      screen.queryByText(/could not load conversation history/i)
+    ).not.toBeInTheDocument();
+  });
+
+  it("recovers the carrier directory after a transient read failure", async () => {
+    let carrierAttempts = 0;
+    const fetchMock = vi.fn().mockImplementation(async (input: string) => {
+      if (input === "/api/carriers") {
+        carrierAttempts += 1;
+        if (carrierAttempts === 1) throw new Error("temporary_network_failure");
+        return {
+          ok: true,
+          json: async () => [
+            {
+              id: "carrier-juan",
+              name: "Juan Camilo",
+              phone: "+573224118118",
+              lanes: ["Manzanillo - Guadalajara"],
+              active: true
+            }
+          ]
+        };
+      }
+      throw new Error(`Unexpected request: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<DashboardConsole />);
+
+    openNavigationItem("Carriers");
+
+    expect(await screen.findByText("Juan Camilo")).toBeInTheDocument();
+    expect(carrierAttempts).toBe(2);
+    expect(
+      screen.queryByText(/carrier directory is unavailable/i)
+    ).not.toBeInTheDocument();
+  });
+
   it("shows a safe actionable message for an agent SSE failure", async () => {
     const operation = { ...seedOperation(), pipelineStage: "open" };
     const stream = [

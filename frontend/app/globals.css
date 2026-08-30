@@ -1217,6 +1217,31 @@ button.ledger__row:hover {
   line-height: 1.5;
 }
 
+.form-error--recoverable,
+.brain__notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.form-error--recoverable button,
+.brain__notice button {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border: 1px solid currentColor;
+  border-radius: var(--r-xs);
+  color: inherit;
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.form-error--recoverable button:disabled,
+.brain__notice button:disabled {
+  opacity: 0.55;
+}
+
 .saved {
   display: flex;
   align-items: center;

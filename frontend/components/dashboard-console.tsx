@@ -19,6 +19,7 @@ import {
 } from "motion/react";
 import * as m from "motion/react-m";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { fetchOperationalRead } from "./api-client";
 import {
   AlertIcon,
   ApprovalIcon,
@@ -122,7 +123,7 @@ function useLiveOperation() {
     let cancelled = false;
     const refresh = async () => {
       try {
-        const response = await fetch("/api/operation");
+        const response = await fetchOperationalRead("/api/operation");
         if (!response.ok || cancelled) return;
         const next = (await response.json()) as OperationReadModel;
         if (cancelled) return;
@@ -1194,13 +1195,19 @@ type CarrierRow = {
 function CarriersView() {
   const [carriers, setCarriers] = useState<CarrierRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const refresh = async () => {
+    setIsRefreshing(true);
     try {
-      const response = await fetch("/api/carriers");
-      if (response.ok) setCarriers((await response.json()) as CarrierRow[]);
+      const response = await fetchOperationalRead("/api/carriers");
+      if (!response.ok) throw new Error("carrier_directory_unavailable");
+      setCarriers((await response.json()) as CarrierRow[]);
+      setError(null);
     } catch {
       setError("The carrier directory is unavailable. Retry in a moment.");
+    } finally {
+      setIsRefreshing(false);
     }
   };
 
@@ -1280,9 +1287,16 @@ function CarriersView() {
             </label>
           </div>
           {error && (
-            <p className="form-error" role="alert">
-              {error}
-            </p>
+            <div className="form-error form-error--recoverable" role="alert">
+              <span>{error}</span>
+              <button
+                disabled={isRefreshing}
+                onClick={() => void refresh()}
+                type="button"
+              >
+                {isRefreshing ? "Retrying…" : "Retry"}
+              </button>
+            </div>
           )}
         </div>
         <div className="card__foot">
