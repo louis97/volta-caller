@@ -138,6 +138,17 @@ describe("telephony adapters", () => {
       startedAt: "2026-09-01T15:00:00.000Z"
     });
     expect(gateway.calls).toEqual([
+      {
+        type: "created",
+        callId: session.id,
+        input: {
+          operationId: "operation-001",
+          carrierId: "carrier-001",
+          to: "+525500000000",
+          from: "+525522222222",
+          twimlUrl: "https://volta.example.test/twiml"
+        }
+      },
       { type: "transferred", callId: session.id }
     ]);
   });

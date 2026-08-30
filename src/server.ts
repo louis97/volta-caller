@@ -3,8 +3,16 @@ import type { OperationEvent } from "@volta/contracts";
 import { z } from "zod";
 
 import { env } from "./config/env";
+import {
+  ConfirmationCoordinatorError,
+  createConfirmationCoordinator,
+  type ConfirmationCoordinator
+} from "./core/confirmation";
 import { createOperationFromMandate } from "./core/seed";
-import { createMockScenario } from "./mocks/callScenario";
+import type { OperationStore } from "./core/state";
+import { createMockScenario, type MockScenario } from "./mocks/callScenario";
+import { createMockTelephonyGateway } from "./mocks/telephony";
+import type { TelephonyGateway } from "./telephony/twilio";
 
 const createMandateRequestSchema = z.object({
   budget_cap: z.number().finite().nonnegative(),
@@ -17,14 +25,36 @@ const createMandateRequestSchema = z.object({
   pickup_datetime: z.string().datetime({ offset: true })
 });
 
+const selectQuoteRequestSchema = z.object({
+  quoteId: z.string().trim().min(1)
+});
+
+export type CreateAppDependencies = {
+  scenario?: MockScenario;
+  store?: OperationStore;
+  telephony?: TelephonyGateway;
+  confirmationCoordinator?: ConfirmationCoordinator;
+  now?: () => string;
+};
+
 function writeEvent(response: Response, event: OperationEvent): void {
   response.write(`event: ${event.type}\n`);
   response.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
-export function createApp() {
+export function createApp({
+  scenario: injectedScenario,
+  store: injectedStore,
+  telephony = createMockTelephonyGateway(),
+  confirmationCoordinator: injectedConfirmationCoordinator,
+  now
+}: CreateAppDependencies = {}) {
   const app = express();
-  let scenario = createMockScenario();
+  let scenario = injectedScenario ?? createMockScenario();
+  const getStore = () => injectedStore ?? scenario.store;
+  let confirmationCoordinator =
+    injectedConfirmationCoordinator ??
+    createConfirmationCoordinator({ store: getStore(), telephony, now });
   let mandateSequence = 1;
   const eventClients = new Set<Response>();
 
@@ -39,7 +69,7 @@ export function createApp() {
   });
 
   app.get("/api/operation", (_request, response) => {
-    response.status(200).json(scenario.store.getOperation());
+    response.status(200).json(getStore().getOperation());
   });
 
   app.post("/api/mandates", (request, response) => {
@@ -59,8 +89,34 @@ export function createApp() {
       parsed.data,
       `operation-mandate-${mandateSequence++}`
     );
-    scenario.store.replaceOperation(operation);
-    response.status(201).json(scenario.store.getOperation());
+    getStore().replaceOperation(operation);
+    response.status(201).json(getStore().getOperation());
+  });
+
+  app.post("/operations/:id/select-quote", async (request, response) => {
+    const parsed = selectQuoteRequestSchema.safeParse(request.body);
+    if (!parsed.success) {
+      response.status(400).json({ error: "invalid_selection" });
+      return;
+    }
+
+    try {
+      await confirmationCoordinator.start(
+        request.params.id,
+        parsed.data.quoteId
+      );
+      response.status(202).json(getStore().getOperation());
+    } catch (error) {
+      if (error instanceof ConfirmationCoordinatorError) {
+        response
+          .status(error.code === "operation_not_found" ? 404 : 502)
+          .json({ error: error.code });
+        return;
+      }
+      const code =
+        error instanceof Error ? error.message : "selection_not_allowed";
+      response.status(409).json({ error: code });
+    }
   });
 
   app.post("/api/demo/run", async (_request, response) => {
@@ -70,6 +126,13 @@ export function createApp() {
     }
 
     scenario = createMockScenario(publish);
+    if (!injectedStore && !injectedConfirmationCoordinator) {
+      confirmationCoordinator = createConfirmationCoordinator({
+        store: scenario.store,
+        telephony,
+        now
+      });
+    }
     await scenario.run();
     response.sendStatus(202);
   });

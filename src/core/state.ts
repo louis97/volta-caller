@@ -19,6 +19,7 @@ export type OperationStore = {
   reviewDeal(input: { quoteId: string; reviewedAt: string }): ReviewedDeal;
   selectQuote(input: { quoteId: string; now: string }): ClientSelection;
   beginConfirmation(quoteId: string, callId?: string): void;
+  failSelection(reason: string): void;
   failConfirmation(reason: string, callId: string): void;
   recordIncident(incident: Incident): void;
   updateOperationStatus(input: {
@@ -166,6 +167,17 @@ export function createOperationStore(
         status: "confirming_selected_carrier",
         ...(callId ? { confirmationCallId: callId } : {})
       };
+    },
+    failSelection: (reason) => {
+      if (operation.status !== "carrier_selected") {
+        throw new Error("confirmation_not_allowed");
+      }
+      operation = { ...operation, status: "confirmation_failed" };
+      publish({
+        type: "confirmation.failed",
+        operationId: operation.id,
+        reason
+      });
     },
     failConfirmation: (reason, callId) => {
       if (operation.status !== "confirming_selected_carrier") {
