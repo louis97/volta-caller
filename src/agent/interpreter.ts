@@ -192,6 +192,32 @@ export async function executeToolCall(
         price: parsed.data.current_price_offered,
         pickupTime: operation.mandate.pickupDatetime
       });
+
+      // A carrier's stated price is a quote whether or not the model also
+      // called register_quote for it: escalating over a price it never
+      // recorded would leave the board showing "awaiting quote" for a call
+      // that already has one, undetectable from the transcript alone.
+      const escalationCallId =
+        dependencies.callContext?.callId ?? parsed.data.callId;
+      const carrierName = dependencies.callContext?.carrierName;
+      if (
+        escalationCallId !== undefined &&
+        carrierName &&
+        !operation.quotes.some((quote) => quote.callId === escalationCallId)
+      ) {
+        const now = dependencies.now ?? (() => new Date().toISOString());
+        const sequence = operation.quotes.length + 1;
+        dependencies.store.registerQuote({
+          id: `quote-${escalationCallId}-${sequence}`,
+          callId: escalationCallId,
+          carrierId: dependencies.callContext?.carrierId ?? "unknown",
+          carrierName,
+          priceMxn: parsed.data.current_price_offered,
+          pickupTime: operation.mandate.pickupDatetime,
+          createdAt: now()
+        });
+      }
+
       dependencies.store.requestEscalation(
         createEscalation(
           dependencies.store,
