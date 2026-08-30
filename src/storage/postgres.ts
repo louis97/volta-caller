@@ -701,7 +701,8 @@ export class PostgresAgentRepository implements AgentRepository {
       "003_carriers_and_pipeline.sql",
       "004_agent_action_payload.sql",
       "005_inbound_message_receipts.sql",
-      "006_telephony_call_contexts.sql"
+      "006_telephony_call_contexts.sql",
+      "007_quote_extractions.sql"
     ];
     for (const migration of migrations) {
       const sql = await readFile(

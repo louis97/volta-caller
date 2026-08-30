@@ -17,3 +17,5 @@ CREATE TABLE IF NOT EXISTS quote_extractions (
 
 CREATE UNIQUE INDEX IF NOT EXISTS quote_extractions_call_idx
   ON quote_extractions (organization_id, call_id);
+
+ALTER TABLE quote_extractions ENABLE ROW LEVEL SECURITY;
