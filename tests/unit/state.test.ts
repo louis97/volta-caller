@@ -160,7 +160,7 @@ describe("createOperationStore", () => {
     expect(store.getOperation().status).toBe("carrier_selected");
   });
 
-  it("does not mutate an operation for an expired selection", () => {
+  it("marks an operation as selection_expired for an expired selection", () => {
     const operation = seedOperation();
     operation.status = "awaiting_client_selection";
     operation.quotes = [quote];
@@ -178,7 +178,11 @@ describe("createOperationStore", () => {
     expect(() =>
       store.selectQuote({ quoteId: quote.id, now: "2026-09-04T00:00:00Z" })
     ).toThrow("selection_expired");
-    expect(store.getOperation()).toEqual(before);
+    expect(store.getOperation()).toMatchObject({
+      ...before,
+      status: "selection_expired"
+    });
+    expect(store.getOperation().selection).toBeUndefined();
   });
 
   it("rejects selection of a reviewed quote that is not approved", () => {

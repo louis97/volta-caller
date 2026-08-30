@@ -143,7 +143,7 @@ describe("client selection API", () => {
 
     expect(response.status).toBe(409);
     expect(telephony.calls).toEqual([]);
-    expect(store.getOperation().status).toBe("awaiting_client_selection");
+    expect(store.getOperation().status).toBe("selection_expired");
     expect(store.getOperation().commitment).toBeUndefined();
   });
 
