@@ -267,6 +267,11 @@ export function mountTelephonyRoutes(
         '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
       );
   const machineAnswered = (request: express.Request) => {
+    // Detection labels a real person machine_start often enough — a short
+    // "¿Aló?" and a pause reads the same as a recording — that acting on it
+    // dropped whole rounds against carriers who had picked up.
+    if (!env.TWILIO_HANGUP_ON_MACHINE) return false;
+
     const answeredBy = String(
       (request.body as { AnsweredBy?: unknown } | undefined)?.AnsweredBy ?? ""
     );
