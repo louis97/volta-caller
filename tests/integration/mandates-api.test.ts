@@ -10,6 +10,7 @@ import {
   type AgentAnswerer
 } from "../../src/agent/operationalAgent";
 import { MemoryAgentRepository } from "../../src/agent/repository";
+import { seedOperation } from "../../src/core/seed";
 import type {
   MandateRecord,
   MandatesRepository
@@ -86,6 +87,124 @@ it("lists shipment notifications for the dashboard organization", async () => {
 
   expect(response.status).toBe(200);
   await expect(response.json()).resolves.toEqual([event]);
+});
+
+it("lists durable mandate operations and opens one by id", async () => {
+  const repository = new MemoryAgentRepository();
+  const first = seedOperation();
+  const second = {
+    ...seedOperation(),
+    id: "operation-second-mandate",
+    containerId: "CONT-SANTA-MARTA-20",
+    origin: "Santa Marta",
+    destination: "Medellín"
+  };
+  await repository.syncOperation("textiles-pacifico", first);
+  await repository.syncOperation("textiles-pacifico", second);
+  const app = createApp({
+    repository,
+    mandatesRepository: new MemoryRepository()
+  });
+
+  const listResponse = await request(app, "/api/operations");
+  expect(listResponse.status).toBe(200);
+  await expect(listResponse.json()).resolves.toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        id: first.id,
+        pipelineStage: expect.any(String)
+      }),
+      expect.objectContaining({
+        id: second.id,
+        origin: "Santa Marta",
+        destination: "Medellín",
+        pipelineStage: expect.any(String)
+      })
+    ])
+  );
+
+  const detailResponse = await request(
+    app,
+    "/api/operations/operation-second-mandate"
+  );
+  expect(detailResponse.status).toBe(200);
+  await expect(detailResponse.json()).resolves.toMatchObject({
+    id: second.id,
+    containerId: "CONT-SANTA-MARTA-20",
+    origin: "Santa Marta",
+    destination: "Medellín"
+  });
+
+  const missingResponse = await request(app, "/api/operations/missing");
+  expect(missingResponse.status).toBe(404);
+});
+
+it("resolves an approval against the mandate named by the dashboard", async () => {
+  const repository = new MemoryAgentRepository();
+  const current = seedOperation();
+  const selected = {
+    ...seedOperation(),
+    id: "operation-selected-mandate",
+    origin: "Santa Marta",
+    destination: "Medellín",
+    status: "awaiting_approval" as const
+  };
+  selected.quotes = [
+    {
+      id: "quote-selected",
+      carrierId: selected.candidates[0]!.id,
+      carrierName: selected.candidates[0]!.name,
+      priceMxn: 5000,
+      pickupTime: selected.mandate.pickupDatetime,
+      callId: "call-selected",
+      createdAt: "2026-08-30T08:00:00.000Z"
+    }
+  ];
+  selected.approvals = [
+    {
+      id: "approval-selected",
+      operationId: selected.id,
+      type: "carrier_selection",
+      status: "pending",
+      quoteIds: ["quote-selected"],
+      recommendedQuoteId: "quote-selected",
+      createdAt: "2026-08-30T08:01:00.000Z"
+    }
+  ];
+  await repository.syncOperation("textiles-pacifico", current);
+  await repository.syncOperation("textiles-pacifico", selected);
+  const app = createApp({
+    repository,
+    mandatesRepository: new MemoryRepository()
+  });
+
+  const response = await request(
+    app,
+    "/api/approvals/approval-selected/decision?operationId=operation-selected-mandate",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        action: "approve",
+        selectedQuoteId: "quote-selected"
+      })
+    }
+  );
+
+  expect(response.status).toBe(200);
+  await expect(response.json()).resolves.toMatchObject({
+    approval: { id: "approval-selected", status: "approved" },
+    operation: {
+      id: "operation-selected-mandate",
+      closingAuthorization: { quoteId: "quote-selected" }
+    }
+  });
+  await expect(
+    repository.getOperation(
+      { organizationId: "textiles-pacifico", userId: "test" },
+      current.id
+    )
+  ).resolves.toMatchObject({ approvals: [] });
 });
 
 it("runs the mock call round through quotes and stops for a client decision", async () => {

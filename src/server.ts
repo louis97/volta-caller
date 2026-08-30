@@ -857,10 +857,59 @@ export function createApp(options: CreateAppOptions = {}) {
     pipelineStage: derivePipelineStage(operation)
   });
 
+  const operationStoreForDashboard = async (
+    context: OrganizationContext,
+    operationId: string
+  ) => {
+    const current = scenario.store.getOperation();
+    if (
+      current.id === operationId &&
+      context.organizationId === activeOrganizationId
+    ) {
+      return scenario.store;
+    }
+    const operation = await repository.getOperation(context, operationId);
+    return operation ? createOperationStore(operation) : undefined;
+  };
+
   app.get("/api/operation", (_request, response) => {
     response
       .status(200)
       .json(operationReadModel(scenario.store.getOperation()));
+  });
+  app.get("/api/operations", async (request, response) => {
+    const context = contextFromRequest(request, response);
+    if (!context) return;
+    try {
+      const operations = await repository.listOperations(context);
+      const current = scenario.store.getOperation();
+      if (
+        context.organizationId === activeOrganizationId &&
+        operations.length === 0
+      ) {
+        operations.push(current);
+      }
+      response.status(200).json(operations.map(operationReadModel));
+    } catch (error) {
+      storageFailure(response, error);
+    }
+  });
+  app.get("/api/operations/:operationId", async (request, response) => {
+    const context = contextFromRequest(request, response);
+    if (!context) return;
+    try {
+      const store = await operationStoreForDashboard(
+        context,
+        request.params.operationId
+      );
+      if (!store) {
+        response.status(404).json({ error: "operation_not_found" });
+        return;
+      }
+      response.status(200).json(operationReadModel(store.getOperation()));
+    } catch (error) {
+      storageFailure(response, error);
+    }
   });
   app.get("/api/approvals", (_request, response) => {
     const operation = scenario.store.getOperation();
@@ -895,20 +944,30 @@ export function createApp(options: CreateAppOptions = {}) {
       return;
     }
     try {
-      const approval = scenario.store.resolveApproval({
+      const context = contextFromRequest(request, response);
+      if (!context) return;
+      const operationId =
+        typeof request.query.operationId === "string"
+          ? request.query.operationId
+          : scenario.store.getOperation().id;
+      const store = await operationStoreForDashboard(context, operationId);
+      if (!store) {
+        response.status(404).json({ error: "operation_not_found" });
+        return;
+      }
+      const approval = store.resolveApproval({
         approvalId: request.params.approvalId,
         ...parsed.data,
-        decidedBy:
-          parsed.data.decidedBy ??
-          contextFromRequest(request, response)?.userId ??
-          "dispatcher",
+        decidedBy: parsed.data.decidedBy ?? context.userId,
         decidedAt: new Date().toISOString()
       });
-      const context = contextFromRequest(request, response);
-      if (context) await persistCurrentOperation(context);
+      await repository.syncOperation(
+        context.organizationId,
+        store.getOperation()
+      );
       response.status(200).json({
         approval,
-        operation: operationReadModel(scenario.store.getOperation())
+        operation: operationReadModel(store.getOperation())
       });
     } catch (error) {
       const reason =
@@ -926,20 +985,30 @@ export function createApp(options: CreateAppOptions = {}) {
       return;
     }
     try {
-      const approval = scenario.store.undoApproval({
+      const context = contextFromRequest(request, response);
+      if (!context) return;
+      const operationId =
+        typeof request.query.operationId === "string"
+          ? request.query.operationId
+          : scenario.store.getOperation().id;
+      const store = await operationStoreForDashboard(context, operationId);
+      if (!store) {
+        response.status(404).json({ error: "operation_not_found" });
+        return;
+      }
+      const approval = store.undoApproval({
         approvalId: request.params.approvalId,
         ...parsed.data,
-        undoneBy:
-          parsed.data.undoneBy ??
-          contextFromRequest(request, response)?.userId ??
-          "dispatcher",
+        undoneBy: parsed.data.undoneBy ?? context.userId,
         undoneAt: new Date().toISOString()
       });
-      const context = contextFromRequest(request, response);
-      if (context) await persistCurrentOperation(context);
+      await repository.syncOperation(
+        context.organizationId,
+        store.getOperation()
+      );
       response.status(200).json({
         approval,
-        operation: operationReadModel(scenario.store.getOperation())
+        operation: operationReadModel(store.getOperation())
       });
     } catch (error) {
       const reason =

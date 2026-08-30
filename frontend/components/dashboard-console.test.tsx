@@ -73,6 +73,130 @@ describe("DashboardConsole", () => {
     ).toBeVisible();
   });
 
+  it("opens calls, pipeline, carriers, approvals and notifications in their mandate context", async () => {
+    const first = { ...seedOperation(), pipelineStage: "open" as const };
+    const secondBase = quoteRoundOperation();
+    const second = {
+      ...secondBase,
+      id: "operation-mandate-santa-marta-002",
+      origin: "Santa Marta",
+      destination: "Medellín",
+      pipelineStage: "awaiting_approval" as const,
+      callSessions: [
+        {
+          id: "call-santa-marta",
+          operationId: "operation-mandate-santa-marta-002",
+          carrierId: "carrier-ruta-occidente",
+          direction: "outbound" as const,
+          status: "completed" as const,
+          quoteId: "quote-ruta-occidente-001",
+          startedAt: "2026-08-30T08:00:00.000Z",
+          endedAt: "2026-08-30T08:02:00.000Z"
+        }
+      ],
+      approvals: secondBase.approvals.map((approval) => ({
+        ...approval,
+        operationId: "operation-mandate-santa-marta-002"
+      }))
+    };
+    const operations = [first, second];
+    const fetchMock = vi.fn().mockImplementation(async (input: string) => {
+      if (input === "/api/operations") {
+        return { ok: true, json: async () => structuredClone(operations) };
+      }
+      if (input.startsWith("/api/operations/")) {
+        const id = decodeURIComponent(input.replace("/api/operations/", ""));
+        return {
+          ok: true,
+          json: async () =>
+            structuredClone(operations.find((item) => item.id === id))
+        };
+      }
+      if (input === "/api/operation") {
+        return { ok: true, json: async () => structuredClone(first) };
+      }
+      if (input === "/api/transcript") {
+        return { ok: true, json: async () => [] };
+      }
+      if (input === "/api/carriers") {
+        return {
+          ok: true,
+          json: async () => [
+            {
+              id: "carrier-ruta-occidente",
+              name: "Ruta Occidente",
+              phone: "+573142117112",
+              lanes: ["Santa Marta → Medellín"],
+              active: true
+            }
+          ]
+        };
+      }
+      if (input === "/api/shipment-events") {
+        return {
+          ok: true,
+          json: async () => [
+            {
+              id: "event-santa-marta",
+              organizationId: "textiles-pacifico",
+              operationId: second.id,
+              type: "quotes_ready_for_review",
+              label: "Quotes ready for Santa Marta mandate",
+              source: "volta",
+              occurredAt: "2026-08-30T08:03:00.000Z",
+              receivedAt: "2026-08-30T08:03:00.000Z"
+            }
+          ]
+        };
+      }
+      throw new Error(`Unexpected request: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<DashboardConsole />);
+
+    openNavigationItem("Pipeline");
+    const pipelineDeck = await screen.findByRole("region", {
+      name: "Pipeline by mandate"
+    });
+    fireEvent.click(
+      within(pipelineDeck).getByRole("button", {
+        name: /Santa Marta.*Medellín/
+      })
+    );
+    await vi.waitFor(() =>
+      expect(screen.getByLabelText("Active mandate")).toHaveValue(second.id)
+    );
+    expect(
+      (await screen.findAllByText("Santa Marta → Medellín")).length
+    ).toBeGreaterThan(0);
+
+    openNavigationItem("Carriers");
+    fireEvent.click(await screen.findByTitle("Santa Marta → Medellín"));
+    expect(
+      await screen.findByRole("heading", { name: "Call floor", level: 1 })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: "Call groups by mandate" })
+    ).toBeInTheDocument();
+
+    openNavigationItem("Approvals");
+    expect(
+      await screen.findByText(/Mandate santa-ma.*Santa Marta → Medellín/i)
+    ).toBeInTheDocument();
+
+    openNavigationItem("Notifications");
+    fireEvent.click(
+      await screen.findByText("Quotes ready for Santa Marta mandate")
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Open mandate/ })
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Pipeline", level: 1 })
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Active mandate")).toHaveValue(second.id);
+  });
+
   it("opens Volta as a primary workspace instead of a drawer", async () => {
     const operation = { ...seedOperation(), pipelineStage: "open" };
     const fetchMock = vi.fn().mockImplementation(async (input: string) => {
@@ -669,7 +793,7 @@ describe("DashboardConsole", () => {
       await screen.findByText("Carrier booking confirmed")
     ).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/approvals/approval-quote-round-001/decision",
+      "/api/approvals/approval-quote-round-001/decision?operationId=operation-textiles-pacifico-001",
       expect.objectContaining({ method: "POST" })
     );
   });
@@ -737,7 +861,7 @@ describe("DashboardConsole", () => {
       await screen.findByText("3 carrier quotes are ready to compare")
     ).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/approvals/approval-quote-round-001/undo",
+      "/api/approvals/approval-quote-round-001/undo?operationId=operation-textiles-pacifico-001",
       expect.objectContaining({ method: "POST" })
     );
   });

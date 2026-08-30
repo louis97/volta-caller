@@ -119,14 +119,85 @@ function useOperationSnapshot() {
   );
 }
 
-function useLiveOperation() {
+type OperationDirectory = {
+  operations: OperationReadModel[];
+  selectedOperationId: string | null;
+  selectOperation: (operationId: string) => void;
+  refreshOperations: () => Promise<void>;
+};
+
+function useOperationDirectory(): OperationDirectory {
+  const [operations, setOperations] = useState<OperationReadModel[]>([]);
+  const [selectedOperationId, setSelectedOperationId] = useState<string | null>(
+    null
+  );
+  const selectedRef = useRef<string | null>(null);
+
+  const selectOperation = (operationId: string) => {
+    selectedRef.current = operationId;
+    setSelectedOperationId(operationId);
+    const selected = operations.find((item) => item.id === operationId);
+    if (selected) publishOperation(selected);
+  };
+
+  const refreshOperations = async () => {
+    try {
+      const response = await fetchOperationalRead("/api/operations");
+      if (!response.ok) return;
+      const payload = await response.json();
+      if (!Array.isArray(payload)) return;
+      const next = payload as OperationReadModel[];
+      setOperations(next);
+      const selected =
+        next.find((item) => item.id === selectedRef.current) ?? next[0];
+      if (selected) {
+        selectedRef.current = selected.id;
+        setSelectedOperationId(selected.id);
+        publishOperation(selected);
+      }
+    } catch {
+      // Individual views still retain their last read if the index is stale.
+    }
+  };
+
+  useEffect(() => {
+    void refreshOperations();
+    if (typeof EventSource === "undefined") return;
+    const events = new EventSource("/api/events");
+    const sync = () => void refreshOperations();
+    [
+      "mandate.created",
+      "call.started",
+      "call.updated",
+      "quote.registered",
+      "approval.requested",
+      "approval.resolved",
+      "approval.reopened",
+      "commitment.finalized"
+    ].forEach((name) => events.addEventListener(name, sync));
+    return () => events.close();
+  }, []);
+
+  return {
+    operations,
+    selectedOperationId,
+    selectOperation,
+    refreshOperations
+  };
+}
+
+function useLiveOperation(operationId?: string | null) {
   const [operation, setOperation] = useState<OperationReadModel | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    setOperation(null);
     const refresh = async () => {
       try {
-        const response = await fetchOperationalRead("/api/operation");
+        const endpoint = operationId
+          ? `/api/operations/${encodeURIComponent(operationId)}`
+          : "/api/operation";
+        const response = await fetchOperationalRead(endpoint);
         if (!response.ok || cancelled) return;
         const next = (await response.json()) as OperationReadModel;
         if (cancelled) return;
@@ -159,12 +230,18 @@ function useLiveOperation() {
       cancelled = true;
       events.close();
     };
-  }, []);
+  }, [operationId]);
 
   return operation;
 }
 
-function NotificationsView() {
+function NotificationsView({
+  directory,
+  onOpenMandate
+}: {
+  directory: OperationDirectory;
+  onOpenMandate: (operationId: string, view: View) => void;
+}) {
   const [events, setEvents] = useState<ShipmentEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -205,6 +282,14 @@ function NotificationsView() {
         description="Live Volta updates across every shipment in your organization."
         action={<Tag tone="signal">{events.length} events</Tag>}
       />
+      <MandateDeck
+        label="Mandates with activity"
+        onSelect={(operationId) => onOpenMandate(operationId, "notifications")}
+        operations={directory.operations.filter((operation) =>
+          events.some((event) => event.operationId === operation.id)
+        )}
+        selectedOperationId={directory.selectedOperationId}
+      />
       <section className="card">
         <div className="card__head">
           <h2>Latest activity</h2>
@@ -223,38 +308,65 @@ function NotificationsView() {
         ) : null}
         {events.length > 0 ? (
           <div className="ledger">
-            {events.map((event) => (
-              <details className="ledger__row" key={event.id}>
-                <summary>
-                  <span className="ledger__cell">
-                    <span className="section-head__mark">
-                      <AlertIcon />
+            {events.map((event) => {
+              const operation = directory.operations.find(
+                (item) => item.id === event.operationId
+              );
+              return (
+                <details className="ledger__row" key={event.id}>
+                  <summary>
+                    <span className="ledger__cell">
+                      <span className="section-head__mark">
+                        <AlertIcon />
+                      </span>
+                      <b>{event.label}</b>
                     </span>
-                    <b>{event.label}</b>
-                  </span>
-                  <span className="ledger__cell">
-                    <span className="ml">Operation</span>
-                    <span className="ledger__value">{event.operationId}</span>
-                  </span>
-                  <span className="ledger__figure">
-                    {formatDraftStamp(event.occurredAt)}
-                  </span>
-                  <ChevronIcon className="ledger__chev" />
-                </summary>
-                {event.metadata && Object.keys(event.metadata).length > 0 ? (
+                    <span className="ledger__cell">
+                      <span className="ml">
+                        Mandate {mandateReference(event.operationId)}
+                      </span>
+                      <span className="ledger__value">
+                        {operation
+                          ? operationLabel(operation)
+                          : event.operationId}
+                      </span>
+                    </span>
+                    <span className="ledger__figure">
+                      {formatDraftStamp(event.occurredAt)}
+                    </span>
+                    <ChevronIcon className="ledger__chev" />
+                  </summary>
                   <div className="card__body notification__details">
-                    {Object.entries(event.metadata).map(([key, value]) => (
-                      <p key={key}>
-                        <span className="ml">{titleCase(key)}</span>{" "}
-                        {Array.isArray(value)
-                          ? value.join(", ")
-                          : String(value)}
+                    {event.metadata &&
+                    Object.keys(event.metadata).length > 0 ? (
+                      <div>
+                        {Object.entries(event.metadata).map(([key, value]) => (
+                          <p key={key}>
+                            <span className="ml">{titleCase(key)}</span>{" "}
+                            {Array.isArray(value)
+                              ? value.join(", ")
+                              : String(value)}
+                          </p>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="stat__note">
+                        No additional event metadata.
                       </p>
-                    ))}
+                    )}
+                    <button
+                      className="btn btn--secondary"
+                      onClick={() =>
+                        onOpenMandate(event.operationId, "pipeline")
+                      }
+                      type="button"
+                    >
+                      Open mandate <ArrowIcon />
+                    </button>
                   </div>
-                ) : null}
-              </details>
-            ))}
+                </details>
+              );
+            })}
           </div>
         ) : null}
       </section>
@@ -345,6 +457,17 @@ function bestQuote(quotes: Quote[]): Quote | undefined {
     .sort((left, right) => left.priceMxn - right.priceMxn)[0];
 }
 
+function mandateReference(operationId: string) {
+  const reference = operationId.replace(/^operation-(?:mandate-)?/, "");
+  return reference.length > 16
+    ? `${reference.slice(0, 8)}…${reference.slice(-4)}`
+    : reference;
+}
+
+function operationLabel(operation: Operation) {
+  return `${operation.origin} → ${operation.destination}`;
+}
+
 /* --------------------------------------------------------- primitives ---- */
 
 function Tag({ children, tone }: { children: React.ReactNode; tone: Tone }) {
@@ -430,6 +553,76 @@ function EmptyState({
   );
 }
 
+function MandateDeck({
+  operations,
+  selectedOperationId,
+  onSelect,
+  label = "Mandate executions"
+}: {
+  operations: OperationReadModel[];
+  selectedOperationId: string | null;
+  onSelect: (operationId: string) => void;
+  label?: string;
+}) {
+  if (operations.length === 0) return null;
+  return (
+    <section className="mandate-deck" aria-label={label}>
+      <div className="mandate-deck__head">
+        <span className="ml">{label}</span>
+        <span className="mandate-deck__count">
+          {operations.length} {operations.length === 1 ? "mandate" : "mandates"}
+        </span>
+      </div>
+      <div className="mandate-deck__rail">
+        {operations.map((operation) => {
+          const live = operation.callSessions.filter(isLiveCall).length;
+          const waiting = operation.approvals.filter(
+            (approval) => approval.status === "pending"
+          ).length;
+          return (
+            <button
+              aria-pressed={selectedOperationId === operation.id}
+              className="mandate-ticket"
+              data-selected={selectedOperationId === operation.id}
+              key={operation.id}
+              onClick={() => onSelect(operation.id)}
+              type="button"
+            >
+              <span className="mandate-ticket__top">
+                <span className="mandate-ticket__ref">
+                  MANDATE {mandateReference(operation.id)}
+                </span>
+                <Tag
+                  tone={
+                    operation.pipelineStage === "failed"
+                      ? "halt"
+                      : waiting > 0
+                        ? "brass"
+                        : live > 0
+                          ? "signal"
+                          : operation.pipelineStage === "committed"
+                            ? "commit"
+                            : "idle"
+                  }
+                >
+                  {operation.pipelineStage.replace(/_/g, " ")}
+                </Tag>
+              </span>
+              <b>{operationLabel(operation)}</b>
+              <span className="mandate-ticket__meta">
+                {formatMxn(operation.mandate.budgetCapMxn)} cap
+                <i />
+                {operation.callSessions.length} calls
+                {waiting > 0 ? ` · ${waiting} waiting` : ""}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 /* --------------------------------------------------------------- shell ---- */
 
 function ThemeToggle() {
@@ -477,7 +670,7 @@ function ThemeToggle() {
   );
 }
 
-function ConsoleStrip() {
+function ConsoleStrip({ directory }: { directory: OperationDirectory }) {
   const operation = useOperationSnapshot();
   const liveLines = operation?.liveLines ?? 0;
   const waiting = operation?.waiting ?? 0;
@@ -501,9 +694,30 @@ function ConsoleStrip() {
       </span>
       {operation ? (
         <>
-          <span className="console__item">
-            <b>{operation.id}</b>
-          </span>
+          <label className="console__item console__switcher">
+            <span>MANDATE</span>
+            <select
+              aria-label="Active mandate"
+              onChange={(event) =>
+                directory.selectOperation(event.target.value)
+              }
+              value={directory.selectedOperationId ?? operation.id}
+            >
+              {directory.operations.length === 0 ? (
+                <option value={operation.id}>
+                  {mandateReference(operation.id)}
+                </option>
+              ) : (
+                directory.operations.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {mandateReference(item.id)} · {item.origin} →{" "}
+                    {item.destination}
+                  </option>
+                ))
+              )}
+            </select>
+            <span className="console__operation-id">{operation.id}</span>
+          </label>
           <span className="console__item">
             {operation.origin} → {operation.destination}
           </span>
@@ -522,7 +736,11 @@ function ConsoleStrip() {
 
 /* ------------------------------------------------------- new mandate ----- */
 
-function NewMandateView({ onCreated }: { onCreated: () => void }) {
+function NewMandateView({
+  onCreated
+}: {
+  onCreated: (operationId: string) => void;
+}) {
   const [saveState, setSaveState] = useState<MandateSaveState>({
     status: "idle"
   });
@@ -811,7 +1029,7 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
               <m.button
                 className="btn btn--secondary btn--block"
                 type="button"
-                onClick={onCreated}
+                onClick={() => onCreated(saveState.operationId)}
                 whileTap={{ scale: 0.985 }}
               >
                 Open operation
@@ -1238,8 +1456,14 @@ function CallHandover({ session }: { session: CallSession }) {
   );
 }
 
-function CallFloorView({ onNavigate }: { onNavigate: (view: View) => void }) {
-  const operation = useLiveOperation();
+function CallFloorView({
+  onNavigate,
+  directory
+}: {
+  onNavigate: (view: View) => void;
+  directory: OperationDirectory;
+}) {
+  const operation = useLiveOperation(directory.selectedOperationId);
   const transcript = useLiveTranscript();
   const sessions = operation?.callSessions ?? [];
   const liveLines = sessions.filter(isLiveCall);
@@ -1264,6 +1488,15 @@ function CallFloorView({ onNavigate }: { onNavigate: (view: View) => void }) {
             </Tag>
           ) : undefined
         }
+      />
+
+      <MandateDeck
+        label="Call groups by mandate"
+        onSelect={directory.selectOperation}
+        operations={directory.operations.filter(
+          (item) => item.callSessions.length > 0
+        )}
+        selectedOperationId={directory.selectedOperationId}
       />
 
       {sessions.length > 0 && (
@@ -1328,7 +1561,8 @@ function CallFloorView({ onNavigate }: { onNavigate: (view: View) => void }) {
                 <h2>{carrier}</h2>
               </div>
               <p className="call__route">
-                <RouteIcon /> {operation?.origin} → {operation?.destination}
+                <RouteIcon /> Mandate {mandateReference(session.operationId)} ·{" "}
+                {operation?.origin} → {operation?.destination}
               </p>
               <Waveform live={live} />
 
@@ -1396,8 +1630,14 @@ const PIPELINE_STEPS: Array<{ id: PipelineStage; label: string }> = [
   { id: "committed", label: "Booked" }
 ];
 
-function PipelineView({ onNavigate }: { onNavigate: (view: View) => void }) {
-  const operation = useLiveOperation();
+function PipelineView({
+  onNavigate,
+  directory
+}: {
+  onNavigate: (view: View) => void;
+  directory: OperationDirectory;
+}) {
+  const operation = useLiveOperation(directory.selectedOperationId);
   const sessions = operation?.callSessions ?? [];
   useTicker(sessions.some(isLiveCall));
 
@@ -1464,6 +1704,13 @@ function PipelineView({ onNavigate }: { onNavigate: (view: View) => void }) {
         }
       />
 
+      <MandateDeck
+        label="Pipeline by mandate"
+        onSelect={directory.selectOperation}
+        operations={directory.operations}
+        selectedOperationId={directory.selectedOperationId}
+      />
+
       <div className="stats">
         <Stat
           label="Calls completed"
@@ -1496,7 +1743,9 @@ function PipelineView({ onNavigate }: { onNavigate: (view: View) => void }) {
               {operation.origin} → {operation.destination}
             </h2>
           </div>
-          <span className="ledger__ref">{operation.id}</span>
+          <span className="ledger__ref">
+            MANDATE {mandateReference(operation.id)} · {operation.id}
+          </span>
         </div>
         <div className="track">
           {steps.map((step, index) => (
@@ -1587,7 +1836,13 @@ type CarrierRow = {
   active: boolean;
 };
 
-function CarriersView() {
+function CarriersView({
+  directory,
+  onOpenMandate
+}: {
+  directory: OperationDirectory;
+  onOpenMandate: (operationId: string, view: View) => void;
+}) {
   const [carriers, setCarriers] = useState<CarrierRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -1625,6 +1880,15 @@ function CarriersView() {
             </Tag>
           ) : undefined
         }
+      />
+
+      <MandateDeck
+        label="Mandates using the carrier network"
+        onSelect={(operationId) => onOpenMandate(operationId, "carriers")}
+        operations={directory.operations.filter(
+          (operation) => operation.candidates.length > 0
+        )}
+        selectedOperationId={directory.selectedOperationId}
       />
 
       <form
@@ -1708,27 +1972,63 @@ function CarriersView() {
         </div>
         {carriers.length > 0 ? (
           <div className="ledger">
-            {carriers.map((carrier) => (
-              <div className="ledger__row" key={carrier.id}>
-                <span className="ledger__cell">
-                  <span className="ledger__ref">{carrier.phone}</span>
-                  <b>{carrier.name}</b>
-                </span>
-                <span className="ledger__cell">
-                  <span className="ml">Lanes</span>
-                  <span className="ledger__value">
-                    {carrier.lanes.join(", ") || "All lanes"}
+            {carriers.map((carrier) => {
+              const mandates = directory.operations.filter(
+                (operation) =>
+                  operation.candidates.some((item) => item.id === carrier.id) ||
+                  operation.callSessions.some(
+                    (session) => session.carrierId === carrier.id
+                  )
+              );
+              const calls = mandates.reduce(
+                (total, operation) =>
+                  total +
+                  operation.callSessions.filter(
+                    (session) => session.carrierId === carrier.id
+                  ).length,
+                0
+              );
+              return (
+                <div className="ledger__row carrier-row" key={carrier.id}>
+                  <span className="ledger__cell">
+                    <span className="ledger__ref">{carrier.phone}</span>
+                    <b>{carrier.name}</b>
                   </span>
-                </span>
-                <Tag tone={carrier.active ? "commit" : "idle"}>
-                  {carrier.active ? "active" : "inactive"}
-                </Tag>
-                <span className="ledger__figure">
-                  {String(carrier.lanes.length).padStart(2, "0")}
-                </span>
-                <RouteIcon className="ledger__chev" />
-              </div>
-            ))}
+                  <span className="ledger__cell">
+                    <span className="ml">
+                      {carrier.lanes.join(", ") || "All lanes"}
+                    </span>
+                    <span className="ledger__value">
+                      {mandates.length > 0 ? (
+                        <span className="carrier-mandates">
+                          {mandates.map((operation) => (
+                            <button
+                              key={operation.id}
+                              onClick={() =>
+                                onOpenMandate(operation.id, "call-floor")
+                              }
+                              title={operationLabel(operation)}
+                              type="button"
+                            >
+                              M {mandateReference(operation.id)}
+                            </button>
+                          ))}
+                        </span>
+                      ) : (
+                        "No mandate calls yet"
+                      )}
+                    </span>
+                  </span>
+                  <Tag tone={carrier.active ? "commit" : "idle"}>
+                    {carrier.active ? "active" : "inactive"}
+                  </Tag>
+                  <span className="ledger__figure">
+                    {String(calls).padStart(2, "0")} calls
+                  </span>
+                  <RouteIcon className="ledger__chev" />
+                </div>
+              );
+            })}
           </div>
         ) : (
           <div className="card__body">
@@ -1747,7 +2047,7 @@ function CarriersView() {
 
 type ApprovalLoadState = "loading" | "ready" | "error";
 
-function ApprovalsView() {
+function ApprovalsView({ directory }: { directory: OperationDirectory }) {
   const [operation, setOperation] = useState<Operation | null>(null);
   const [loadState, setLoadState] = useState<ApprovalLoadState>("loading");
   const [selectedQuoteId, setSelectedQuoteId] = useState<string | null>(null);
@@ -1761,7 +2061,10 @@ function ApprovalsView() {
 
   async function refresh() {
     try {
-      const response = await fetch("/api/operation");
+      const endpoint = directory.selectedOperationId
+        ? `/api/operations/${encodeURIComponent(directory.selectedOperationId)}`
+        : "/api/operation";
+      const response = await fetch(endpoint);
       if (!response.ok) throw new Error("operation_unavailable");
       adopt((await response.json()) as Operation);
       setLoadState("ready");
@@ -1771,6 +2074,10 @@ function ApprovalsView() {
   }
 
   useEffect(() => {
+    setLoadState("loading");
+    setOperation(null);
+    setSelectedQuoteId(null);
+    setDecisionError(null);
     void refresh();
 
     if (typeof EventSource === "undefined") return;
@@ -1781,7 +2088,7 @@ function ApprovalsView() {
     events.addEventListener("approval.reopened", sync);
     events.addEventListener("commitment.finalized", sync);
     return () => events.close();
-  }, []);
+  }, [directory.selectedOperationId]);
 
   const approval = operation?.approvals.find(
     (item) => item.status === "pending"
@@ -1807,19 +2114,24 @@ function ApprovalsView() {
     setDecisionError(null);
     setIsSubmitting(true);
     try {
-      const response = await fetch(`/api/approvals/${approval.id}/decision`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          action,
-          selectedQuoteId: isSelectionApproval
-            ? (selectedQuoteId ?? undefined)
-            : undefined
-        })
-      });
+      const operationQuery = encodeURIComponent(operation.id);
+      const response = await fetch(
+        `/api/approvals/${approval.id}/decision?operationId=${operationQuery}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action,
+            selectedQuoteId: isSelectionApproval
+              ? (selectedQuoteId ?? undefined)
+              : undefined
+          })
+        }
+      );
       if (!response.ok) throw new Error("decision_rejected");
       const payload = (await response.json()) as { operation: Operation };
       adopt(payload.operation);
+      void directory.refreshOperations();
     } catch {
       setDecisionError("Volta could not record this decision. Try again.");
     } finally {
@@ -1832,8 +2144,9 @@ function ApprovalsView() {
     setDecisionError(null);
     setIsSubmitting(true);
     try {
+      const operationQuery = encodeURIComponent(operation?.id ?? "");
       const response = await fetch(
-        `/api/approvals/${closingApproval.id}/undo`,
+        `/api/approvals/${closingApproval.id}/undo?operationId=${operationQuery}`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1844,6 +2157,7 @@ function ApprovalsView() {
       const payload = (await response.json()) as { operation: Operation };
       setSelectedQuoteId(null);
       adopt(payload.operation);
+      void directory.refreshOperations();
     } catch {
       setDecisionError(
         "Volta could not undo this decision. A confirmed booking cannot be reversed here."
@@ -1867,6 +2181,15 @@ function ApprovalsView() {
             </Tag>
           ) : undefined
         }
+      />
+
+      <MandateDeck
+        label="Approval queue by mandate"
+        onSelect={directory.selectOperation}
+        operations={directory.operations.filter(
+          (item) => item.approvals.length > 0
+        )}
+        selectedOperationId={directory.selectedOperationId}
       />
 
       {loadState === "loading" && (
@@ -1979,6 +2302,10 @@ function ApprovalsView() {
               </span>
               <div>
                 <p className="ml">Human decision required</p>
+                <p className="approval__mandate-ref">
+                  Mandate {mandateReference(operation.id)} ·{" "}
+                  {operationLabel(operation)}
+                </p>
                 <h2>
                   {isSelectionApproval
                     ? `${quotes.length} carrier quotes are ready to compare`
@@ -2151,10 +2478,25 @@ function ApprovalsView() {
 
 export function DashboardConsole() {
   const [view, setView] = useState<View>("new-mandate");
-  const snapshot = useOperationSnapshot();
+  const directory = useOperationDirectory();
 
-  const liveLines = snapshot?.liveLines ?? 0;
-  const waiting = snapshot?.waiting ?? 0;
+  const liveLines = directory.operations.reduce(
+    (total, operation) =>
+      total + operation.callSessions.filter(isLiveCall).length,
+    0
+  );
+  const waiting = directory.operations.reduce(
+    (total, operation) =>
+      total +
+      operation.approvals.filter((approval) => approval.status === "pending")
+        .length,
+    0
+  );
+
+  function openMandate(operationId: string, nextView: View) {
+    directory.selectOperation(operationId);
+    setView(nextView);
+  }
 
   function badgeFor(id: View) {
     if (id === "call-floor" && liveLines > 0) {
@@ -2211,7 +2553,7 @@ export function DashboardConsole() {
             </div>
           </aside>
           <main className="stage">
-            <ConsoleStrip />
+            <ConsoleStrip directory={directory} />
             <div
               className={
                 view === "volta"
@@ -2231,15 +2573,35 @@ export function DashboardConsole() {
                     <VoltaChat onOperationChange={publishOperation} />
                   )}
                   {view === "new-mandate" && (
-                    <NewMandateView onCreated={() => setView("call-floor")} />
+                    <NewMandateView
+                      onCreated={(operationId) => {
+                        directory.selectOperation(operationId);
+                        void directory.refreshOperations();
+                        setView("call-floor");
+                      }}
+                    />
                   )}
                   {view === "call-floor" && (
-                    <CallFloorView onNavigate={setView} />
+                    <CallFloorView directory={directory} onNavigate={setView} />
                   )}
-                  {view === "pipeline" && <PipelineView onNavigate={setView} />}
-                  {view === "carriers" && <CarriersView />}
-                  {view === "approvals" && <ApprovalsView />}
-                  {view === "notifications" && <NotificationsView />}
+                  {view === "pipeline" && (
+                    <PipelineView directory={directory} onNavigate={setView} />
+                  )}
+                  {view === "carriers" && (
+                    <CarriersView
+                      directory={directory}
+                      onOpenMandate={openMandate}
+                    />
+                  )}
+                  {view === "approvals" && (
+                    <ApprovalsView directory={directory} />
+                  )}
+                  {view === "notifications" && (
+                    <NotificationsView
+                      directory={directory}
+                      onOpenMandate={openMandate}
+                    />
+                  )}
                 </m.div>
               </AnimatePresence>
             </div>
