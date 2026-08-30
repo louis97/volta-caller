@@ -15,6 +15,12 @@ export type FanoutDependencies = {
   concurrency?: number;
   now?: () => string;
   onDialled?: (callId: string, carrier: { id: string; name: string }) => void;
+  /**
+   * Who to dial this round. Defaults to the operation's seeded candidates;
+   * the carrier directory overrides it so the pool can be edited from the
+   * console without a redeploy.
+   */
+  carriers?: Operation["candidates"];
 };
 
 export async function fanOutCalls(
@@ -23,7 +29,10 @@ export async function fanOutCalls(
   const { store, now = () => new Date().toISOString() } = dependencies;
   const operation = store.getOperation();
   const gateway = dependencies.gateway ?? createMockTelephonyGateway({ now });
-  const candidates = operation.candidates;
+  const candidates =
+    dependencies.carriers && dependencies.carriers.length > 0
+      ? dependencies.carriers
+      : operation.candidates;
   const limit = Math.max(1, dependencies.concurrency ?? 4);
   let cursor = 0;
 

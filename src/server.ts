@@ -214,6 +214,16 @@ export function createApp(options: CreateAppOptions = {}) {
   scenario.store.subscribe(publish);
   app.locals.operationStore = scenario.store;
   app.locals.telephonyDialled = dialled;
+  app.locals.listActiveCarriers = async () => {
+    const carriers = await repository.listCarriers(activeOrganizationId);
+    return carriers
+      .filter((carrier) => carrier.active)
+      .map((carrier) => ({
+        id: carrier.id,
+        name: carrier.name,
+        phone: carrier.phone
+      }));
+  };
   app.locals.saveTranscriptSegment = (
     segment: import("@volta/contracts").TranscriptSegment
   ) => {
@@ -728,7 +738,10 @@ export function createApp(options: CreateAppOptions = {}) {
     organizationId: activeOrganizationId,
     onCallSessionChanged: (session) =>
       void repository.saveCallSession(activeOrganizationId, session),
-    onTranscriptAppended: (segment) => app.locals.saveTranscriptSegment(segment)
+    onTranscriptAppended: (segment) =>
+      app.locals.saveTranscriptSegment(segment),
+    // The console's carrier directory is what a round dials.
+    listActiveCarriers: () => app.locals.listActiveCarriers()
   });
 
   return app;
@@ -803,7 +816,10 @@ if (isMainModule(import.meta.url, process.argv[1])) {
     store: app.locals.operationStore,
     dialled: app.locals.telephonyDialled,
     onCallSessionChanged: (session) => void app.locals.saveCallSession(session),
-    onTranscriptAppended: (segment) => app.locals.saveTranscriptSegment(segment)
+    onTranscriptAppended: (segment) =>
+      app.locals.saveTranscriptSegment(segment),
+    // The console's carrier directory is what a round dials.
+    listActiveCarriers: () => app.locals.listActiveCarriers()
   });
 
   const missing = missingTelephonyConfig();

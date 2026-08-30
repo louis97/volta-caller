@@ -46,6 +46,14 @@ export type TelephonyDependencies = {
   onTranscriptAppended?: (
     segment: import("@volta/contracts").TranscriptSegment
   ) => void;
+  /**
+   * The editable carrier directory. When it holds active carriers they are
+   * who a round dials, which is what the console's directory screen already
+   * promises.
+   */
+  listActiveCarriers?: () => Promise<
+    Array<{ id: string; name: string; phone: string }>
+  >;
 };
 
 /**
@@ -176,8 +184,26 @@ export function mountTelephonyRoutes(
   app.post("/api/calls/negotiate", jsonBody, async (_request, response) => {
     context.resetAuction();
     dialled.clear();
+
+    // A directory with no active carriers falls back to the seeded pool, so a
+    // round is never silently dialled to nobody.
+    let carriers: Array<{ id: string; name: string; phone: string }> = [];
+    try {
+      carriers = (await dependencies.listActiveCarriers?.()) ?? [];
+    } catch (error) {
+      console.error("[carriers] directory unavailable:", error);
+    }
+    if (carriers.length > 0) {
+      console.log(
+        `[carriers] dialling ${carriers.length} from the directory: ${carriers
+          .map((carrier) => carrier.name)
+          .join(", ")}`
+      );
+    }
+
     await fanOutCalls({
       store,
+      ...(carriers.length > 0 ? { carriers } : {}),
       mode: env.VOLTA_MODE,
       publicBaseUrl: env.PUBLIC_BASE_URL,
       from: env.TWILIO_FROM_NUMBER,
