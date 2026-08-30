@@ -186,32 +186,58 @@ it("renames a durable Volta conversation", async () => {
   ]);
 });
 
-it("deletes a durable Volta conversation", async () => {
+it("deletes a conversation only within its organization", async () => {
   const app = createApp({
     mandatesRepository: new MemoryRepository(),
     repository: new MemoryAgentRepository(),
     answerer: new DeterministicAgentAnswerer()
   });
+  const ownerHeaders = {
+    "content-type": "application/json",
+    "x-volta-org-id": "organization-owner",
+    "x-volta-user-id": "dispatcher-owner"
+  };
   const createResponse = await request(app, "/api/agent/conversations", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: ownerHeaders,
     body: JSON.stringify({ title: "Discard this chat" })
   });
   const created = (await createResponse.json()) as { id: string };
 
+  const foreignDelete = await request(
+    app,
+    `/api/agent/conversations/${created.id}`,
+    {
+      method: "DELETE",
+      headers: {
+        "x-volta-org-id": "organization-other",
+        "x-volta-user-id": "dispatcher-other"
+      }
+    }
+  );
+  expect(foreignDelete.status).toBe(404);
+  const detailBeforeDelete = await request(
+    app,
+    `/api/agent/conversations/${created.id}`,
+    { headers: ownerHeaders }
+  );
+  expect(detailBeforeDelete.status).toBe(200);
+
   const deleteResponse = await request(
     app,
     `/api/agent/conversations/${created.id}`,
-    { method: "DELETE" }
+    { method: "DELETE", headers: ownerHeaders }
   );
   expect(deleteResponse.status).toBe(204);
-
-  const detailResponse = await request(
+  const detailAfterDelete = await request(
     app,
-    `/api/agent/conversations/${created.id}`
+    `/api/agent/conversations/${created.id}`,
+    { headers: ownerHeaders }
   );
-  expect(detailResponse.status).toBe(404);
-  const listResponse = await request(app, "/api/agent/conversations");
+  expect(detailAfterDelete.status).toBe(404);
+  const listResponse = await request(app, "/api/agent/conversations", {
+    headers: ownerHeaders
+  });
   await expect(listResponse.json()).resolves.toEqual([]);
 });
 
