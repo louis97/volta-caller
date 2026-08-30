@@ -1,8 +1,9 @@
 import { createHmac } from "node:crypto";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  createKapsoMessenger,
   inboundKapsoMessage,
   inboundTextMessage,
   receivedKapsoMessages,
@@ -82,5 +83,84 @@ describe("Kapso WhatsApp webhook helpers", () => {
     expect(
       whatsappActionDecision("Sí, la dirección está correcta")
     ).toBeUndefined();
+  });
+
+  it("normalizes an interactive approval button with its action reference", () => {
+    expect(
+      inboundKapsoMessage({
+        message: {
+          id: "wamid.button-1",
+          type: "interactive",
+          from: "+573001112233",
+          interactive: {
+            type: "button_reply",
+            button_reply: {
+              id: "volta:approve:123e4567-e89b-12d3-a456-426614174000",
+              title: "Aprobar"
+            }
+          },
+          kapso: { direction: "inbound" }
+        }
+      })
+    ).toEqual({
+      id: "wamid.button-1",
+      from: "+573001112233",
+      type: "interactive",
+      content: "Aprobar",
+      actionDecision: {
+        decision: "approve",
+        reference: "123e4567-e89b-12d3-a456-426614174000"
+      }
+    });
+  });
+
+  it("sends native interactive reply buttons through Kapso", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 200 }));
+    const messenger = createKapsoMessenger({
+      apiKey: "kapso-key",
+      phoneNumberId: "phone-123",
+      fetchFn
+    });
+
+    await messenger.sendInteractiveButtons?.({
+      to: "+573001112233",
+      bodyText: "¿Apruebas el mandato?",
+      buttons: [
+        { id: "volta:approve:action-1", title: "Aprobar" },
+        { id: "volta:decline:action-1", title: "Rechazar" }
+      ]
+    });
+
+    const request = fetchFn.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(request.body as string)).toEqual({
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: "573001112233",
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: "¿Apruebas el mandato?" },
+        action: {
+          buttons: [
+            {
+              type: "reply",
+              reply: {
+                id: "volta:approve:action-1",
+                title: "Aprobar"
+              }
+            },
+            {
+              type: "reply",
+              reply: {
+                id: "volta:decline:action-1",
+                title: "Rechazar"
+              }
+            }
+          ]
+        }
+      }
+    });
   });
 });

@@ -196,15 +196,31 @@ async function whatsappPendingActions(
   );
 }
 
-function whatsappApprovalInstructions(actions: ProposedAction[]) {
+function whatsappApprovalInstructions(
+  actions: ProposedAction[],
+  interactiveButtons = false
+) {
   if (actions.length === 0) return undefined;
   if (actions.length === 1) {
+    if (interactiveButtons) {
+      return "Selecciona *Aprobar* o *Rechazar*. También puedes escribir APROBAR o RECHAZAR.";
+    }
     return `Para ejecutarla desde WhatsApp responde *APROBAR*. Para descartarla, responde *RECHAZAR*. Código: ${actions[0].id.slice(0, 8)}.`;
   }
   return [
     "Hay varias acciones pendientes. Responde APROBAR o RECHAZAR seguido del código:",
     ...actions.map((action) => `• ${action.id.slice(0, 8)} — ${action.summary}`)
   ].join("\n");
+}
+
+function whatsappInteractiveBody(content: string, instructions: string) {
+  const separator = "\n\n";
+  const available = Math.max(0, 1024 - separator.length - instructions.length);
+  const summary =
+    content.length > available
+      ? `${content.slice(0, Math.max(0, available - 1))}…`
+      : content;
+  return `${summary}${separator}${instructions}`;
 }
 
 function whatsappDecisionReply(action: ProposedAction) {
@@ -345,9 +361,14 @@ export function createApp(options: CreateAppOptions = {}) {
                 (item) =>
                   item.title === title && item.createdBy === context.userId
               ) ?? (await agent.createConversation(context, title));
-            const decision = whatsappActionDecision(inbound.content);
+            const decision =
+              inbound.actionDecision ?? whatsappActionDecision(inbound.content);
             let reply: string;
-            if (decision && inbound.content) {
+            let replyButtons: Array<{ id: string; title: string }> | undefined;
+            if (decision) {
+              const decisionContent =
+                inbound.content ??
+                (decision.decision === "approve" ? "Aprobar" : "Rechazar");
               const currentConversation = await agent.getConversation(
                 context,
                 conversation.id
@@ -364,7 +385,7 @@ export function createApp(options: CreateAppOptions = {}) {
                 context,
                 conversation.id,
                 "user",
-                inbound.content
+                decisionContent
               );
               if (pendingActions.length !== 1) {
                 reply =
@@ -391,10 +412,15 @@ export function createApp(options: CreateAppOptions = {}) {
                 conversation.id,
                 inbound.content
               );
+              const pendingActions = message.proposedActions.filter(
+                (action) => action.status === "pending"
+              );
+              const useButtons =
+                pendingActions.length === 1 &&
+                kapsoMessenger.sendInteractiveButtons !== undefined;
               const instructions = whatsappApprovalInstructions(
-                message.proposedActions.filter(
-                  (action) => action.status === "pending"
-                )
+                pendingActions,
+                useButtons
               );
               if (instructions) {
                 await agent.recordChannelMessage(
@@ -407,13 +433,48 @@ export function createApp(options: CreateAppOptions = {}) {
               reply = instructions
                 ? `${message.content}\n\n${instructions}`
                 : message.content;
+              if (useButtons && instructions) {
+                reply = whatsappInteractiveBody(message.content, instructions);
+                replyButtons = [
+                  {
+                    id: `volta:approve:${pendingActions[0].id}`,
+                    title: "Aprobar"
+                  },
+                  {
+                    id: `volta:decline:${pendingActions[0].id}`,
+                    title: "Rechazar"
+                  }
+                ];
+              }
             } else {
               reply =
                 inbound.type === "audio"
                   ? "No pude transcribir ese audio. Intenta enviarlo de nuevo o escríbeme tu consulta."
                   : "Por ahora puedo responder mensajes de texto o audios que Kapso pueda transcribir.";
             }
-            await kapsoMessenger.sendText({ to: inbound.from, text: reply });
+            if (replyButtons && kapsoMessenger.sendInteractiveButtons) {
+              try {
+                await kapsoMessenger.sendInteractiveButtons({
+                  to: inbound.from,
+                  bodyText: reply,
+                  buttons: replyButtons
+                });
+              } catch (error) {
+                console.warn(
+                  "Kapso interactive buttons failed; falling back to text",
+                  error
+                );
+                await kapsoMessenger.sendText({
+                  to: inbound.from,
+                  text: reply
+                });
+              }
+            } else {
+              await kapsoMessenger.sendText({
+                to: inbound.from,
+                text: reply
+              });
+            }
             if (receiptId) {
               await repository.completeInboundMessage(
                 "kapso-whatsapp",

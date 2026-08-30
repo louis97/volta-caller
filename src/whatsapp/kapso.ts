@@ -2,6 +2,11 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 export type KapsoMessenger = {
   sendText(input: { to: string; text: string }): Promise<void>;
+  sendInteractiveButtons?(input: {
+    to: string;
+    bodyText: string;
+    buttons: Array<{ id: string; title: string }>;
+  }): Promise<void>;
 };
 
 export type KapsoWebhookMessage = {
@@ -9,6 +14,10 @@ export type KapsoWebhookMessage = {
   type?: string;
   from?: string;
   text?: { body?: string };
+  interactive?: {
+    type?: string;
+    button_reply?: { id?: string; title?: string };
+  };
   kapso?: {
     direction?: string;
     /** LLM-ready message content supplied by Kapso, including audio transcripts. */
@@ -56,6 +65,7 @@ export type KapsoInboundMessage = {
   from: string;
   content?: string;
   type?: string;
+  actionDecision?: WhatsAppActionDecision;
 };
 
 export type WhatsAppActionDecision = {
@@ -76,6 +86,15 @@ export function whatsappActionDecision(
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
+  const buttonMatch = normalized.match(
+    /^volta:(approve|decline):([a-f0-9-]{36})$/
+  );
+  if (buttonMatch) {
+    return {
+      decision: buttonMatch[1] as "approve" | "decline",
+      reference: buttonMatch[2]
+    };
+  }
   const match = normalized.match(
     /^(aprobar|apruebo|confirmar|confirmo|approve|rechazar|rechazo|decline)(?:\s+([a-z0-9-]{6,64}))?[.!]?$/
   );
@@ -100,15 +119,19 @@ export function inboundKapsoMessage(
   if (!message || message.kapso?.direction !== "inbound") return undefined;
   const from = message.from ?? data.conversation?.phone_number;
   if (!from) return undefined;
+  const buttonReply = message.interactive?.button_reply;
   return {
     id: message.id,
     from,
     type: message.type,
+    actionDecision: whatsappActionDecision(buttonReply?.id),
     content:
       message.type === "text"
         ? message.text?.body?.trim()
-        : (message.kapso?.transcript?.text?.trim() ??
-          message.kapso?.content?.trim())
+        : message.type === "interactive"
+          ? buttonReply?.title?.trim()
+          : (message.kapso?.transcript?.text?.trim() ??
+            message.kapso?.content?.trim())
   };
 }
 
@@ -129,28 +152,49 @@ export function createKapsoMessenger(input: {
   fetchFn?: typeof fetch;
 }): KapsoMessenger {
   const fetchFn = input.fetchFn ?? fetch;
+  const send = async (body: Record<string, unknown>) => {
+    const response = await fetchFn(
+      `https://api.kapso.ai/meta/whatsapp/v24.0/${encodeURIComponent(input.phoneNumberId)}/messages`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": input.apiKey
+        },
+        body: JSON.stringify(body)
+      }
+    );
+    if (!response.ok) {
+      throw new Error(`kapso_message_send_failed:${response.status}`);
+    }
+  };
   return {
     async sendText({ to, text }) {
-      const response = await fetchFn(
-        `https://api.kapso.ai/meta/whatsapp/v24.0/${encodeURIComponent(input.phoneNumberId)}/messages`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-api-key": input.apiKey
-          },
-          body: JSON.stringify({
-            messaging_product: "whatsapp",
-            recipient_type: "individual",
-            to: to.replace(/^\+/, ""),
-            type: "text",
-            text: { body: text }
-          })
+      await send({
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to: to.replace(/^\+/, ""),
+        type: "text",
+        text: { body: text }
+      });
+    },
+    async sendInteractiveButtons({ to, bodyText, buttons }) {
+      await send({
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to: to.replace(/^\+/, ""),
+        type: "interactive",
+        interactive: {
+          type: "button",
+          body: { text: bodyText },
+          action: {
+            buttons: buttons.map((button) => ({
+              type: "reply",
+              reply: button
+            }))
+          }
         }
-      );
-      if (!response.ok) {
-        throw new Error(`kapso_message_send_failed:${response.status}`);
-      }
+      });
     }
   };
 }

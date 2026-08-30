@@ -105,8 +105,9 @@ it("sends a Kapso voice-note transcript to the operational agent", async () => {
   });
 });
 
-it("approves a mandate from the same WhatsApp thread without calling the model again", async () => {
+it("approves a mandate with native WhatsApp buttons without calling the model again", async () => {
   const sendText = vi.fn().mockResolvedValue(undefined);
+  const sendInteractiveButtons = vi.fn().mockResolvedValue(undefined);
   const answerer: AgentAnswerer = {
     answer: vi.fn(async (request: AnswerRequest) => {
       const createTool = request.tools.find(
@@ -137,7 +138,7 @@ it("approves a mandate from the same WhatsApp thread without calling the model a
     repository: new MemoryAgentRepository(),
     mandatesRepository: createMemoryMandatesRepository(),
     answerer,
-    kapsoMessenger: { sendText },
+    kapsoMessenger: { sendText, sendInteractiveButtons },
     kapsoWebhookSecret: "kapso-test-secret"
   });
 
@@ -148,19 +149,26 @@ it("approves a mandate from the same WhatsApp thread without calling the model a
     content: "Crea el mandato con los datos completos"
   });
   expect(proposal.status).toBe(200);
-  expect(sendText).toHaveBeenLastCalledWith({
+  expect(sendInteractiveButtons).toHaveBeenLastCalledWith({
     to: "+573001112233",
-    text: expect.stringContaining("*APROBAR*")
+    bodyText: expect.stringContaining("Selecciona *Aprobar* o *Rechazar*"),
+    buttons: [
+      expect.objectContaining({ title: "Aprobar" }),
+      expect.objectContaining({ title: "Rechazar" })
+    ]
   });
-  const proposalReply = sendText.mock.calls.at(-1)?.[0]?.text as string;
-  const actionCode = proposalReply.match(/Código: ([a-f0-9]{8})/)?.[1];
-  if (!actionCode) throw new Error("missing_whatsapp_action_code");
+  const approvalButton = sendInteractiveButtons.mock.calls
+    .at(-1)?.[0]
+    ?.buttons.find(
+      (button: { title: string }) => button.title === "Aprobar"
+    ) as { id: string; title: string } | undefined;
+  if (!approvalButton) throw new Error("missing_whatsapp_approval_button");
 
   const unauthorized = await signedWhatsAppRequest(app, {
     id: "wamid.mandate-unauthorized",
     from: "+573009998888",
-    type: "text",
-    content: `APROBAR ${actionCode}`
+    type: "interactive",
+    content: approvalButton.id
   });
   expect(unauthorized.status).toBe(200);
   expect(sendText).toHaveBeenLastCalledWith({
@@ -172,8 +180,8 @@ it("approves a mandate from the same WhatsApp thread without calling the model a
   const approval = await signedWhatsAppRequest(app, {
     id: "wamid.mandate-approval",
     from: "+573001112233",
-    type: "audio",
-    content: "Apruebo"
+    type: "interactive",
+    content: approvalButton.id
   });
   expect(approval.status).toBe(200);
   expect(sendText).toHaveBeenLastCalledWith({
@@ -329,7 +337,7 @@ async function signedWhatsAppRequest(
   input: {
     id: string;
     from: string;
-    type: "audio" | "text";
+    type: "audio" | "interactive" | "text";
     content: string;
   }
 ) {
@@ -344,13 +352,29 @@ async function signedWhatsAppRequest(
             transcript: { text: input.content }
           }
         }
-      : {
-          id: input.id,
-          type: input.type,
-          from: input.from,
-          text: { body: input.content },
-          kapso: { direction: "inbound" }
-        };
+      : input.type === "interactive"
+        ? {
+            id: input.id,
+            type: input.type,
+            from: input.from,
+            interactive: {
+              type: "button_reply",
+              button_reply: {
+                id: input.content,
+                title: input.content.includes(":approve:")
+                  ? "Aprobar"
+                  : "Rechazar"
+              }
+            },
+            kapso: { direction: "inbound" }
+          }
+        : {
+            id: input.id,
+            type: input.type,
+            from: input.from,
+            text: { body: input.content },
+            kapso: { direction: "inbound" }
+          };
   const payload = JSON.stringify({ message });
   const signature = createHmac("sha256", "kapso-test-secret")
     .update(payload)

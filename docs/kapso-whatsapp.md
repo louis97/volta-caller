@@ -8,6 +8,12 @@ Los audios entrantes (`message.type: "audio"`) se enrutan al mismo agente backen
 
 Si Kapso no pudo transcribir el audio, Volta pide reenviarlo o escribir la consulta: nunca inventa una pregunta a partir del binario del audio.
 
+## Aprobaciones interactivas
+
+Cuando el agente propone una única acción HITL, Volta responde con un mensaje `interactive` y dos reply buttons nativos: **Aprobar** y **Rechazar**. Cada botón lleva el UUID completo de la acción en su ID (`volta:approve:<uuid>` o `volta:decline:<uuid>`); el webhook solo lo acepta en el mismo hilo y desde el mismo número que creó la propuesta.
+
+Si el mensaje interactivo falla, el backend envía el mismo contenido como texto. El usuario también puede escribir `APROBAR` / `RECHAZAR` o enviarlos por audio para usar la ruta de respaldo. Un «sí» aislado nunca ejecuta una acción porque podría ser la respuesta a una pregunta del intake.
+
 ## Configuración de producción
 
 Define estas tres variables en el entorno de la API:
