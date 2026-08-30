@@ -34,11 +34,6 @@ export function seedOperation(): Operation {
         phone: "+573142117112"
       },
       {
-        id: "carrier-logistica-manzanillo",
-        name: "Logística Manzanillo",
-        phone: "+573208643487"
-      },
-      {
         id: "carrier-fletes-bajio",
         name: "Fletes del Bajío",
         phone: "+573224118118"
