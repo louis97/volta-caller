@@ -7,6 +7,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import type { CallSession, CallSupervision } from "@volta/contracts";
 
 import { executeToolCall } from "../agent/interpreter";
+import { createModeConfiguration } from "../agent/modes";
 import { buildCallInstructions, buildConfirmationCallInstructions } from "../agent/prompt";
 import { createCommitmentFinalizer, whatsappRecapGateway } from "../audit/commitment";
 import { env } from "../config/env";
@@ -1379,6 +1380,7 @@ function openMediaStreamSession(
   attachMediaStreamRelay({
     twilio: twilioSocket,
     realtime,
+    configuration: createModeConfiguration("negotiation"),
     sessionAlreadyConfigured: Boolean(warm),
     // The number the carrier actually experiences: how long they held a live
     // line in silence. Without it a slow greeting and a fast one look the same
@@ -1468,11 +1470,14 @@ function openMediaStreamSession(
         call.callSid
       );
       return confirmationContext
-        ? buildConfirmationCallInstructions({
-            operation: store.getOperation(),
-            quote: confirmationContext.quote,
-            carrierName: call.carrierName
-          })
+        ? {
+            ...confirmationContext.configuration,
+            instructions: buildConfirmationCallInstructions({
+              operation: store.getOperation(),
+              quote: confirmationContext.quote,
+              carrierName: call.carrierName
+            })
+          }
         : buildCallInstructions(store.getOperation(), call.carrierName);
     },
     executeToolCall: async (request) => {

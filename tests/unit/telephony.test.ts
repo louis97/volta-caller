@@ -6,7 +6,10 @@ import {
   type RelaySocket
 } from "../../src/telephony/mediaStream";
 import type { CallRuntime } from "../../src/telephony/registry";
-import { createModeConfiguration } from "../../src/agent/modes";
+import {
+  createModeConfiguration,
+  createNegotiationModeConfiguration
+} from "../../src/agent/modes";
 import { createExceptionModeConfiguration } from "../../src/agent/modes";
 import { createExceptionCallContext } from "../../src/core/exceptions";
 import { seedOperation } from "../../src/core/seed";
@@ -72,6 +75,61 @@ describe("telephony adapters", () => {
       instructions: configuration.instructions,
       tools: configuration.tools
     });
+  });
+
+  it("keeps the shipment briefing and negotiation-only tools in one configuration", () => {
+    const configuration = createNegotiationModeConfiguration(
+      seedOperation(),
+      "Fletes del Norte"
+    );
+
+    expect(configuration.instructions).toContain("Fletes del Norte");
+    expect(configuration.instructions).toContain(
+      "shared market context from the other live calls"
+    );
+    expect(configuration.instructions).toContain(
+      "Read quoteId from its result"
+    );
+    expect(configuration.instructions).not.toContain("commit_deal");
+    expect(configuration.tools.map((tool) => tool.name)).toEqual([
+      "check_mandate",
+      "get_leverage",
+      "register_quote",
+      "review_deal",
+      "trigger_escalation"
+    ]);
+  });
+
+  it("replaces negotiation tools when a call resolves to confirmation mode", () => {
+    const twilio = new FakeSocket();
+    const realtime = new FakeSocket();
+
+    attachMediaStreamRelay({
+      twilio,
+      realtime,
+      configuration: createModeConfiguration("negotiation"),
+      instructionsFor: () => ({
+        ...createModeConfiguration("confirmation"),
+        instructions: "confirm these selected terms"
+      }),
+      onStart: () => runtime,
+      executeToolCall: async () => ({ outcome: "approved" })
+    });
+    twilio.receive({
+      event: "start",
+      streamSid: "MZ123",
+      start: { streamSid: "MZ123", callSid: "CA1" }
+    });
+
+    const updates = realtime.sent
+      .map((message) => JSON.parse(message))
+      .filter((message) => message.type === "session.update");
+    expect(updates[1].session.instructions).toBe(
+      "confirm these selected terms"
+    );
+    expect(
+      updates[1].session.tools.map((tool: { name: string }) => tool.name)
+    ).toEqual(["check_mandate", "confirm_selected_deal", "trigger_escalation"]);
   });
 
   it("configures exception realtime sessions with preloaded context and only write tools", () => {

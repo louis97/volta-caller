@@ -69,7 +69,11 @@ export type ToolCallResult =
         pickupTime: string;
       }>;
     }
-  | { outcome: "registered"; mandateDecision: MandateDecision }
+  | {
+      outcome: "registered";
+      quoteId: string;
+      mandateDecision: MandateDecision;
+    }
   | { outcome: "reviewed"; mandateDecision: MandateDecision }
   | { outcome: "confirmation_requested" }
   | { outcome: "incident_recorded"; feasibility: Incident["feasibility"] }
@@ -126,7 +130,7 @@ export async function executeToolCall(
       };
 
       dependencies.store.registerQuote(quote);
-      return { outcome: "registered", mandateDecision };
+      return { outcome: "registered", quoteId: quote.id, mandateDecision };
     }
     case "get_leverage": {
       const parsed = getLeverageSchema.safeParse(request.arguments ?? {});
