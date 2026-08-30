@@ -5,6 +5,7 @@ import { evaluateMandate, type MandateDecision } from "../core/mandate";
 import type { OperationStore } from "../core/state";
 import {
   checkMandateSchema,
+  getLeverageSchema,
   commitDealSchema,
   registerQuoteSchema,
   requestQuoteApprovalSchema,
@@ -37,6 +38,12 @@ export type ToolCallRequest = {
 
 export type ToolDependencies = {
   store: OperationStore;
+  /**
+   * Real quotes from the other live calls, for the agent to negotiate with.
+   * Supplied by the telephony layer from auction state, so the agent can only
+   * cite offers that were actually made.
+   */
+  leverage?: () => Quote[];
   finalizeBooking: (intent: BookingIntent) => Promise<void> | void;
   now?: () => string;
   callContext?: CallContext;
@@ -44,6 +51,14 @@ export type ToolDependencies = {
 
 export type ToolCallResult =
   | { outcome: "approved" }
+  | {
+      outcome: "leverage";
+      quotes: Array<{
+        carrierName: string;
+        priceMxn: number;
+        pickupTime: string;
+      }>;
+    }
   | { outcome: "registered"; mandateDecision: MandateDecision }
   | { outcome: "approval_requested"; approval: ApprovalRequest }
   | { outcome: "booking_requested" }
@@ -187,6 +202,17 @@ export async function executeToolCall(
       } catch {
         return { outcome: "booking_failed" };
       }
+    }
+    case "get_leverage": {
+      const parsed = getLeverageSchema.safeParse(request.arguments ?? {});
+      if (!parsed.success) return invalidArguments();
+
+      const quotes = (dependencies.leverage?.() ?? []).map((quote) => ({
+        carrierName: quote.carrierName,
+        priceMxn: quote.priceMxn,
+        pickupTime: quote.pickupTime
+      }));
+      return { outcome: "leverage", quotes };
     }
     case "trigger_escalation": {
       const parsed = triggerEscalationSchema.safeParse(request.arguments);

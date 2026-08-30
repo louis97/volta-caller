@@ -43,6 +43,9 @@ export const requestQuoteApprovalSchema = z.object({
   recommendedQuoteId: z.string().min(1).optional()
 });
 
+/** Takes no arguments: the caller's own identity comes from the call, not the model. */
+export const getLeverageSchema = z.object({});
+
 export const triggerEscalationSchema = z.object({
   reason: z.string().min(1),
   current_price_offered: z.number().nonnegative(),
@@ -56,7 +59,8 @@ type AgentToolDefinition = {
     | "register_quote"
     | "request_quote_approval"
     | "commit_deal"
-    | "trigger_escalation";
+    | "trigger_escalation"
+    | "get_leverage";
   description: string;
   parameters: Record<string, unknown>;
 };
@@ -103,6 +107,11 @@ export const agentToolDefinitions: AgentToolDefinition[] = [
     "commit_deal",
     "Solicita reservar un acuerdo con términos ya confirmados.",
     commitDealModelSchema
+  ),
+  defineTool(
+    "get_leverage",
+    "Devuelve las cotizaciones reales que otros transportistas ya dieron en esta operación, para usarlas como referencia al negociar. Solo devuelve ofertas que existen: si está vacío, no hay nada que citar y no debes mencionar ningún precio de terceros.",
+    getLeverageSchema
   ),
   defineTool(
     "trigger_escalation",

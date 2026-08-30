@@ -10,6 +10,7 @@ import { env } from "../config/env";
 import { seedOperation } from "../core/seed";
 import { createOperationStore, type OperationStore } from "../core/state";
 import { MockSmsGateway } from "../mocks/sms";
+import { auctionFromOperation, type Auction } from "./auction";
 import { attachMediaStreamRelay } from "./mediaStream";
 import { callClockMs, createCallRegistry, type CallRuntime } from "./registry";
 import {
@@ -30,6 +31,22 @@ const store: OperationStore = createOperationStore(seedOperation());
 
 /** Live calls, keyed by stream. Owns identity and the audio clock. */
 export const registry = createCallRegistry();
+
+/** The market across the concurrent calls of the current negotiation round. */
+let auction: Auction = auctionFromOperation(store.getOperation());
+
+/**
+ * callSid -> carrier, recorded when we dial. Twilio only tells us the call sid
+ * when the stream starts, and the agent must never be the one to say which
+ * carrier it is talking to.
+ */
+const dialled = new Map<string, { id: string; name: string }>();
+
+// Quotes reach the auction through the store's event stream, so the auction
+// stays a read model and there is one write path for a quote.
+store.subscribe((event) => {
+  if (event.type === "quote.registered") auction.recordQuote(event.quote);
+});
 
 function getTwilioClient(): TwilioCallClient {
   if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN) {
@@ -91,6 +108,55 @@ export function mountTelephonyRoutes(app: Express): void {
   const jsonBody: express.RequestHandler = (request, response, next) => {
     parseJson(request, response, () => next());
   };
+
+  /**
+   * Opens a negotiation round: dials every carrier candidate at once. Quotes
+   * from calls already in progress become leverage for the ones still talking,
+   * which is what makes this a market rather than three separate calls.
+   */
+  app.post("/api/calls/negotiate", jsonBody, async (_request, response) => {
+    const operation = store.getOperation();
+    auction = auctionFromOperation(operation);
+    dialled.clear();
+
+    const base = (env.PUBLIC_BASE_URL ?? "").replace(/\/$/, "");
+    const gateway = createTwilioGateway({ client: getTwilioClient() });
+
+    const results = await Promise.all(
+      operation.candidates.map(async (candidate) => {
+        try {
+          const session = await gateway.createOutboundCall({
+            operationId: operation.id,
+            carrierId: candidate.id,
+            to: candidate.phone,
+            from: env.TWILIO_FROM_NUMBER ?? "",
+            twimlUrl: `${base}/twiml/outbound`,
+            ...(env.CALL_TIME_LIMIT_SECONDS > 0
+              ? { timeLimitSeconds: env.CALL_TIME_LIMIT_SECONDS }
+              : {}),
+            record: env.TWILIO_RECORD_CALLS
+          });
+          dialled.set(session.id, { id: candidate.id, name: candidate.name });
+          auction.startCall(candidate.id, session.id);
+          return { carrierId: candidate.id, callId: session.id };
+        } catch (error) {
+          // One carrier not picking up is a market outcome, not a failure of
+          // the round: the auction records it and the others keep negotiating.
+          const reason = error instanceof Error ? error.message : "dial_failed";
+          auction.markUnavailable(candidate.id, reason);
+          return { carrierId: candidate.id, error: reason };
+        }
+      })
+    );
+
+    response.status(202).json({ round: results, status: auction.status() });
+  });
+
+  app.get("/api/auction", (_request, response) => {
+    response
+      .status(200)
+      .json({ status: auction.status(), standings: auction.standings() });
+  });
 
   app.post("/api/calls/test", jsonBody, async (request, response) => {
     const to = readTo(request);
@@ -195,14 +261,19 @@ function openMediaStreamSession(twilioSocket: ClosableRelaySocket): void {
     twilio: twilioSocket,
     realtime,
     onStart: ({ streamSid, callSid }) => {
+      const carrier = callSid ? dialled.get(callSid) : undefined;
       runtime = registry.open({
         callSid: callSid ?? streamSid,
         streamSid,
         operationId: store.getOperation().id,
+        carrierId: carrier?.id,
+        carrierName: carrier?.name,
         direction: "outbound",
         startedAt: new Date().toISOString()
       });
-      console.log(`[call] started stream=${streamSid} call=${callSid ?? "?"}`);
+      console.log(
+        `[call] started stream=${streamSid} call=${callSid ?? "?"} carrier=${carrier?.name ?? "unknown"}`
+      );
       return runtime;
     },
     executeToolCall: (request) => {
@@ -213,6 +284,10 @@ function openMediaStreamSession(twilioSocket: ClosableRelaySocket): void {
 
       return executeToolCall(request, {
         store,
+        // Only quotes other carriers actually gave. Nothing here lets the
+        // agent cite a price that was never offered.
+        leverage: () =>
+          current?.carrierId ? auction.leverageFor(current.carrierId) : [],
         callContext: current
           ? {
               callId: current.callSid,

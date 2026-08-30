@@ -19,23 +19,24 @@ export function seedOperation(): Operation {
       typeOfContent: "Textiles",
       weightKg: 18400,
       measures: "120 × 100 × 110 cm",
-      escalationPhone: "+52-33-0000-0000"
+      // Real, verified handset. The fiction stays Mexican; the dialling is not.
+      escalationPhone: "+573224118118"
     },
     candidates: [
       {
         id: "carrier-costa-pacifico",
         name: "Transportes Costa Pacífico",
-        phone: "+52-314-000-0001"
+        phone: "+573104083853"
       },
       {
         id: "carrier-ruta-occidente",
         name: "Ruta Occidente",
-        phone: "+52-33-000-0002"
+        phone: "+573142117112"
       },
       {
         id: "carrier-logistica-manzanillo",
         name: "Logística Manzanillo",
-        phone: "+52-314-000-0003"
+        phone: "+573208643487"
       }
     ],
     quotes: [],
