@@ -36,6 +36,13 @@ export type CarrierCandidate = {
   phone: string;
 };
 
+export type Carrier = CarrierCandidate & {
+  organizationId: string;
+  lanes: string[];
+  active: boolean;
+  createdAt: string;
+};
+
 export type Quote = {
   id: string;
   carrierId: string;
@@ -90,6 +97,7 @@ export type ClosingAuthorization = {
 
 export type CallSession = {
   id: string;
+  callSid?: string;
   operationId: string;
   carrierId?: string;
   driverName?: string;
@@ -97,6 +105,8 @@ export type CallSession = {
   status: "pending" | "in_progress" | "completed" | "failed" | "transferred";
   audioUrl?: string;
   transcript?: string;
+  quoteId?: string;
+  endedReason?: string;
   startedAt: string;
   endedAt?: string;
 };
@@ -153,6 +163,7 @@ export type Operation = {
     | "failed";
   mandate: Mandate;
   candidates: CarrierCandidate[];
+  callSessions: CallSession[];
   quotes: Quote[];
   approvals: ApprovalRequest[];
   closingAuthorization?: ClosingAuthorization;
@@ -165,6 +176,8 @@ export type Operation = {
 export type OperationEvent =
   | { type: "mandate.created"; operationId: string; mandate: Mandate }
   | { type: "quote.registered"; operationId: string; quote: Quote }
+  | { type: "call.started"; operationId: string; callSession: CallSession }
+  | { type: "call.updated"; operationId: string; callSession: CallSession }
   | {
       type: "approval.requested";
       operationId: string;

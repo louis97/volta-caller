@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type {
   AgentConversation,
+  CallSession,
+  Carrier,
   AgentMessage,
   EvidenceCitation,
   Operation,
@@ -8,6 +10,7 @@ import type {
   ShipmentEvent,
   TranscriptSegment
 } from "@volta/contracts";
+import { derivePipelineStage } from "../core/pipeline";
 
 export type OrganizationContext = {
   organizationId: string;
@@ -18,6 +21,14 @@ export type CreateConversationInput = OrganizationContext & { title?: string };
 
 export type AgentRepository = {
   syncOperation(organizationId: string, operation: Operation): Promise<void>;
+  saveCallSession(organizationId: string, callSession: CallSession): Promise<void>;
+  listCarriers(organizationId: string): Promise<Carrier[]>;
+  createCarrier(carrier: Carrier): Promise<Carrier>;
+  updateCarrier(
+    organizationId: string,
+    carrierId: string,
+    patch: Partial<Pick<Carrier, "name" | "phone" | "lanes" | "active">>
+  ): Promise<Carrier | undefined>;
   createConversation(
     input: CreateConversationInput
   ): Promise<AgentConversation>;
@@ -52,6 +63,7 @@ export type AgentRepository = {
 export function operationVersion(operation: Operation): string {
   const facts = JSON.stringify({
     status: operation.status,
+    pipelineStage: derivePipelineStage(operation),
     quotes: operation.quotes,
     approvals: operation.approvals,
     commitment: operation.commitment,
@@ -71,11 +83,42 @@ export class MemoryAgentRepository implements AgentRepository {
   private readonly events = new Map<string, ShipmentEvent[]>();
   private readonly transcripts = new Map<string, TranscriptSegment[]>();
   private readonly actions = new Map<string, ProposedAction>();
+  private readonly carriers = new Map<string, Map<string, Carrier>>();
 
   async syncOperation(organizationId: string, operation: Operation) {
     const organization = this.operations.get(organizationId) ?? new Map();
     organization.set(operation.id, structuredClone(operation));
     this.operations.set(organizationId, organization);
+  }
+
+  async saveCallSession(organizationId: string, callSession: CallSession) {
+    // The operation snapshot is the read model in memory; this separate write
+    // mirrors the relational persistence contract used by Postgres.
+    const operation = this.operations.get(organizationId)?.get(callSession.operationId);
+    if (operation) {
+      const index = operation.callSessions.findIndex((item) => item.id === callSession.id);
+      if (index === -1) operation.callSessions.push(structuredClone(callSession));
+      else operation.callSessions[index] = structuredClone(callSession);
+    }
+  }
+
+  async listCarriers(organizationId: string) {
+    return [...(this.carriers.get(organizationId)?.values() ?? [])].map((item) => structuredClone(item));
+  }
+
+  async createCarrier(carrier: Carrier) {
+    const organization = this.carriers.get(carrier.organizationId) ?? new Map<string, Carrier>();
+    organization.set(carrier.id, structuredClone(carrier));
+    this.carriers.set(carrier.organizationId, organization);
+    return structuredClone(carrier);
+  }
+
+  async updateCarrier(organizationId: string, carrierId: string, patch: Partial<Pick<Carrier, "name" | "phone" | "lanes" | "active">>) {
+    const carrier = this.carriers.get(organizationId)?.get(carrierId);
+    if (!carrier) return undefined;
+    const updated = { ...carrier, ...structuredClone(patch) };
+    this.carriers.get(organizationId)?.set(carrierId, updated);
+    return structuredClone(updated);
   }
 
   async createConversation(input: CreateConversationInput) {

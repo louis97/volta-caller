@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import express, { type Request, type Response } from "express";
 import type {
+  Carrier,
   OperationEvent,
   ShipmentEvent,
   TranscriptSegment
@@ -33,19 +34,22 @@ import {
 import { createSupabaseMandatesRepositoryFromConfig } from "./core/mandates/supabase-repository";
 import type { MandatesRepository } from "./core/mandates/types";
 import { createMockScenario } from "./mocks/callScenario";
+import { createOperationFromMandate } from "./core/seed";
+import { fanOutCalls } from "./telephony/orchestrator";
 import { PostgresAgentRepository } from "./storage/postgres";
 import {
   attachTelephonyWebSockets,
+  createLiveTelephonyGateway,
   mountTelephonyRoutes
 } from "./telephony/routes";
 
 const approvalDecisionSchema = z.object({
   action: z.enum(["approve", "decline"]),
   selectedQuoteId: z.string().trim().min(1).optional(),
-  decidedBy: z.string().trim().min(1).max(120)
+  decidedBy: z.string().trim().min(1).max(120).optional()
 });
 const approvalUndoSchema = z.object({
-  undoneBy: z.string().trim().min(1).max(120)
+  undoneBy: z.string().trim().min(1).max(120).optional()
 });
 const legacyCopilotRequestSchema = z.object({
   question: z.string().trim().min(1).max(2000),
@@ -111,6 +115,8 @@ export type CreateAppOptions = {
   mandatesRepository?: MandatesRepository;
 };
 
+type EventClient = { response: Response; organizationId: string };
+
 function writeEvent(response: Response, event: OperationEvent): void {
   response.write(`event: ${event.type}\n`);
   response.write(`data: ${JSON.stringify(event)}\n\n`);
@@ -123,8 +129,9 @@ function writeAgentEvent(response: Response, event: string, data: unknown) {
 
 export function createApp(options: CreateAppOptions = {}) {
   const app = express();
-  let scenario = createMockScenario();
-  const eventClients = new Set<Response>();
+  const eventClients = new Set<EventClient>();
+  let activeOrganizationId = env.VOLTA_DEFAULT_ORGANIZATION_ID;
+  const dialled = new Map<string, { id: string; name: string }>();
   const mandatesRepository =
     options.mandatesRepository ?? createDefaultMandatesRepository();
   const repository =
@@ -153,8 +160,17 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   const publish = (event: OperationEvent) => {
-    for (const client of eventClients) writeEvent(client, event);
+    for (const client of eventClients) {
+      if (client.organizationId === activeOrganizationId) {
+        writeEvent(client.response, event);
+      }
+    }
   };
+  const scenario = createMockScenario(publish);
+  app.locals.operationStore = scenario.store;
+  app.locals.telephonyDialled = dialled;
+  app.locals.saveCallSession = (session: import("@volta/contracts").CallSession) =>
+    repository.saveCallSession(activeOrganizationId, session);
   const agent = createOperationalAgent({
     repository,
     answerer,
@@ -166,6 +182,12 @@ export function createApp(options: CreateAppOptions = {}) {
       context.organizationId,
       scenario.store.getOperation()
     );
+
+  const persistCallSessions = async (context: OrganizationContext) => {
+    await Promise.all(scenario.store.getOperation().callSessions.map((session) =>
+      repository.saveCallSession(context.organizationId, session)
+    ));
+  };
 
   app.get("/health", (_request, response) => {
     response.status(200).json({ status: "ok", mode: env.VOLTA_MODE });
@@ -208,6 +230,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const approval = scenario.store.resolveApproval({
         approvalId: request.params.approvalId,
         ...parsed.data,
+        decidedBy: parsed.data.decidedBy ?? contextFromRequest(request, response)?.userId ?? "dispatcher",
         decidedAt: new Date().toISOString()
       });
       const context = contextFromRequest(request, response);
@@ -234,6 +257,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const approval = scenario.store.undoApproval({
         approvalId: request.params.approvalId,
         ...parsed.data,
+        undoneBy: parsed.data.undoneBy ?? contextFromRequest(request, response)?.userId ?? "dispatcher",
         undoneAt: new Date().toISOString()
       });
       const context = contextFromRequest(request, response);
@@ -252,9 +276,19 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.post("/api/mandates", async (request, response) => {
     try {
-      response
-        .status(201)
-        .json(await createMandate(mandatesRepository, request.body));
+      const mandate = await createMandate(mandatesRepository, request.body);
+      const context = contextFromRequest(request, response);
+      if (!context) return;
+      activeOrganizationId = context.organizationId;
+      const carriers = await repository.listCarriers(context.organizationId);
+      const operation = createOperationFromMandate(mandate, `operation-${mandate.id}`);
+      operation.candidates = carriers.filter((carrier) => carrier.active).map(({ id, name, phone }) => ({ id, name, phone }));
+      scenario.store.replaceOperation(operation);
+      await persistCurrentOperation(context);
+      await fanOutCalls({ store: scenario.store, mode: env.VOLTA_MODE, publicBaseUrl: env.PUBLIC_BASE_URL, from: env.TWILIO_FROM_NUMBER, gateway: env.VOLTA_MODE === "live" ? createLiveTelephonyGateway() : undefined });
+      await persistCallSessions(context);
+      await persistCurrentOperation(context);
+      response.status(201).json(scenario.store.getOperation());
     } catch (error) {
       if (error instanceof InvalidMandateError) {
         response.status(400).json({ error: error.code });
@@ -263,6 +297,32 @@ export function createApp(options: CreateAppOptions = {}) {
       console.error("Mandate creation failed", error);
       response.status(500).json({ error: "mandate_persistence_failed" });
     }
+  });
+
+  app.get("/api/carriers", async (request, response) => {
+    const context = contextFromRequest(request, response);
+    if (!context) return;
+    response.status(200).json(await repository.listCarriers(context.organizationId));
+  });
+
+  app.post("/api/carriers", async (request, response) => {
+    const context = contextFromRequest(request, response);
+    if (!context) return;
+    const body = request.body as Partial<Pick<Carrier, "name" | "phone" | "lanes" | "active">>;
+    if (!body.name?.trim() || !body.phone?.trim()) {
+      response.status(400).json({ error: "invalid_carrier" });
+      return;
+    }
+    const carrier: Carrier = { organizationId: context.organizationId, id: randomUUID(), name: body.name.trim(), phone: body.phone.trim(), lanes: body.lanes ?? [], active: body.active ?? true, createdAt: new Date().toISOString() };
+    response.status(201).json(await repository.createCarrier(carrier));
+  });
+
+  app.patch("/api/carriers/:carrierId", async (request, response) => {
+    const context = contextFromRequest(request, response);
+    if (!context) return;
+    const carrier = await repository.updateCarrier(context.organizationId, request.params.carrierId, request.body as Partial<Pick<Carrier, "name" | "phone" | "lanes" | "active">>);
+    if (!carrier) { response.status(404).json({ error: "carrier_not_found" }); return; }
+    response.status(200).json(carrier);
   });
 
   app.get("/api/mandates", async (_request, response) => {
@@ -503,17 +563,26 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   app.get("/api/events", (request: Request, response: Response) => {
+    const context = contextFromRequest(request, response);
+    if (!context) return;
     response.status(200).set({
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
       "Content-Type": "text/event-stream"
     });
+    response.write("retry: 3000\n\n");
     response.flushHeaders();
-    eventClients.add(response);
-    request.on("close", () => eventClients.delete(response));
+    const client = { response, organizationId: context.organizationId };
+    eventClients.add(client);
+    const heartbeat = setInterval(() => response.write(": ping\n\n"), 20_000);
+    request.on("close", () => { clearInterval(heartbeat); eventClients.delete(client); });
   });
 
-  mountTelephonyRoutes(app);
+  mountTelephonyRoutes(app, {
+    store: scenario.store,
+    dialled,
+    onCallSessionChanged: (session) => void repository.saveCallSession(activeOrganizationId, session)
+  });
 
   return app;
 }
@@ -571,8 +640,15 @@ export function isMainModule(moduleUrl: string, entrypoint?: string): boolean {
 if (isMainModule(import.meta.url, process.argv[1])) {
   // The media relay needs the raw HTTP server to handle WebSocket upgrades,
   // which `app.listen()` does not expose.
-  const server = createServer(createApp());
-  attachTelephonyWebSockets(server);
+  const app = createApp();
+  const server = createServer(app);
+  // createApp mounts telephony against its scenario store; retain it on the
+  // app so the WebSocket handler shares the exact same instance.
+  attachTelephonyWebSockets(server, {
+    store: app.locals.operationStore,
+    dialled: app.locals.telephonyDialled,
+    onCallSessionChanged: (session) => void app.locals.saveCallSession(session)
+  });
 
   const missing = missingTelephonyConfig();
   if (missing.length > 0) {

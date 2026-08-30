@@ -32,7 +32,7 @@ afterEach(async () => {
   );
 });
 
-it("creates, gets, and lists mandates without changing the operation store", async () => {
+it("creates a real operation, then retains the mandate record", async () => {
   const app = createApp({ mandatesRepository: new MemoryRepository() });
   const createResponse = await request(app, "/api/mandates", {
     method: "POST",
@@ -41,11 +41,12 @@ it("creates, gets, and lists mandates without changing the operation store", asy
   });
 
   expect(createResponse.status).toBe(201);
-  const created = (await createResponse.json()) as MandateRecord;
-  expect(created).toMatchObject({ id: "mandate-1", budget_cap: 8700.5 });
+  const operation = (await createResponse.json()) as { id: string; mandate: { budgetCapMxn: number } };
+  expect(operation).toMatchObject({ id: "operation-mandate-1", mandate: { budgetCapMxn: 8700.5 } });
 
-  const oneResponse = await request(app, `/api/mandates/${created.id}`);
-  await expect(oneResponse.json()).resolves.toEqual(created);
+  const oneResponse = await request(app, "/api/mandates/mandate-1");
+  const created = (await oneResponse.json()) as MandateRecord;
+  expect(created).toMatchObject({ id: "mandate-1", budget_cap: 8700.5 });
 
   const listResponse = await request(app, "/api/mandates");
   await expect(listResponse.json()).resolves.toEqual([created]);

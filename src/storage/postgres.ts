@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import type {
   AgentConversation,
   AgentMessage,
+  CallSession,
+  Carrier,
   EvidenceCitation,
   Operation,
   ProposedAction,
@@ -10,6 +12,7 @@ import type {
   TranscriptSegment
 } from "@volta/contracts";
 import { Pool } from "pg";
+import { derivePipelineStage } from "../core/pipeline";
 
 import {
   type AgentRepository,
@@ -33,19 +36,52 @@ export class PostgresAgentRepository implements AgentRepository {
   async syncOperation(organizationId: string, operation: Operation) {
     await this.initialize();
     await this.pool.query(
-      `INSERT INTO operations (organization_id, id, version, snapshot)
-       VALUES ($1, $2, $3, $4::jsonb)
+      `INSERT INTO operations (organization_id, id, version, snapshot, pipeline_stage)
+       VALUES ($1, $2, $3, $4::jsonb, $5)
        ON CONFLICT (organization_id, id) DO UPDATE
        SET version = EXCLUDED.version,
            snapshot = EXCLUDED.snapshot,
+           pipeline_stage = EXCLUDED.pipeline_stage,
            updated_at = now()`,
       [
         organizationId,
         operation.id,
         operationVersion(operation),
-        JSON.stringify(operation)
+        JSON.stringify(operation),
+        derivePipelineStage(operation)
       ]
     );
+    await Promise.all(operation.callSessions.map((callSession) =>
+      this.saveCallSession(organizationId, callSession)
+    ));
+  }
+
+  async saveCallSession(organizationId: string, callSession: CallSession) {
+    await this.initialize();
+    await this.pool.query(
+      `INSERT INTO call_sessions (organization_id, id, operation_id, carrier_id, driver_name, direction, status, audio_url, quote_id, ended_reason, started_at, ended_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       ON CONFLICT (organization_id, id) DO UPDATE SET carrier_id = EXCLUDED.carrier_id, driver_name = EXCLUDED.driver_name, status = EXCLUDED.status, audio_url = EXCLUDED.audio_url, quote_id = EXCLUDED.quote_id, ended_reason = EXCLUDED.ended_reason, started_at = EXCLUDED.started_at, ended_at = EXCLUDED.ended_at`,
+      [organizationId, callSession.id, callSession.operationId, callSession.carrierId ?? null, callSession.driverName ?? null, callSession.direction, callSession.status, callSession.audioUrl ?? null, callSession.quoteId ?? null, callSession.endedReason ?? null, callSession.startedAt, callSession.endedAt ?? null]
+    );
+  }
+
+  async listCarriers(organizationId: string) {
+    await this.initialize();
+    const result = await this.pool.query<CarrierRow>(`SELECT organization_id, id, name, phone, lanes, active, created_at FROM carriers WHERE organization_id = $1 ORDER BY created_at DESC`, [organizationId]);
+    return result.rows.map(carrierFromRow);
+  }
+
+  async createCarrier(carrier: Carrier) {
+    await this.initialize();
+    await this.pool.query(`INSERT INTO carriers (organization_id, id, name, phone, lanes, active, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`, [carrier.organizationId, carrier.id, carrier.name, carrier.phone, carrier.lanes, carrier.active, carrier.createdAt]);
+    return carrier;
+  }
+
+  async updateCarrier(organizationId: string, carrierId: string, patch: Partial<Pick<Carrier, "name" | "phone" | "lanes" | "active">>) {
+    await this.initialize();
+    const result = await this.pool.query<CarrierRow>(`UPDATE carriers SET name = coalesce($3, name), phone = coalesce($4, phone), lanes = coalesce($5, lanes), active = coalesce($6, active) WHERE organization_id = $1 AND id = $2 RETURNING organization_id, id, name, phone, lanes, active, created_at`, [organizationId, carrierId, patch.name ?? null, patch.phone ?? null, patch.lanes ?? null, patch.active ?? null]);
+    return result.rows[0] ? carrierFromRow(result.rows[0]) : undefined;
   }
 
   async createConversation(input: CreateConversationInput) {
@@ -349,7 +385,8 @@ export class PostgresAgentRepository implements AgentRepository {
   private async runMigrations() {
     const migrations = [
       "001_agent_knowledge.sql",
-      "002_mandates_security.sql"
+      "002_mandates_security.sql",
+      "003_carriers_and_pipeline.sql"
     ];
     for (const migration of migrations) {
       const sql = await readFile(
@@ -422,6 +459,16 @@ type ActionRow = {
   failure_reason: string | null;
 };
 
+type CarrierRow = {
+  organization_id: string;
+  id: string;
+  name: string;
+  phone: string;
+  lanes: string[];
+  active: boolean;
+  created_at: Date | string;
+};
+
 function messageFromRow(row: MessageRow): AgentMessage {
   return {
     id: row.id,
@@ -479,6 +526,18 @@ function actionFromRow(row: ActionRow): ProposedAction {
     decidedAt: row.decided_at ? iso(row.decided_at) : undefined,
     executedAt: row.executed_at ? iso(row.executed_at) : undefined,
     failureReason: row.failure_reason ?? undefined
+  };
+}
+
+function carrierFromRow(row: CarrierRow): Carrier {
+  return {
+    organizationId: row.organization_id,
+    id: row.id,
+    name: row.name,
+    phone: row.phone,
+    lanes: row.lanes,
+    active: row.active,
+    createdAt: iso(row.created_at)
   };
 }
 
