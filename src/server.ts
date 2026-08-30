@@ -78,14 +78,6 @@ import {
   telephonyContext
 } from "./telephony/routes";
 
-const approvalDecisionSchema = z.object({
-  action: z.enum(["approve", "decline"]),
-  selectedQuoteId: z.string().trim().min(1).optional(),
-  decidedBy: z.string().trim().min(1).max(120).optional()
-});
-const approvalUndoSchema = z.object({
-  undoneBy: z.string().trim().min(1).max(120).optional()
-});
 const legacyCopilotRequestSchema = z.object({
   question: z.string().trim().min(1).max(2000),
   history: z
@@ -268,29 +260,18 @@ export function createApp(options: CreateAppOptions = {}) {
   const scenario: MockScenario = options.scenario
     ? {
         run: async () => {},
-        closeApprovedDeal: async () => false,
         ...options.scenario
       }
     : injectedStore
       ? {
           store: injectedStore,
-          run: async () => {},
-          closeApprovedDeal: async () => false
+          run: async () => {}
         }
       : createMockScenario();
   // One map, resolved from the store: the routes, the WebSocket handler and a
   // mandate's fan-out all have to agree on which carrier a call sid belongs
   // to, or the agent is talking to "unknown".
   const dialled = telephonyContext(scenario.store).dialled;
-  // A client's quote selection is what authorises the closing call; this
-  // places it.
-  const confirmationCoordinator =
-    options.confirmationCoordinator ??
-    createConfirmationCoordinator({
-      store: scenario.store,
-      telephony: options.telephony ?? createMockTelephonyGateway(),
-      now: options.now
-    });
   const mandatesRepository =
     options.mandatesRepository ?? createDefaultMandatesRepository();
   const repository =
@@ -314,6 +295,18 @@ export function createApp(options: CreateAppOptions = {}) {
     });
     return { callToken };
   };
+  // A client's quote selection is what authorises the closing call; this
+  // places it, reusing the same call-context token mechanism as negotiation
+  // calls so the confirmation callback rehydrates on the real TwiML route.
+  const confirmationCoordinator =
+    options.confirmationCoordinator ??
+    createConfirmationCoordinator({
+      store: scenario.store,
+      telephony: options.telephony ?? createMockTelephonyGateway(),
+      now: options.now,
+      twimlBaseUrl: env.PUBLIC_BASE_URL,
+      createCallReference: createTelephonyCallReference
+    });
   const answerer =
     options.answerer ??
     (env.OPENAI_API_KEY
@@ -689,6 +682,8 @@ export function createApp(options: CreateAppOptions = {}) {
   app.locals.operationStore = scenario.store;
   app.locals.publishShipmentEvent = publishShipmentEvent;
   app.locals.telephonyDialled = dialled;
+  app.locals.confirmationCoordinator = confirmationCoordinator;
+  app.locals.whatsappMessenger = kapsoMessenger;
   app.locals.ensureCarrierDirectory = () =>
     ensureCarrierDirectory(repository, activeOrganizationId);
   // The active operation lives in memory, so a restart used to wipe the
@@ -927,16 +922,21 @@ export function createApp(options: CreateAppOptions = {}) {
       await launchMandate(context, input);
       return true;
     },
-    executeCloseApprovedDeal: () => scenario.closeApprovedDeal(),
-    resolveCarrierSelection: (input) => {
-      scenario.store.resolveApproval({
-        approvalId: input.approvalId,
-        action: "approve",
-        selectedQuoteId: input.selectedQuoteId,
-        decidedBy: input.decidedBy,
-        decidedAt: input.decidedAt
-      });
-      return true;
+    resolveCarrierSelection: async (input) => {
+      const recapRecipient = input.decidedBy.startsWith("whatsapp:")
+        ? input.decidedBy.slice("whatsapp:".length)
+        : undefined;
+      try {
+        await confirmationCoordinator.start(
+          scenario.store.getOperation().id,
+          input.selectedQuoteId,
+          { recapRecipient }
+        );
+        return true;
+      } catch (error) {
+        console.error("Carrier selection confirmation failed", error);
+        return false;
+      }
     }
   });
 
@@ -1016,114 +1016,6 @@ export function createApp(options: CreateAppOptions = {}) {
       storageFailure(response, error);
     }
   });
-  app.get("/api/approvals", (_request, response) => {
-    const operation = scenario.store.getOperation();
-    response
-      .status(200)
-      .json(
-        operation.approvals.filter((approval) => approval.status === "pending")
-      );
-  });
-  app.get("/api/approvals/:approvalId", (request, response) => {
-    const approval = scenario.store.getApproval(request.params.approvalId);
-    if (!approval) {
-      response.status(404).json({ error: "approval_not_found" });
-      return;
-    }
-    response.status(200).json({
-      approval,
-      operation: operationReadModel(scenario.store.getOperation())
-    });
-  });
-
-  app.post("/api/approvals/:approvalId/decision", async (request, response) => {
-    const parsed = approvalDecisionSchema.safeParse(request.body);
-    if (!parsed.success) {
-      response.status(400).json({
-        error: "invalid_approval_decision",
-        issues: parsed.error.issues.map((issue) => ({
-          path: issue.path.join("."),
-          message: issue.message
-        }))
-      });
-      return;
-    }
-    try {
-      const context = contextFromRequest(request, response);
-      if (!context) return;
-      const operationId =
-        typeof request.query.operationId === "string"
-          ? request.query.operationId
-          : scenario.store.getOperation().id;
-      const store = await operationStoreForDashboard(context, operationId);
-      if (!store) {
-        response.status(404).json({ error: "operation_not_found" });
-        return;
-      }
-      const approval = store.resolveApproval({
-        approvalId: request.params.approvalId,
-        ...parsed.data,
-        decidedBy: parsed.data.decidedBy ?? context.userId,
-        decidedAt: new Date().toISOString()
-      });
-      await repository.syncOperation(
-        context.organizationId,
-        store.getOperation()
-      );
-      response.status(200).json({
-        approval,
-        operation: operationReadModel(store.getOperation())
-      });
-    } catch (error) {
-      const reason =
-        error instanceof Error ? error.message : "approval_invalid";
-      response
-        .status(reason === "approval_not_found" ? 404 : 409)
-        .json({ error: reason });
-    }
-  });
-
-  app.post("/api/approvals/:approvalId/undo", async (request, response) => {
-    const parsed = approvalUndoSchema.safeParse(request.body);
-    if (!parsed.success) {
-      response.status(400).json({ error: "invalid_approval_undo" });
-      return;
-    }
-    try {
-      const context = contextFromRequest(request, response);
-      if (!context) return;
-      const operationId =
-        typeof request.query.operationId === "string"
-          ? request.query.operationId
-          : scenario.store.getOperation().id;
-      const store = await operationStoreForDashboard(context, operationId);
-      if (!store) {
-        response.status(404).json({ error: "operation_not_found" });
-        return;
-      }
-      const approval = store.undoApproval({
-        approvalId: request.params.approvalId,
-        ...parsed.data,
-        undoneBy: parsed.data.undoneBy ?? context.userId,
-        undoneAt: new Date().toISOString()
-      });
-      await repository.syncOperation(
-        context.organizationId,
-        store.getOperation()
-      );
-      response.status(200).json({
-        approval,
-        operation: operationReadModel(store.getOperation())
-      });
-    } catch (error) {
-      const reason =
-        error instanceof Error ? error.message : "approval_undo_invalid";
-      response
-        .status(reason === "approval_not_found" ? 404 : 409)
-        .json({ error: reason });
-    }
-  });
-
   app.post("/api/mandates", async (request, response) => {
     try {
       const context = contextFromRequest(request, response);
@@ -1746,7 +1638,9 @@ if (isMainModule(import.meta.url, process.argv[1])) {
     listActiveCarriers: () => app.locals.listActiveCarriers(),
     listTranscript: (callId?: string) => app.locals.listTranscript(callId),
     resolveCallContext: (reference) =>
-      app.locals.resolveTelephonyCallContext(reference)
+      app.locals.resolveTelephonyCallContext(reference),
+    confirmationCoordinator: app.locals.confirmationCoordinator,
+    whatsappMessenger: app.locals.whatsappMessenger
   });
 
   void app.locals.ensureCarrierDirectory?.();

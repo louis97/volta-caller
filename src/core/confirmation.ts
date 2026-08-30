@@ -5,6 +5,11 @@ import {
   type ModeConfiguration
 } from "../agent/modes";
 import { createCallBrief } from "../audit/callBrief";
+import {
+  withCallContext,
+  type OutboundCallContext,
+  type OutboundCallReference
+} from "../telephony/orchestrator";
 import type { TelephonyGateway } from "../telephony/twilio";
 import type { OperationStore } from "./state";
 
@@ -16,10 +21,20 @@ export type ConfirmationCallContext = {
   configuration: ModeConfiguration;
   quote: Quote;
   mandate: Mandate;
+  /** Who to notify once the deal is confirmed; absent when unknown (e.g. approved from the dashboard). */
+  recapRecipient?: string;
+};
+
+export type ConfirmationStartOptions = {
+  recapRecipient?: string;
 };
 
 export type ConfirmationCoordinator = {
-  start(operationId: string, quoteId: string): Promise<void>;
+  start(
+    operationId: string,
+    quoteId: string,
+    options?: ConfirmationStartOptions
+  ): Promise<void>;
   getCallContext(callId: string): ConfirmationCallContext | undefined;
 };
 
@@ -28,8 +43,12 @@ export type ConfirmationCoordinatorDependencies = {
   telephony: TelephonyGateway;
   now?: () => string;
   from?: string;
-  twimlUrl?: string;
+  twimlBaseUrl?: string;
   configuration?: ModeConfiguration;
+  /** Persists a one-time reference so the real TwiML route can rehydrate this operation. */
+  createCallReference?: (
+    context: OutboundCallContext
+  ) => Promise<OutboundCallReference>;
 };
 
 export class ConfirmationCoordinatorError extends Error {
@@ -47,13 +66,14 @@ export function createConfirmationCoordinator({
   telephony,
   now = () => new Date().toISOString(),
   from = "+52-33-0000-0000",
-  twimlUrl = "/telephony/confirmation",
-  configuration = createModeConfiguration("confirmation")
+  twimlBaseUrl = "",
+  configuration = createModeConfiguration("confirmation"),
+  createCallReference
 }: ConfirmationCoordinatorDependencies): ConfirmationCoordinator {
   const contexts = new Map<string, ConfirmationCallContext>();
 
   return {
-    async start(operationId, quoteId) {
+    async start(operationId, quoteId, options) {
       const operation = store.getOperation();
       if (operation.id !== operationId) {
         throw new ConfirmationCoordinatorError("operation_not_found");
@@ -86,6 +106,17 @@ export function createConfirmationCoordinator({
 
       let callId: string;
       try {
+        // Reuses the same call-context token as negotiation calls so the real
+        // `/twiml/outbound` route (and the WebSocket that follows) can
+        // rehydrate this operation; a call that carries no token would be
+        // indistinguishable from an untrusted callback.
+        const reference = await createCallReference?.({
+          operationId: selectedOperation.id,
+          carrierId: quote.carrierId
+        });
+        const twimlUrl = reference
+          ? withCallContext(`${twimlBaseUrl}/twiml/outbound`, reference)
+          : `${twimlBaseUrl}/twiml/outbound`;
         const session = await telephony.createOutboundCall({
           operationId: selectedOperation.id,
           carrierId: quote.carrierId,
@@ -116,7 +147,8 @@ export function createConfirmationCoordinator({
         mode: "confirmation",
         configuration,
         quote: structuredClone(quote),
-        mandate: structuredClone(selectedOperation.mandate)
+        mandate: structuredClone(selectedOperation.mandate),
+        recapRecipient: options?.recapRecipient
       };
       contexts.set(callId, context);
       store.recordCallBrief(

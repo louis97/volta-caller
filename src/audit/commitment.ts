@@ -1,6 +1,7 @@
 import type { Commitment } from "@volta/contracts";
 
 import type { OperationStore } from "../core/state";
+import type { KapsoMessenger } from "../whatsapp/kapso";
 import { createCallBrief } from "./callBrief";
 
 export type SmsMessageStatus = "sent" | "failed";
@@ -23,20 +24,43 @@ export type CommitmentInput = {
   pickupTime: string;
   timestampMs: number;
   driverName?: string;
-  recipient: string;
+  recipient?: string;
 };
 
 export type CommitmentRecap = {
   audioTimestampUrl: string;
-  recapStatus: SmsMessageStatus;
+  recapStatus: Commitment["recapStatus"];
   messageId: string;
 };
+
+/**
+ * Adapts the WhatsApp gateway to `SmsGateway`: it is the only real outbound
+ * messaging channel wired today, so the recap rides on it instead of SMS.
+ */
+export function whatsappRecapGateway(messenger: KapsoMessenger): SmsGateway {
+  return {
+    async send({ to, body }) {
+      try {
+        await messenger.sendText({ to, text: body });
+        return { id: `whatsapp-${Date.now()}`, to, body, status: "sent" };
+      } catch {
+        return { id: "whatsapp-send-failed", to, body, status: "failed" };
+      }
+    }
+  };
+}
 
 export async function generateCommitmentRecap(
   input: CommitmentInput,
   sms: SmsGateway
 ): Promise<CommitmentRecap> {
   const audioTimestampUrl = `/audio/recordings/${input.callId}#t=${input.timestampMs / 1000}`;
+  // No channel to reach the client on (e.g. the selection was approved from
+  // the dashboard, not WhatsApp): finalize without a recap rather than fail
+  // the whole confirmation over a notification nobody could receive anyway.
+  if (!input.recipient) {
+    return { audioTimestampUrl, recapStatus: "pending", messageId: "" };
+  }
   const body = `Textiles Pacífico - Confirmación de Reserva: Carga ${input.containerId}, Tarifa $${input.priceMxn} MXN, Pick-up: ${input.pickupTime}, Chofer: ${input.driverName ?? "pendiente"}. Cita confirmada.`;
   const message = await sms.send({ to: input.recipient, body });
 
@@ -60,7 +84,7 @@ export type CommitmentFinalizerOptions = {
   store: OperationStore;
   sms: SmsGateway;
   callId: string;
-  recipient: string;
+  recipient?: string;
   now?: () => string;
 };
 
@@ -123,7 +147,7 @@ export function createCommitmentFinalizer({
       driverName: intent.driverName,
       plate: intent.plate,
       audioTimestampUrl: recap.audioTimestampUrl,
-      recapStatus: "sent",
+      recapStatus: recap.recapStatus,
       recapMessageId: recap.messageId,
       finalizedAt: now()
     };

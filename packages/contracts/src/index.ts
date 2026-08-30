@@ -56,47 +56,6 @@ export type Quote = {
 };
 
 /**
- * A dispatcher-owned authorization for Volta to place the second, closing
- * call. Quotes are market intelligence; this record is the only authority to
- * turn one of them into a booking attempt.
- */
-export type ApprovalRequest = {
-  id: string;
-  operationId: string;
-  type: "carrier_selection" | "revised_terms";
-  status: "pending" | "approved" | "declined";
-  quoteIds: string[];
-  recommendedQuoteId?: string;
-  selectedQuoteId?: string;
-  proposedTerms?: {
-    carrierId: string;
-    finalPriceMxn: number;
-    pickupTime: string;
-  };
-  decidedBy?: string;
-  createdAt: string;
-  decidedAt?: string;
-  decisionHistory?: Array<{
-    action: "approve" | "decline";
-    selectedQuoteId?: string;
-    decidedBy: string;
-    decidedAt: string;
-    undoneBy?: string;
-    undoneAt?: string;
-  }>;
-};
-
-export type ClosingAuthorization = {
-  approvalId: string;
-  quoteId: string;
-  carrierId: string;
-  finalPriceMxn: number;
-  pickupTime: string;
-  authorizedBy: string;
-  authorizedAt: string;
-};
-
-/**
  * Who the caller is currently hearing on a live call.
  *
  * The agent leg is never torn down to hand a call to a person: the server
@@ -242,8 +201,6 @@ export type Operation = {
   candidates: CarrierCandidate[];
   callSessions: CallSession[];
   quotes: Quote[];
-  approvals: ApprovalRequest[];
-  closingAuthorization?: ClosingAuthorization;
   selectedCarrierId?: string;
   confirmationCallId?: string;
   commitment?: Commitment;
@@ -292,21 +249,6 @@ export type OperationEvent =
       supervision: CallSupervision;
     }
   | {
-      type: "approval.requested";
-      operationId: string;
-      approval: ApprovalRequest;
-    }
-  | {
-      type: "approval.resolved";
-      operationId: string;
-      approval: ApprovalRequest;
-    }
-  | {
-      type: "approval.reopened";
-      operationId: string;
-      approval: ApprovalRequest;
-    }
-  | {
       type: "commitment.finalized";
       operationId: string;
       commitment: Commitment;
@@ -346,7 +288,6 @@ export type EvidenceSourceType =
   | "operation"
   | "shipment_event"
   | "quote"
-  | "approval"
   | "call"
   | "transcript"
   | "commitment"
@@ -440,13 +381,8 @@ export type ProposedAction = ProposedActionBase &
         payload: CreateMandateRequest;
       }
     | {
-        type: "close_approved_deal";
-        payload: Record<string, never>;
-      }
-    | {
         type: "resolve_carrier_selection";
         payload: {
-          approvalId: string;
           selectedQuoteId: string;
           rationale?: string;
         };

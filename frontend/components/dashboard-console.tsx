@@ -1,7 +1,6 @@
 "use client";
 
 import type {
-  ApprovalRequest,
   CallSession,
   CallSupervisionState,
   CreateMandateRequest,
@@ -45,7 +44,6 @@ type View =
   | "call-floor"
   | "pipeline"
   | "carriers"
-  | "approvals"
   | "notifications";
 
 type Tone = "signal" | "brass" | "commit" | "halt" | "idle";
@@ -68,7 +66,6 @@ const navItems: Array<{
   { id: "call-floor", label: "Call floor", icon: PhoneIcon },
   { id: "pipeline", label: "Pipeline", icon: OperationsIcon },
   { id: "carriers", label: "Carriers", icon: RouteIcon },
-  { id: "approvals", label: "Approvals", icon: ApprovalIcon },
   { id: "notifications", label: "Notifications", icon: AlertIcon }
 ];
 
@@ -99,8 +96,12 @@ function publishOperation(operation: Operation | OperationReadModel) {
     destination: operation.destination,
     stage: "pipelineStage" in operation ? operation.pipelineStage : undefined,
     liveLines: operation.callSessions.filter(isLiveCall).length,
-    waiting: operation.approvals.filter((item) => item.status === "pending")
-      .length
+    waiting:
+      operation.status === "awaiting_client_selection"
+        ? operation.reviewedDeals.filter(
+            (deal) => deal.mandateDecision === "APPROVED"
+          ).length
+        : 0
   };
   snapshotListeners.forEach((listener) => listener());
 }
@@ -171,9 +172,9 @@ function useOperationDirectory(): OperationDirectory {
       "call.started",
       "call.updated",
       "quote.registered",
-      "approval.requested",
-      "approval.resolved",
-      "approval.reopened",
+      "deal.reviewed",
+      "selection.created",
+      "confirmation.failed",
       "commitment.finalized"
     ].forEach((name) => events.addEventListener(name, sync));
     return () => events.close();
@@ -222,8 +223,9 @@ function useLiveOperation(operationId?: string | null) {
       "call.started",
       "call.updated",
       "quote.registered",
-      "approval.requested",
-      "approval.resolved",
+      "deal.reviewed",
+      "selection.created",
+      "confirmation.failed",
       "commitment.finalized",
       "call.supervision.changed"
     ].forEach((name) => events.addEventListener(name, sync));
@@ -443,15 +445,6 @@ function isLiveCall(session: CallSession) {
   return session.status === "in_progress";
 }
 
-function selectedQuotes(
-  operation: Operation,
-  approval: ApprovalRequest
-): Quote[] {
-  return operation.quotes.filter((quote) =>
-    approval.quoteIds.includes(quote.id)
-  );
-}
-
 function bestQuote(quotes: Quote[]): Quote | undefined {
   return quotes
     .slice()
@@ -577,9 +570,12 @@ function MandateDeck({
       <div className="mandate-deck__rail">
         {operations.map((operation) => {
           const live = operation.callSessions.filter(isLiveCall).length;
-          const waiting = operation.approvals.filter(
-            (approval) => approval.status === "pending"
-          ).length;
+          const waiting =
+            operation.status === "awaiting_client_selection"
+              ? operation.reviewedDeals.filter(
+                  (deal) => deal.mandateDecision === "APPROVED"
+                ).length
+              : 0;
           return (
             <button
               aria-pressed={selectedOperationId === operation.id}
@@ -2125,437 +2121,6 @@ function CarriersView({
   );
 }
 
-/* ----------------------------------------------------------- approvals ---- */
-
-type ApprovalLoadState = "loading" | "ready" | "error";
-
-function ApprovalsView({ directory }: { directory: OperationDirectory }) {
-  const [operation, setOperation] = useState<Operation | null>(null);
-  const [loadState, setLoadState] = useState<ApprovalLoadState>("loading");
-  const [selectedQuoteId, setSelectedQuoteId] = useState<string | null>(null);
-  const [decisionError, setDecisionError] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  function adopt(next: Operation) {
-    setOperation(next);
-    publishOperation(next);
-  }
-
-  async function refresh() {
-    try {
-      const endpoint = directory.selectedOperationId
-        ? `/api/operations/${encodeURIComponent(directory.selectedOperationId)}`
-        : "/api/operation";
-      const response = await fetch(endpoint);
-      if (!response.ok) throw new Error("operation_unavailable");
-      adopt((await response.json()) as Operation);
-      setLoadState("ready");
-    } catch {
-      setLoadState("error");
-    }
-  }
-
-  useEffect(() => {
-    setLoadState("loading");
-    setOperation(null);
-    setSelectedQuoteId(null);
-    setDecisionError(null);
-    void refresh();
-
-    if (typeof EventSource === "undefined") return;
-    const events = new EventSource("/api/events");
-    const sync = () => void refresh();
-    events.addEventListener("approval.requested", sync);
-    events.addEventListener("approval.resolved", sync);
-    events.addEventListener("approval.reopened", sync);
-    events.addEventListener("commitment.finalized", sync);
-    return () => events.close();
-  }, [directory.selectedOperationId]);
-
-  const approval = operation?.approvals.find(
-    (item) => item.status === "pending"
-  );
-  const quotes =
-    operation && approval ? selectedQuotes(operation, approval) : [];
-  const isSelectionApproval = approval?.type === "carrier_selection";
-  const closingApproval = operation?.closingAuthorization
-    ? operation.approvals.find(
-        (item) => item.id === operation.closingAuthorization?.approvalId
-      )
-    : undefined;
-
-  async function submitDecision(action: "approve" | "decline") {
-    if (!approval || !operation) return;
-    if (action === "approve" && isSelectionApproval && !selectedQuoteId) {
-      setDecisionError(
-        "Select one carrier before authorizing the closing call."
-      );
-      return;
-    }
-
-    setDecisionError(null);
-    setIsSubmitting(true);
-    try {
-      const operationQuery = encodeURIComponent(operation.id);
-      const response = await fetch(
-        `/api/approvals/${approval.id}/decision?operationId=${operationQuery}`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            action,
-            selectedQuoteId: isSelectionApproval
-              ? (selectedQuoteId ?? undefined)
-              : undefined
-          })
-        }
-      );
-      if (!response.ok) throw new Error("decision_rejected");
-      const payload = (await response.json()) as { operation: Operation };
-      adopt(payload.operation);
-      void directory.refreshOperations();
-    } catch {
-      setDecisionError("Volta could not record this decision. Try again.");
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
-  async function undoDecision() {
-    if (!closingApproval) return;
-    setDecisionError(null);
-    setIsSubmitting(true);
-    try {
-      const operationQuery = encodeURIComponent(operation?.id ?? "");
-      const response = await fetch(
-        `/api/approvals/${closingApproval.id}/undo?operationId=${operationQuery}`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({})
-        }
-      );
-      if (!response.ok) throw new Error("undo_rejected");
-      const payload = (await response.json()) as { operation: Operation };
-      setSelectedQuoteId(null);
-      adopt(payload.operation);
-      void directory.refreshOperations();
-    } catch {
-      setDecisionError(
-        "Volta could not undo this decision. A confirmed booking cannot be reversed here."
-      );
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
-  return (
-    <>
-      <PageHead
-        title="Approvals"
-        eyebrow="Human decisions"
-        description="Choose who Volta may call back to close the deal. Quotes never become bookings without you."
-        action={
-          approval ? (
-            <Tag tone="brass">
-              <i className="pulse" />
-              waiting on you
-            </Tag>
-          ) : undefined
-        }
-      />
-
-      <MandateDeck
-        label="Approval queue by mandate"
-        onSelect={directory.selectOperation}
-        operations={directory.operations.filter(
-          (item) => item.approvals.length > 0
-        )}
-        selectedOperationId={directory.selectedOperationId}
-      />
-
-      {loadState === "loading" && (
-        <section className="card" aria-busy="true">
-          <div className="card__head">
-            <h2>Checking Volta’s active rounds…</h2>
-          </div>
-          <div className="skeleton">
-            <i />
-            <i />
-            <i />
-          </div>
-        </section>
-      )}
-
-      {loadState === "error" && (
-        <EmptyState
-          mark={<AlertIcon />}
-          tone="halt"
-          eyebrow="Connection unavailable"
-          title="Approvals are served by the dispatch API."
-          body="Nothing was decided while the connection was down. Reconnect to see the live queue."
-          action={
-            <button
-              className="btn btn--secondary"
-              onClick={() => void refresh()}
-              type="button"
-            >
-              Retry connection
-            </button>
-          }
-        />
-      )}
-
-      {loadState === "ready" && !approval && operation?.commitment && (
-        <EmptyState
-          mark="✓"
-          tone="commit"
-          eyebrow="Closing call completed"
-          title={
-            operation.commitment.finalPriceMxn
-              ? "Carrier booking confirmed"
-              : ""
-          }
-          body={`${formatMxn(operation.commitment.finalPriceMxn)} was recapped by SMS and linked to its recorded agreement.`}
-          action={
-            <a
-              className="btn btn--secondary"
-              href={operation.commitment.audioTimestampUrl}
-            >
-              Open audio evidence
-            </a>
-          }
-        />
-      )}
-
-      {loadState === "ready" && !approval && closingApproval && operation && (
-        <section className="card empty empty--commit">
-          <span className="empty__mark">✓</span>
-          <p className="ml">Closing call authorized</p>
-          <h2>
-            Volta may now call{" "}
-            {operation.candidates.find(
-              (carrier) =>
-                carrier.id === operation.closingAuthorization?.carrierId
-            )?.name ?? "the selected carrier"}
-            .
-          </h2>
-          <p>
-            The carrier can only be booked at{" "}
-            {formatMxn(operation.closingAuthorization!.finalPriceMxn)} for{" "}
-            {formatPickup(operation.closingAuthorization!.pickupTime)}. You can
-            undo this authorization until the booking is confirmed.
-          </p>
-          {decisionError && (
-            <p className="form-error" role="alert">
-              {decisionError}
-            </p>
-          )}
-          <m.button
-            className="btn btn--secondary"
-            disabled={isSubmitting}
-            onClick={() => void undoDecision()}
-            whileTap={{ scale: 0.985 }}
-          >
-            Undo decision
-          </m.button>
-        </section>
-      )}
-
-      {loadState === "ready" &&
-        !approval &&
-        !operation?.commitment &&
-        !closingApproval && (
-          <EmptyState
-            mark={<ApprovalIcon />}
-            tone="commit"
-            eyebrow="No decisions waiting"
-            title="Volta will alert you after the quote round closes."
-            body="Keep this panel open to receive the next request in real time."
-          />
-        )}
-
-      {loadState === "ready" && operation && approval && (
-        <section className="approval">
-          <article className="card approval__main">
-            <div className="alert">
-              <span className="alert__mark">
-                <AlertIcon />
-              </span>
-              <div>
-                <p className="ml">Human decision required</p>
-                <p className="approval__mandate-ref">
-                  Mandate {mandateReference(operation.id)} ·{" "}
-                  {operationLabel(operation)}
-                </p>
-                <h2>
-                  {isSelectionApproval
-                    ? `${quotes.length} carrier quotes are ready to compare`
-                    : "Carrier changed the approved terms"}
-                </h2>
-              </div>
-              <Tag tone="brass">Waiting</Tag>
-            </div>
-
-            <div className="card__body">
-              <p className="approval__lead">
-                {isSelectionApproval
-                  ? "Volta has completed the first calls. Choose the one carrier it may call back to confirm the quoted terms; this is not a booking yet."
-                  : "The carrier did not repeat the terms you authorized. Volta is waiting for a new instruction before it can continue."}
-              </p>
-
-              <div className="facts">
-                <div>
-                  <p className="ml">Binding pickup</p>
-                  <b>{formatPickup(operation.mandate.pickupDatetime)}</b>
-                  <p>Must be confirmed on the closing call.</p>
-                </div>
-                <div className="is-pick">
-                  <p className="ml">Volta recommends</p>
-                  <b>
-                    {quotes.find(
-                      (quote) => quote.id === approval.recommendedQuoteId
-                    )?.carrierName ?? "Review revised terms"}
-                  </b>
-                  <p>
-                    The recommendation is advisory; your selection is required.
-                  </p>
-                </div>
-              </div>
-
-              {isSelectionApproval ? (
-                <fieldset className="quotes" aria-label="Carrier quotes">
-                  <legend>Choose a carrier for the closing call</legend>
-                  {quotes.map((quote) => (
-                    <label
-                      className="quote"
-                      data-selected={selectedQuoteId === quote.id}
-                      key={quote.id}
-                    >
-                      <input
-                        checked={selectedQuoteId === quote.id}
-                        name="carrier-quote"
-                        onChange={() => setSelectedQuoteId(quote.id)}
-                        type="radio"
-                        value={quote.id}
-                      />
-                      <span className="quote__carrier">
-                        <b>{quote.carrierName}</b>
-                        {quote.id === approval.recommendedQuoteId && (
-                          <Tag tone="signal">Volta pick</Tag>
-                        )}
-                      </span>
-                      <span className="quote__price">
-                        {formatMxn(quote.priceMxn)}
-                      </span>
-                      <span className="quote__meta">
-                        {formatPickup(quote.pickupTime)}
-                      </span>
-                      <span className="quote__meta">
-                        {quote.etaMinutes} min ETA
-                      </span>
-                    </label>
-                  ))}
-                </fieldset>
-              ) : (
-                <div className="terms">
-                  <div>
-                    <p className="ml">Carrier</p>
-                    <b>{quotes[0]?.carrierName}</b>
-                  </div>
-                  <div>
-                    <p className="ml">Previous quote</p>
-                    <b>{quotes[0] && formatMxn(quotes[0].priceMxn)}</b>
-                  </div>
-                  <div className="is-new">
-                    <p className="ml">New terms</p>
-                    <b>
-                      {approval.proposedTerms &&
-                        formatMxn(approval.proposedTerms.finalPriceMxn)}
-                    </b>
-                  </div>
-                </div>
-              )}
-
-              <div className="whisper">
-                <span>VOLTA</span>
-                <p>
-                  {isSelectionApproval
-                    ? "I have the market. Tell me who may receive the closing call, and I will only confirm the exact terms you authorize."
-                    : "The terms changed on the call. I will not continue without your new approval."}
-                </p>
-              </div>
-
-              {decisionError && (
-                <p className="form-error" role="alert">
-                  {decisionError}
-                </p>
-              )}
-            </div>
-
-            <div className="card__foot">
-              <m.button
-                className="btn btn--danger"
-                disabled={isSubmitting}
-                onClick={() => void submitDecision("decline")}
-                whileTap={{ scale: 0.985 }}
-              >
-                Decline
-              </m.button>
-              <m.button
-                className="btn btn--primary"
-                disabled={isSubmitting}
-                onClick={() => void submitDecision("approve")}
-                whileTap={{ scale: 0.985 }}
-              >
-                {isSubmitting
-                  ? "Calling carrier…"
-                  : isSelectionApproval
-                    ? "Authorize closing call"
-                    : "Authorize revised terms"}
-              </m.button>
-            </div>
-          </article>
-
-          <aside className="card approval__aside">
-            <div className="card__body">
-              <p className="ml">Binding mandate</p>
-              <h2 style={{ margin: "8px 0 4px", fontSize: 18 }}>
-                {operation.id}
-              </h2>
-              <dl className="spec">
-                <div>
-                  <dt>Budget cap</dt>
-                  <dd>{formatMxn(operation.mandate.budgetCapMxn)}</dd>
-                </div>
-                <div>
-                  <dt>Pickup</dt>
-                  <dd>{formatPickup(operation.mandate.pickupDatetime)}</dd>
-                </div>
-                <div>
-                  <dt>Route</dt>
-                  <dd>
-                    {operation.origin} → {operation.destination}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Container</dt>
-                  <dd>{operation.containerId}</dd>
-                </div>
-              </dl>
-              <p className="audit">
-                Your authorization is attached to the operation audit. Volta
-                must repeat the same terms on the closing call before it can
-                commit.
-              </p>
-            </div>
-          </aside>
-        </section>
-      )}
-    </>
-  );
-}
-
 /* --------------------------------------------------------------- entry ---- */
 
 export function DashboardConsole() {
@@ -2567,14 +2132,6 @@ export function DashboardConsole() {
       total + operation.callSessions.filter(isLiveCall).length,
     0
   );
-  const waiting = directory.operations.reduce(
-    (total, operation) =>
-      total +
-      operation.approvals.filter((approval) => approval.status === "pending")
-        .length,
-    0
-  );
-
   function openMandate(operationId: string, nextView: View) {
     directory.selectOperation(operationId);
     setView(nextView);
@@ -2585,9 +2142,6 @@ export function DashboardConsole() {
       return (
         <span className="rail__count rail__count--signal">{liveLines}</span>
       );
-    }
-    if (id === "approvals" && waiting > 0) {
-      return <span className="rail__count rail__count--brass">{waiting}</span>;
     }
     return null;
   }
@@ -2674,9 +2228,6 @@ export function DashboardConsole() {
                       directory={directory}
                       onOpenMandate={openMandate}
                     />
-                  )}
-                  {view === "approvals" && (
-                    <ApprovalsView directory={directory} />
                   )}
                   {view === "notifications" && (
                     <NotificationsView

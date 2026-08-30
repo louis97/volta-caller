@@ -21,7 +21,6 @@ const evidenceTypes = z.enum([
   "operation",
   "shipment_event",
   "quote",
-  "approval",
   "call",
   "transcript",
   "commitment",
@@ -40,7 +39,6 @@ const attentionSchema = z.object({
   operationId: z.string().trim().min(1).nullable()
 });
 const selectionSchema = z.object({
-  approvalId: z.string().trim().min(1),
   selectedQuoteId: z.string().trim().min(1),
   rationale: z.string().trim().min(1).max(500).nullable()
 });
@@ -98,8 +96,7 @@ export type CentralBrainTool = {
     | "list_attention_items"
     | "compare_quotes"
     | "propose_create_mandate"
-    | "propose_carrier_selection"
-    | "propose_close_approved_deal";
+    | "propose_carrier_selection";
   description: string;
   parameters: z.ZodType;
   activity: AgentActivity;
@@ -374,7 +371,7 @@ export function createCentralBrainTools({
     {
       name: "propose_carrier_selection",
       description:
-        "Prepara para aprobación humana la selección de una cotización pendiente de la operación activa. Nunca selecciona por sí sola.",
+        "Prepara para aprobación humana la selección de una cotización aprobada por el mandato de la operación activa. Nunca selecciona por sí sola.",
       parameters: selectionSchema,
       activity: {
         stage: "preparing_action",
@@ -384,18 +381,18 @@ export function createCentralBrainTools({
         const parsed = selectionSchema.safeParse(argumentsValue);
         if (!parsed.success) return invalidArguments();
         const operation = getCurrentOperation();
-        const approval = operation.approvals.find(
-          (item) => item.id === parsed.data.approvalId
-        );
-        if (!approval || approval.status !== "pending") {
-          return notFound("pending_approval_not_found");
-        }
         if (
-          approval.type !== "carrier_selection" ||
-          !approval.quoteIds.includes(parsed.data.selectedQuoteId)
+          operation.status !== "awaiting_client_selection" &&
+          operation.status !== "carrier_selected"
         ) {
-          return notFound("quote_not_allowed");
+          return notFound("selection_not_allowed");
         }
+        const reviewedDeal = operation.reviewedDeals.find(
+          (deal) =>
+            deal.quoteId === parsed.data.selectedQuoteId &&
+            deal.mandateDecision === "APPROVED"
+        );
+        if (!reviewedDeal) return notFound("quote_not_reviewed");
         const quote = operation.quotes.find(
           (item) => item.id === parsed.data.selectedQuoteId
         );
@@ -407,7 +404,6 @@ export function createCentralBrainTools({
           operationId: operation.id,
           type: "resolve_carrier_selection",
           payload: {
-            approvalId: approval.id,
             selectedQuoteId: quote.id,
             ...(parsed.data.rationale
               ? { rationale: parsed.data.rationale }
@@ -421,7 +417,7 @@ export function createCentralBrainTools({
         };
         await repository.saveAction(action);
         const citations = operationCitations(operation).filter(
-          (item) => item.sourceId === approval.id || item.sourceId === quote.id
+          (item) => item.sourceId === quote.id
         );
         return {
           output: {
@@ -430,51 +426,6 @@ export function createCentralBrainTools({
             summary: action.summary
           },
           citations,
-          proposedAction: action
-        };
-      }
-    },
-    {
-      name: "propose_close_approved_deal",
-      description:
-        "Prepara para aprobación humana la llamada de cierre de términos que ya tienen autorización exacta.",
-      parameters: noArgumentsSchema,
-      activity: {
-        stage: "preparing_action",
-        label: "Preparing approved closing call"
-      },
-      async execute(argumentsValue) {
-        const parsed = noArgumentsSchema.safeParse(argumentsValue ?? {});
-        if (!parsed.success) return invalidArguments();
-        const operation = getCurrentOperation();
-        if (!operation.closingAuthorization || operation.commitment) {
-          return notFound("closing_authorization_not_available");
-        }
-        const action: ProposedAction = {
-          id: randomUUID(),
-          organizationId: context.organizationId,
-          conversationId,
-          operationId: operation.id,
-          type: "close_approved_deal",
-          payload: {},
-          status: "pending",
-          summary:
-            "Realizar la llamada de cierre con los términos ya autorizados.",
-          expectedOperationVersion: operationVersion(operation),
-          requestedBy: context.userId,
-          createdAt: now()
-        };
-        await repository.saveAction(action);
-        return {
-          output: {
-            status: "approval_required",
-            actionId: action.id,
-            summary: action.summary
-          },
-          citations: operationCitations(operation).filter(
-            (item) =>
-              item.sourceId === operation.closingAuthorization?.approvalId
-          ),
           proposedAction: action
         };
       }
@@ -785,8 +736,8 @@ function operationSnapshot(operation: Operation) {
     mandate: operation.mandate,
     calls: operation.callSessions,
     quotes: operation.quotes,
-    approvals: operation.approvals,
-    closingAuthorization: operation.closingAuthorization,
+    reviewedDeals: operation.reviewedDeals,
+    selection: operation.selection,
     commitment: operation.commitment,
     escalations: operation.escalations
   };
@@ -800,15 +751,18 @@ function attentionItems(operation: Operation) {
     summary: string;
     evidenceId: string;
   }> = [];
-  for (const approval of operation.approvals.filter(
-    (item) => item.status === "pending"
-  )) {
-    items.push({
-      operationId: operation.id,
-      type: "pending_approval",
-      summary: `${approval.type} requires a dispatcher decision`,
-      evidenceId: `approval:${approval.id}`
-    });
+  if (operation.status === "awaiting_client_selection") {
+    const approvedCount = operation.reviewedDeals.filter(
+      (deal) => deal.mandateDecision === "APPROVED"
+    ).length;
+    if (approvedCount > 0) {
+      items.push({
+        operationId: operation.id,
+        type: "pending_approval",
+        summary: `${approvedCount} cotización(es) aprobadas esperan la selección del cliente`,
+        evidenceId: `operation:${operation.id}`
+      });
+    }
   }
   for (const escalation of operation.escalations.filter(
     (item) => item.status !== "resolved"

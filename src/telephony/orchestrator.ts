@@ -188,12 +188,7 @@ export async function fanOutCalls(
     const quoteIds = completedSessions.flatMap((session) =>
       session.quoteId ? [session.quoteId] : []
     );
-    const current = store.getOperation();
-    if (
-      candidates.length > 0 &&
-      quoteIds.length === candidates.length &&
-      !current.approvals.some((approval) => approval.status === "pending")
-    ) {
+    if (candidates.length > 0 && quoteIds.length === candidates.length) {
       // Publish every quote of the round for client review. `review_deal`
       // replaced `request_quote_approval`: a quote is market intelligence
       // until a human picks one, and picking is what authorises the closing
