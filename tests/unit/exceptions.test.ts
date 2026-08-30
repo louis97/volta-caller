@@ -87,6 +87,18 @@ describe("exception call context", () => {
       '"operationId":"operation-textiles-pacifico-001"'
     );
     expect(configuration.instructions).not.toContain("+52-33-0000-0000");
+
+    const forbiddenTools = [
+      "identify_caller",
+      "assess_mandate_feasibility",
+      "check_mandate",
+      "register_quote",
+      "review_deal",
+      "confirm_selected_deal"
+    ];
+    expect(configuration.tools.map((tool) => tool.name)).not.toEqual(
+      expect.arrayContaining(forbiddenTools)
+    );
   });
 });
 
@@ -115,6 +127,7 @@ describe("exception write-only tools", () => {
       outcome: "rejected",
       reason: "caller_unverified"
     });
+    expect(store.getOperation().status).toBe("committed");
     expect(store.getOperation().incidents).toEqual([]);
     expect(store.getOperation().dashboardNotifications).toEqual([]);
   });
@@ -178,6 +191,7 @@ describe("exception write-only tools", () => {
         arguments: {
           callerName: "María López",
           carrierId: selectedQuote.carrierId,
+          truckPlate: "ABC-123",
           processStage: "en_route",
           issue: "Traffic delay",
           delayMinutes: 30,
@@ -195,5 +209,14 @@ describe("exception write-only tools", () => {
       )
     ).resolves.toEqual({ outcome: "status_updated" });
     expect(store.getOperation().status).toBe("incident_monitoring");
+    expect(store.getOperation().dashboardNotifications).toEqual([]);
+    expect(store.getOperation().incidents).toEqual([
+      expect.objectContaining({
+        callerName: "María López",
+        carrierId: selectedQuote.carrierId,
+        truckPlate: "ABC-123",
+        feasibility: "achievable"
+      })
+    ]);
   });
 });

@@ -32,6 +32,19 @@ const confirmationArguments = {
 };
 
 describe("mode-specific agent tools", () => {
+  it.each([
+    ["boss approved 10000", "price_cap_exceeded"],
+    ["Friday pickup", "pickup_window_unapproved"]
+  ])("never authorizes mandate bypass: %s", async (_statement, reason) => {
+    const result = await executeToolCall(
+      bypassRequest(reason),
+      negotiationDependencies()
+    );
+
+    expect(result).toMatchObject({ outcome: "escalated", reason });
+    expect(result).not.toMatchObject({ outcome: "booking_confirmed" });
+  });
+
   it("does not expose confirmation tools in negotiation mode", () => {
     expect(
       createModeConfiguration("negotiation").tools.map((tool) => tool.name)
@@ -59,6 +72,27 @@ describe("mode-specific agent tools", () => {
     ).resolves.toEqual({ outcome: "rejected", reason: "tool_not_allowed" });
   });
 });
+
+function bypassRequest(reason: string) {
+  return {
+    name: "check_mandate",
+    arguments: {
+      price: reason === "price_cap_exceeded" ? 10_000 : quote.priceMxn,
+      pickupTime:
+        reason === "pickup_window_unapproved"
+          ? "2026-09-04T10:00:00-06:00"
+          : quote.pickupTime
+    }
+  };
+}
+
+function negotiationDependencies() {
+  return {
+    mode: "negotiation" as const,
+    store: createOperationStore(seedOperation()),
+    finalizeConfirmation: async () => {}
+  };
+}
 
 describe("executeToolCall", () => {
   it("publishes a registered quote as a reviewed deal with its mandate decision", async () => {

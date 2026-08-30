@@ -143,6 +143,8 @@ describe("client selection API", () => {
 
     expect(response.status).toBe(409);
     expect(telephony.calls).toEqual([]);
+    expect(store.getOperation().status).toBe("awaiting_client_selection");
+    expect(store.getOperation().commitment).toBeUndefined();
   });
 
   it("rejects an unreviewed quote without starting telephony", async () => {
@@ -181,6 +183,31 @@ describe("client selection API", () => {
 
     expect(response.status).toBe(409);
     expect(telephony.calls).toEqual([]);
+  });
+
+  it("records an unavailable carrier failure without starting telephony", async () => {
+    const store = createReadyStore({ carrierId: "carrier-not-configured" });
+    const telephony = createMockTelephonyGateway();
+    const app = createApp({ store, telephony });
+
+    const response = await request(app, "/operations/op-1/select-quote", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ quoteId: "quote-a" })
+    });
+
+    expect(response.status).toBe(502);
+    expect(telephony.calls).toEqual([]);
+    expect(store.getOperation()).toMatchObject({
+      status: "confirmation_failed",
+      callBriefs: [
+        expect.objectContaining({
+          outcome: "failed",
+          objections: ["confirmation_carrier_not_found"]
+        })
+      ]
+    });
+    expect(store.getOperation().commitment).toBeUndefined();
   });
 
   it("rejects a duplicate selection without a second callback", async () => {
@@ -237,10 +264,13 @@ describe("client selection API", () => {
   });
 });
 
-function createReadyStore({ priceMxn = 8500 }: { priceMxn?: number } = {}) {
+function createReadyStore({
+  priceMxn = 8500,
+  carrierId = "carrier-costa-pacifico"
+}: { priceMxn?: number; carrierId?: string } = {}) {
   const operation = seedSelectionOperation();
   const store = createOperationStore(operation);
-  const quote = selectionQuote({ priceMxn });
+  const quote = selectionQuote({ priceMxn, carrierId });
   store.registerQuote(quote);
   store.reviewDeal({
     quoteId: quote.id,
@@ -255,10 +285,13 @@ function seedSelectionOperation() {
   return operation;
 }
 
-function selectionQuote({ priceMxn = 8500 }: { priceMxn?: number } = {}) {
+function selectionQuote({
+  priceMxn = 8500,
+  carrierId = "carrier-costa-pacifico"
+}: { priceMxn?: number; carrierId?: string } = {}) {
   return {
     id: "quote-a",
-    carrierId: "carrier-costa-pacifico",
+    carrierId,
     carrierName: "Transportes Costa Pacífico",
     priceMxn,
     etaMinutes: 90,
