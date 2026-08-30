@@ -48,6 +48,25 @@ export function ApprovalIcon(props: IconProps) {
   );
 }
 
+export function BrainIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M9.5 4.5A3 3 0 0 0 4 6.2a3.2 3.2 0 0 0 .7 5.6A3.4 3.4 0 0 0 7 17.7V19a2 2 0 0 0 2 2h1V3H9.5Z" />
+      <path d="M14.5 4.5A3 3 0 0 1 20 6.2a3.2 3.2 0 0 1-.7 5.6 3.4 3.4 0 0 1-2.3 5.9V19a2 2 0 0 1-2 2h-1V3h.5Z" />
+      <path d="M6 9h4M14 8h4M7 15h3M14 14h3" />
+    </svg>
+  );
+}
+
+export function EditIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
 export function ArrowIcon(props: IconProps) {
   return (
     <svg {...base} {...props}>

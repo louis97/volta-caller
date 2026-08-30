@@ -58,6 +58,27 @@ export class PostgresAgentRepository implements AgentRepository {
     );
   }
 
+  async listOperations(context: OrganizationContext) {
+    await this.initialize();
+    const result = await this.pool.query<{ snapshot: Operation }>(
+      `SELECT snapshot FROM operations
+       WHERE organization_id = $1
+       ORDER BY updated_at DESC`,
+      [context.organizationId]
+    );
+    return result.rows.map(({ snapshot }) => snapshot);
+  }
+
+  async getOperation(context: OrganizationContext, operationId: string) {
+    await this.initialize();
+    const result = await this.pool.query<{ snapshot: Operation }>(
+      `SELECT snapshot FROM operations
+       WHERE organization_id = $1 AND id = $2`,
+      [context.organizationId, operationId]
+    );
+    return result.rows[0]?.snapshot;
+  }
+
   async saveCallSession(organizationId: string, callSession: CallSession) {
     await this.initialize();
     await this.pool.query(
@@ -202,6 +223,33 @@ export class PostgresAgentRepository implements AgentRepository {
       createdAt: iso(row.created_at),
       updatedAt: iso(row.updated_at)
     }));
+  }
+
+  async renameConversation(
+    context: OrganizationContext,
+    conversationId: string,
+    title: string
+  ) {
+    await this.initialize();
+    const result = await this.pool.query<ConversationRow>(
+      `UPDATE agent_conversations
+       SET title = $3, updated_at = now()
+       WHERE organization_id = $1 AND id = $2
+       RETURNING id, organization_id, created_by, title, created_at, updated_at`,
+      [context.organizationId, conversationId, title]
+    );
+    const row = result.rows[0];
+    return row
+      ? {
+          id: row.id,
+          organizationId: row.organization_id,
+          createdBy: row.created_by,
+          title: row.title,
+          messages: [],
+          createdAt: iso(row.created_at),
+          updatedAt: iso(row.updated_at)
+        }
+      : undefined;
   }
 
   async appendMessage(context: OrganizationContext, message: AgentMessage) {
@@ -394,12 +442,13 @@ export class PostgresAgentRepository implements AgentRepository {
     await this.initialize();
     await this.pool.query(
       `INSERT INTO agent_actions
-       (organization_id, id, conversation_id, operation_id, type, status,
-        summary, expected_operation_version, requested_by, decided_by,
+       (organization_id, id, conversation_id, operation_id, type, payload,
+        status, summary, expected_operation_version, requested_by, decided_by,
         created_at, decided_at, executed_at, failure_reason)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14, $15)
        ON CONFLICT (organization_id, id) DO UPDATE
-       SET status = EXCLUDED.status, decided_by = EXCLUDED.decided_by,
+       SET payload = EXCLUDED.payload, status = EXCLUDED.status,
+           decided_by = EXCLUDED.decided_by,
            decided_at = EXCLUDED.decided_at, executed_at = EXCLUDED.executed_at,
            failure_reason = EXCLUDED.failure_reason`,
       actionValues(action)
@@ -429,7 +478,8 @@ export class PostgresAgentRepository implements AgentRepository {
     const migrations = [
       "001_agent_knowledge.sql",
       "002_mandates_security.sql",
-      "003_carriers_and_pipeline.sql"
+      "003_carriers_and_pipeline.sql",
+      "004_agent_action_payload.sql"
     ];
     for (const migration of migrations) {
       const sql = await readFile(
@@ -491,6 +541,7 @@ type ActionRow = {
   conversation_id: string;
   operation_id: string;
   type: ProposedAction["type"];
+  payload: ProposedAction["payload"];
   status: ProposedAction["status"];
   summary: string;
   expected_operation_version: string;
@@ -554,12 +605,11 @@ function transcriptFromRow(row: TranscriptRow): TranscriptSegment {
 }
 
 function actionFromRow(row: ActionRow): ProposedAction {
-  return {
+  const common = {
     id: row.id,
     organizationId: row.organization_id,
     conversationId: row.conversation_id,
     operationId: row.operation_id,
-    type: row.type,
     status: row.status,
     summary: row.summary,
     expectedOperationVersion: row.expected_operation_version,
@@ -570,6 +620,16 @@ function actionFromRow(row: ActionRow): ProposedAction {
     executedAt: row.executed_at ? iso(row.executed_at) : undefined,
     failureReason: row.failure_reason ?? undefined
   };
+  return row.type === "close_approved_deal"
+    ? { ...common, type: row.type, payload: {} }
+    : {
+        ...common,
+        type: row.type,
+        payload: row.payload as Extract<
+          ProposedAction,
+          { type: "resolve_carrier_selection" }
+        >["payload"]
+      };
 }
 
 function carrierFromRow(row: CarrierRow): Carrier {
@@ -591,6 +651,7 @@ function actionValues(action: ProposedAction) {
     action.conversationId,
     action.operationId,
     action.type,
+    JSON.stringify(action.payload),
     action.status,
     action.summary,
     action.expectedOperationVersion,

@@ -69,6 +69,9 @@ const legacyCopilotRequestSchema = z.object({
 const createConversationSchema = z.object({
   title: z.string().trim().min(1).max(120).optional()
 });
+const renameConversationSchema = z.object({
+  title: z.string().trim().min(1).max(120)
+});
 const askAgentSchema = z.object({
   question: z.string().trim().min(1).max(2000)
 });
@@ -179,7 +182,17 @@ export function createApp(options: CreateAppOptions = {}) {
     repository,
     answerer,
     getCurrentOperation: () => scenario.store.getOperation(),
-    executeCloseApprovedDeal: () => scenario.closeApprovedDeal()
+    executeCloseApprovedDeal: () => scenario.closeApprovedDeal(),
+    resolveCarrierSelection: (input) => {
+      scenario.store.resolveApproval({
+        approvalId: input.approvalId,
+        action: "approve",
+        selectedQuoteId: input.selectedQuoteId,
+        decidedBy: input.decidedBy,
+        decidedAt: input.decidedAt
+      });
+      return true;
+    }
   });
   const persistCurrentOperation = (context: OrganizationContext) =>
     repository.syncOperation(
@@ -463,6 +476,33 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   );
 
+  app.patch(
+    "/api/agent/conversations/:conversationId",
+    async (request, response) => {
+      const context = contextFromRequest(request, response);
+      if (!context) return;
+      const parsed = renameConversationSchema.safeParse(request.body);
+      if (!parsed.success) {
+        response.status(400).json({ error: "invalid_conversation_title" });
+        return;
+      }
+      try {
+        const conversation = await agent.renameConversation(
+          context,
+          request.params.conversationId,
+          parsed.data.title
+        );
+        if (!conversation) {
+          response.status(404).json({ error: "conversation_not_found" });
+          return;
+        }
+        response.status(200).json(conversation);
+      } catch (error) {
+        storageFailure(response, error);
+      }
+    }
+  );
+
   app.post(
     "/api/agent/conversations/:conversationId/messages",
     async (request, response) => {
@@ -479,13 +519,12 @@ export function createApp(options: CreateAppOptions = {}) {
         "Content-Type": "text/event-stream"
       });
       response.flushHeaders();
-      writeAgentEvent(response, "status", { stage: "retrieving" });
       try {
-        writeAgentEvent(response, "status", { stage: "answering" });
         const message = await agent.ask(
           context,
           request.params.conversationId,
-          parsed.data.question
+          parsed.data.question,
+          (activity) => writeAgentEvent(response, "activity", activity)
         );
         writeAgentEvent(response, "final", message);
       } catch (error) {

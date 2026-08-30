@@ -1,15 +1,12 @@
 "use client";
 
 import type {
-  AgentConversation,
-  AgentMessage,
   ApprovalRequest,
   CallSession,
   CreateMandateRequest,
   Operation,
   OperationReadModel,
   PipelineStage,
-  ProposedAction,
   Quote
 } from "@volta/contracts";
 import {
@@ -19,15 +16,15 @@ import {
   domMax
 } from "motion/react";
 import * as m from "motion/react-m";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   AlertIcon,
   ApprovalIcon,
   ArrowIcon,
+  BrainIcon,
   BoxIcon,
   ChevronIcon,
   ClockIcon,
-  LinkIcon,
   MoonIcon,
   OperationsIcon,
   PhoneIcon,
@@ -35,9 +32,15 @@ import {
   RouteIcon,
   SunIcon
 } from "./icons";
+import { VoltaChat } from "./volta-chat";
 
 type View =
-  "new-mandate" | "call-floor" | "pipeline" | "carriers" | "approvals";
+  | "volta"
+  | "new-mandate"
+  | "call-floor"
+  | "pipeline"
+  | "carriers"
+  | "approvals";
 
 type Tone = "signal" | "brass" | "commit" | "halt" | "idle";
 
@@ -47,8 +50,6 @@ type MandateSaveState =
   | { status: "saved"; operationId: string }
   | { status: "error"; message: string };
 
-type CopilotMessage = AgentMessage;
-
 const MANDATE_TIMEZONE_OFFSET = "-06:00";
 
 const navItems: Array<{
@@ -56,6 +57,7 @@ const navItems: Array<{
   label: string;
   icon: typeof ApprovalIcon;
 }> = [
+  { id: "volta", label: "Volta", icon: BrainIcon },
   { id: "new-mandate", label: "New mandate", icon: PlusIcon },
   { id: "call-floor", label: "Call floor", icon: PhoneIcon },
   { id: "pipeline", label: "Pipeline", icon: OperationsIcon },
@@ -1589,378 +1591,6 @@ function ApprovalsView() {
   );
 }
 
-/* --------------------------------------------------------------- agent ---- */
-
-const QUICK_PROMPTS = [
-  "Where is the shipment?",
-  "Why is this waiting on me?",
-  "What did the carrier say?",
-  "Which quote is cheapest?"
-];
-
-function localMessage(
-  id: string,
-  role: CopilotMessage["role"],
-  content: string
-): CopilotMessage {
-  return {
-    id,
-    conversationId: "local",
-    role,
-    content,
-    citations: [],
-    proposedActions: [],
-    createdAt: new Date().toISOString()
-  };
-}
-
-async function readAgentMessage(response: Response): Promise<AgentMessage> {
-  if (!response.ok) throw new Error("agent_request_rejected");
-  const reader = response.body?.getReader();
-  if (!reader) throw new Error("agent_stream_unavailable");
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let finalMessage: AgentMessage | undefined;
-  while (true) {
-    const { done, value } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done });
-    const events = buffer.split("\n\n");
-    buffer = events.pop() ?? "";
-    for (const event of events) {
-      const eventName = event
-        .split("\n")
-        .find((line) => line.startsWith("event: "))
-        ?.slice(7);
-      const data = event
-        .split("\n")
-        .find((line) => line.startsWith("data: "))
-        ?.slice(6);
-      if (eventName === "error") throw new Error("agent_stream_failed");
-      if (eventName === "final" && data) {
-        finalMessage = JSON.parse(data) as AgentMessage;
-      }
-    }
-    if (done) break;
-  }
-  if (!finalMessage) throw new Error("agent_answer_missing");
-  return finalMessage;
-}
-
-function DispatchCopilot() {
-  const [isOpen, setIsOpen] = useState(false);
-  const [question, setQuestion] = useState("");
-  const [isSending, setIsSending] = useState(false);
-  const [isRestoring, setIsRestoring] = useState(false);
-  const [conversationId, setConversationId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<CopilotMessage[]>([
-    localMessage(
-      "copilot-welcome",
-      "assistant",
-      "I can explain every shipment, negotiation, call, transcript, exception, and the next safe action."
-    )
-  ]);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const threadRef = useRef<HTMLDivElement>(null);
-  const historyRestoredRef = useRef(false);
-
-  useEffect(() => {
-    if (isOpen) inputRef.current?.focus();
-  }, [isOpen]);
-
-  useEffect(() => {
-    const thread = threadRef.current;
-    if (thread) thread.scrollTop = thread.scrollHeight;
-  }, [messages, isSending]);
-
-  useEffect(() => {
-    if (!isOpen || conversationId || historyRestoredRef.current) return;
-    historyRestoredRef.current = true;
-    let cancelled = false;
-    async function restoreHistory() {
-      setIsRestoring(true);
-      try {
-        const listResponse = await fetch("/api/agent/conversations");
-        if (!listResponse.ok) return;
-        const conversations =
-          (await listResponse.json()) as AgentConversation[];
-        const latest = conversations[0];
-        if (!latest || cancelled) return;
-        const detailResponse = await fetch(
-          `/api/agent/conversations/${latest.id}`
-        );
-        if (!detailResponse.ok) return;
-        const detail = (await detailResponse.json()) as AgentConversation;
-        if (cancelled) return;
-        setConversationId(detail.id);
-        setMessages((current) => [current[0], ...detail.messages]);
-      } catch {
-        // A new conversation will be created on the first question.
-      } finally {
-        if (!cancelled) setIsRestoring(false);
-      }
-    }
-    void restoreHistory();
-    return () => {
-      cancelled = true;
-    };
-  }, [conversationId, isOpen]);
-
-  async function askCopilot(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const trimmedQuestion = question.trim();
-    if (!trimmedQuestion || isSending || isRestoring) return;
-
-    const userMessage = localMessage(
-      "user-" + Date.now(),
-      "user",
-      trimmedQuestion
-    );
-    setMessages((current) => [...current, userMessage]);
-    setQuestion("");
-    setIsSending(true);
-
-    try {
-      let activeConversationId = conversationId;
-      if (!activeConversationId) {
-        const conversationResponse = await fetch("/api/agent/conversations", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ title: trimmedQuestion.slice(0, 120) })
-        });
-        if (!conversationResponse.ok) throw new Error("conversation_failed");
-        const conversation =
-          (await conversationResponse.json()) as AgentConversation;
-        activeConversationId = conversation.id;
-        setConversationId(conversation.id);
-      }
-      const response = await fetch(
-        `/api/agent/conversations/${activeConversationId}/messages`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ question: trimmedQuestion })
-        }
-      );
-      const assistantMessage = await readAgentMessage(response);
-      setMessages((current) => [...current, assistantMessage]);
-    } catch {
-      setMessages((current) => [
-        ...current,
-        localMessage(
-          "assistant-" + Date.now(),
-          "assistant",
-          "I could not reach the operational agent. No action was taken; try again shortly."
-        )
-      ]);
-    } finally {
-      setIsSending(false);
-    }
-  }
-
-  async function decideAction(
-    action: ProposedAction,
-    decision: "approve" | "decline"
-  ) {
-    try {
-      const response = await fetch(`/api/agent/actions/${action.id}/decision`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ decision })
-      });
-      if (!response.ok) throw new Error("action_decision_failed");
-      const payload = (await response.json()) as { action: ProposedAction };
-      setMessages((current) =>
-        current.map((message) => ({
-          ...message,
-          proposedActions: message.proposedActions.map((item) =>
-            item.id === action.id ? payload.action : item
-          )
-        }))
-      );
-    } catch {
-      setMessages((current) => [
-        ...current,
-        localMessage(
-          "action-error-" + Date.now(),
-          "assistant",
-          "The action could not be decided safely. Refresh the operation before trying again."
-        )
-      ]);
-    }
-  }
-
-  return (
-    <>
-      <m.button
-        aria-controls="dispatch-copilot"
-        aria-expanded={isOpen}
-        aria-label="Ask Volta"
-        className="agent-launcher"
-        onClick={() => setIsOpen(true)}
-        whileTap={{ scale: 0.98 }}
-      >
-        <span className="agent-launcher__mark">V/</span>
-        Ask Volta
-      </m.button>
-      <AnimatePresence>
-        {isOpen && (
-          <>
-            <m.button
-              aria-label="Close Volta Copilot"
-              className="agent-scrim"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setIsOpen(false)}
-            />
-            <m.aside
-              aria-label="Volta Copilot"
-              className="agent"
-              exit={{ opacity: 0, x: 24 }}
-              id="dispatch-copilot"
-              initial={{ opacity: 0, x: 32 }}
-              animate={{ opacity: 1, x: 0 }}
-            >
-              <header className="agent__head">
-                <div>
-                  <p className="ml">Process copilot</p>
-                  <h2>Ask Volta</h2>
-                </div>
-                <button
-                  aria-label="Close Volta Copilot"
-                  className="agent__close"
-                  onClick={() => setIsOpen(false)}
-                  type="button"
-                >
-                  ×
-                </button>
-              </header>
-              <p className="agent__context">
-                Backend agent grounded in operational records. Every factual
-                answer links to its evidence; actions wait for your approval.
-              </p>
-              {messages.length === 1 && (
-                <div className="agent__prompts">
-                  {QUICK_PROMPTS.map((prompt) => (
-                    <button
-                      key={prompt}
-                      onClick={() => {
-                        setQuestion(prompt);
-                        inputRef.current?.focus();
-                      }}
-                      type="button"
-                    >
-                      {prompt}
-                    </button>
-                  ))}
-                </div>
-              )}
-              <section
-                className="agent__thread"
-                aria-live="polite"
-                ref={threadRef}
-              >
-                <AnimatePresence initial={false}>
-                  {messages.map((message) => (
-                    <m.article
-                      animate={{ opacity: 1, y: 0 }}
-                      className={"agent__msg agent__msg--" + message.role}
-                      exit={{ opacity: 0, y: -4 }}
-                      initial={{ opacity: 0, y: 8 }}
-                      key={message.id}
-                    >
-                      <b>{message.role === "assistant" ? "VOLTA" : "YOU"}</b>
-                      <p>{message.content}</p>
-                      {message.citations.length > 0 && (
-                        <ol className="agent__cites" aria-label="Evidence">
-                          {message.citations.map((citation) => (
-                            <li key={citation.id}>
-                              <a href={citation.href} target="_blank">
-                                <LinkIcon />
-                                {citation.title}
-                              </a>
-                              <time dateTime={citation.occurredAt}>
-                                {new Date(
-                                  citation.occurredAt
-                                ).toLocaleDateString()}
-                              </time>
-                            </li>
-                          ))}
-                        </ol>
-                      )}
-                      {message.proposedActions.map((action) => (
-                        <section className="agent__action" key={action.id}>
-                          <p className="ml">Human approval required</p>
-                          <p>{action.summary}</p>
-                          {action.status === "pending" ? (
-                            <div>
-                              <button
-                                className="btn btn--primary btn--sm"
-                                onClick={() =>
-                                  void decideAction(action, "approve")
-                                }
-                                type="button"
-                              >
-                                Approve action
-                              </button>
-                              <button
-                                className="btn btn--secondary btn--sm"
-                                onClick={() =>
-                                  void decideAction(action, "decline")
-                                }
-                                type="button"
-                              >
-                                Decline
-                              </button>
-                            </div>
-                          ) : (
-                            <strong>Action {action.status}</strong>
-                          )}
-                        </section>
-                      ))}
-                    </m.article>
-                  ))}
-                </AnimatePresence>
-                {isSending && (
-                  <div className="agent__thinking">
-                    <i className="pulse" />
-                    Volta is reading the record
-                  </div>
-                )}
-              </section>
-              <form className="agent__composer" onSubmit={askCopilot}>
-                <label htmlFor="copilot-question">
-                  Ask across operational history
-                </label>
-                <textarea
-                  id="copilot-question"
-                  onChange={(event) => setQuestion(event.target.value)}
-                  ref={inputRef}
-                  rows={3}
-                  value={question}
-                />
-                <m.button
-                  className="btn btn--signal"
-                  disabled={!question.trim() || isSending || isRestoring}
-                  type="submit"
-                  whileTap={{ scale: 0.98 }}
-                >
-                  {isSending
-                    ? "Reviewing…"
-                    : isRestoring
-                      ? "Loading history…"
-                      : "Ask Volta"}
-                  <ArrowIcon />
-                </m.button>
-              </form>
-            </m.aside>
-          </>
-        )}
-      </AnimatePresence>
-    </>
-  );
-}
-
 /* --------------------------------------------------------------- entry ---- */
 
 export function DashboardConsole() {
@@ -2026,7 +1656,13 @@ export function DashboardConsole() {
           </aside>
           <main className="stage">
             <ConsoleStrip />
-            <div className="stage__body">
+            <div
+              className={
+                view === "volta"
+                  ? "stage__body stage__body--brain"
+                  : "stage__body"
+              }
+            >
               <AnimatePresence initial={false} mode="wait">
                 <m.div
                   animate={{ opacity: 1, y: 0 }}
@@ -2035,6 +1671,9 @@ export function DashboardConsole() {
                   initial={{ opacity: 0, y: 8 }}
                   key={view}
                 >
+                  {view === "volta" && (
+                    <VoltaChat onOperationChange={publishOperation} />
+                  )}
                   {view === "new-mandate" && (
                     <NewMandateView onCreated={() => setView("call-floor")} />
                   )}
@@ -2048,7 +1687,6 @@ export function DashboardConsole() {
               </AnimatePresence>
             </div>
           </main>
-          <DispatchCopilot />
         </div>
       </MotionConfig>
     </LazyMotion>
