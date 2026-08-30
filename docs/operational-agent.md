@@ -15,8 +15,10 @@ mock mode uses the deterministic grounded answerer so the retrieval and evidence
 testable. Do not reuse credentials shared in chat, logs, or source control.
 
 Live requests to the agent require `x-volta-org-id` and `x-volta-user-id`, normally injected by the
-authentication gateway. Internal ingestion additionally requires `x-volta-internal-key` matching
-`VOLTA_INTERNAL_API_KEY`. Mock mode supplies a local organization and dispatcher identity.
+authentication gateway. The deployed Next.js frontend uses its server-only catch-all API route to
+inject `VOLTA_ORGANIZATION_ID` and `VOLTA_DASHBOARD_USER_ID`; browsers never choose those headers.
+Internal ingestion additionally requires `x-volta-internal-key` matching `VOLTA_INTERNAL_API_KEY`.
+Mock mode supplies a local organization and dispatcher identity.
 
 ## Public API
 
