@@ -16,13 +16,24 @@ export const registerQuoteSchema = z.object({
   createdAt: z.string().datetime({ offset: true })
 });
 
-export const commitDealSchema = z.object({
+export const reviewDealSchema = z.object({
+  quoteId: z.string().min(1),
+  reviewedAt: z.string().datetime({ offset: true })
+});
+
+export const confirmSelectedDealSchema = z.object({
+  quoteId: z.string().min(1),
   carrierId: z.string().min(1),
   finalPrice: z.number().nonnegative(),
   pickupTime: z.string().datetime({ offset: true }),
+  destinationDatetime: z.string().datetime({ offset: true }),
+  typeOfContent: z.string().min(1),
+  weightKg: z.number().positive(),
+  measures: z.string().min(1),
   timestampMs: z.number().int().nonnegative(),
-  driverName: z.string().optional(),
-  plate: z.string().optional()
+  driverName: z.string().min(1).optional(),
+  plate: z.string().min(1).optional(),
+  callId: z.string().min(1)
 });
 
 export const triggerEscalationSchema = z.object({
@@ -31,16 +42,22 @@ export const triggerEscalationSchema = z.object({
   callId: z.string().min(1).optional()
 });
 
-type AgentToolDefinition = {
+export type AgentToolName =
+  | "check_mandate"
+  | "register_quote"
+  | "review_deal"
+  | "confirm_selected_deal"
+  | "trigger_escalation";
+
+export type AgentToolDefinition = {
   type: "function";
-  name:
-    "check_mandate" | "register_quote" | "commit_deal" | "trigger_escalation";
+  name: AgentToolName;
   description: string;
   parameters: Record<string, unknown>;
 };
 
 function defineTool(
-  name: AgentToolDefinition["name"],
+  name: AgentToolName,
   description: string,
   schema: z.ZodObject
 ): AgentToolDefinition {
@@ -52,25 +69,40 @@ function defineTool(
   };
 }
 
+export const checkMandateTool = defineTool(
+  "check_mandate",
+  "Check whether a proposed price and pickup time comply with the shipment mandate.",
+  checkMandateSchema
+);
+
+export const registerQuoteTool = defineTool(
+  "register_quote",
+  "Record a carrier's complete factual quote and call reference.",
+  registerQuoteSchema
+);
+
+export const reviewDealTool = defineTool(
+  "review_deal",
+  "Publish a completed carrier quote and its mandate evaluation for client review.",
+  reviewDealSchema
+);
+
+export const confirmSelectedDealTool = defineTool(
+  "confirm_selected_deal",
+  "Finalize only the client-selected quote after the carrier confirms every original term unchanged.",
+  confirmSelectedDealSchema
+);
+
+export const triggerEscalationTool = defineTool(
+  "trigger_escalation",
+  "Request human intervention for pressure, contradictions, or unsupported exceptions.",
+  triggerEscalationSchema
+);
+
 export const agentToolDefinitions: AgentToolDefinition[] = [
-  defineTool(
-    "check_mandate",
-    "Comprueba si precio y ventana de recolección están autorizados.",
-    checkMandateSchema
-  ),
-  defineTool(
-    "register_quote",
-    "Registra una cotización completa de un transportista.",
-    registerQuoteSchema
-  ),
-  defineTool(
-    "commit_deal",
-    "Solicita reservar un acuerdo con términos ya confirmados.",
-    commitDealSchema
-  ),
-  defineTool(
-    "trigger_escalation",
-    "Solicita intervención humana para términos no aprobados.",
-    triggerEscalationSchema
-  )
+  checkMandateTool,
+  registerQuoteTool,
+  reviewDealTool,
+  confirmSelectedDealTool,
+  triggerEscalationTool
 ];

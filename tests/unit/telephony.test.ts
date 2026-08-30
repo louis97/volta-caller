@@ -5,6 +5,7 @@ import {
   createRealtimeSessionConfig,
   type RelaySocket
 } from "../../src/telephony/mediaStream";
+import { createModeConfiguration } from "../../src/agent/modes";
 import { createInboundTwiML } from "../../src/telephony/twilio";
 import { createMockTelephonyGateway } from "../../src/mocks/telephony";
 
@@ -40,11 +41,15 @@ describe("telephony adapters", () => {
   });
 
   it("configures PCMU and server VAD with interruption enabled for realtime sessions", () => {
-    expect(createRealtimeSessionConfig()).toMatchObject({
+    const configuration = createModeConfiguration("negotiation");
+
+    expect(createRealtimeSessionConfig(configuration)).toMatchObject({
       input_audio_format: "audio/pcmu",
       output_audio_format: "audio/pcmu",
       turn_detection: { type: "server_vad", silence_duration_ms: 350 },
-      interrupt_response: true
+      interrupt_response: true,
+      instructions: configuration.instructions,
+      tools: configuration.tools
     });
   });
 
@@ -56,6 +61,7 @@ describe("telephony adapters", () => {
     attachMediaStreamRelay({
       twilio,
       realtime,
+      configuration: createModeConfiguration("negotiation"),
       executeToolCall: async (request) => {
         toolCalls.push(request);
         return { outcome: "approved" };

@@ -1,16 +1,19 @@
 import type { Escalation, Quote } from "@volta/contracts";
 import type { z } from "zod";
 
+import { createCallBrief } from "../audit/callBrief";
 import { evaluateMandate, type MandateDecision } from "../core/mandate";
 import type { OperationStore } from "../core/state";
+import { createModeConfiguration, type CallMode } from "./modes";
 import {
   checkMandateSchema,
-  commitDealSchema,
+  confirmSelectedDealSchema,
   registerQuoteSchema,
+  reviewDealSchema,
   triggerEscalationSchema
 } from "./tools";
 
-type CommitDealInput = z.infer<typeof commitDealSchema>;
+type ConfirmSelectedDealInput = z.infer<typeof confirmSelectedDealSchema>;
 
 export type ToolCallRequest = {
   name: string;
@@ -18,30 +21,34 @@ export type ToolCallRequest = {
 };
 
 export type ToolDependencies = {
+  mode: CallMode;
   store: OperationStore;
-  finalizeBooking: (intent: CommitDealInput) => Promise<void> | void;
+  finalizeConfirmation: (
+    intent: ConfirmSelectedDealInput
+  ) => Promise<void> | void;
   now?: () => string;
 };
 
 export type ToolCallResult =
   | { outcome: "approved" }
   | { outcome: "registered"; mandateDecision: MandateDecision }
-  | { outcome: "booking_requested" }
+  | { outcome: "reviewed"; mandateDecision: MandateDecision }
+  | { outcome: "confirmation_requested" }
   | {
       outcome: "escalated";
       reason: string;
       mandateDecision?: MandateDecision;
     }
-  | {
-      outcome: "rejected";
-      reason: "invalid_arguments" | "invalid_tool" | "invalid_price";
-    }
-  | { outcome: "booking_failed" };
+  | { outcome: "rejected"; reason: string };
 
 export async function executeToolCall(
   request: ToolCallRequest,
   dependencies: ToolDependencies
 ): Promise<ToolCallResult> {
+  if (!isToolAllowed(request.name, dependencies.mode)) {
+    return { outcome: "rejected", reason: "tool_not_allowed" };
+  }
+
   switch (request.name) {
     case "check_mandate": {
       const parsed = checkMandateSchema.safeParse(request.arguments);
@@ -62,38 +69,34 @@ export async function executeToolCall(
       dependencies.store.registerQuote(parsed.data as Quote);
       return { outcome: "registered", mandateDecision };
     }
-    case "commit_deal": {
-      const parsed = commitDealSchema.safeParse(request.arguments);
+    case "review_deal": {
+      const parsed = reviewDealSchema.safeParse(request.arguments);
       if (!parsed.success) return invalidArguments();
 
-      const decision = evaluateMandate(
-        dependencies.store.getOperation().mandate,
-        {
-          price: parsed.data.finalPrice,
-          pickupTime: parsed.data.pickupTime
-        }
-      );
-      if (decision.status !== "APPROVED") {
-        if (decision.status === "REQUIRES_ESCALATION") {
-          dependencies.store.requestEscalation(
-            createEscalation(
-              dependencies.store,
-              decision.reason,
-              parsed.data,
-              dependencies.now ?? (() => new Date().toISOString())
-            )
-          );
-          return { outcome: "escalated", reason: decision.reason };
-        }
-        return { outcome: "rejected", reason: decision.reason };
-      }
-
       try {
-        await dependencies.finalizeBooking(parsed.data);
-        return { outcome: "booking_requested" };
-      } catch {
-        return { outcome: "booking_failed" };
+        const operation = dependencies.store.getOperation();
+        const quote = operation.quotes.find(
+          (candidate) => candidate.id === parsed.data.quoteId
+        );
+        if (!quote) return { outcome: "rejected", reason: "quote_not_found" };
+        const mandateDecision = evaluateMandate(operation.mandate, {
+          price: quote.priceMxn,
+          pickupTime: quote.pickupTime
+        });
+        dependencies.store.reviewDeal(parsed.data);
+        return {
+          outcome: "reviewed",
+          mandateDecision
+        };
+      } catch (error) {
+        return rejectedStoreError(error, "review_required");
       }
+    }
+    case "confirm_selected_deal": {
+      const parsed = confirmSelectedDealSchema.safeParse(request.arguments);
+      if (!parsed.success) return invalidArguments();
+
+      return confirmSelectedDeal(parsed.data, dependencies);
     }
     case "trigger_escalation": {
       const parsed = triggerEscalationSchema.safeParse(request.arguments);
@@ -105,10 +108,15 @@ export async function executeToolCall(
         pickupTime: operation.mandate.pickupDatetime
       });
       dependencies.store.requestEscalation(
-        createEscalation(dependencies.store, parsed.data.reason, {
-          ...parsed.data,
-          attemptedPickupTime: operation.mandate.pickupDatetime
-        }, dependencies.now ?? (() => new Date().toISOString()))
+        createEscalation(
+          dependencies.store,
+          parsed.data.reason,
+          {
+            ...parsed.data,
+            attemptedPickupTime: operation.mandate.pickupDatetime
+          },
+          dependencies.now ?? (() => new Date().toISOString())
+        )
       );
       return {
         outcome: "escalated",
@@ -117,8 +125,120 @@ export async function executeToolCall(
       };
     }
     default:
-      return { outcome: "rejected", reason: "invalid_tool" };
+      return { outcome: "rejected", reason: "tool_not_allowed" };
   }
+}
+
+async function confirmSelectedDeal(
+  intent: ConfirmSelectedDealInput,
+  dependencies: ToolDependencies
+): Promise<ToolCallResult> {
+  const operation = dependencies.store.getOperation();
+  const selectedQuote = operation.selection
+    ? operation.quotes.find(
+        (quote) => quote.id === operation.selection?.quoteId
+      )
+    : undefined;
+
+  if (
+    operation.status !== "confirming_selected_carrier" ||
+    !operation.selection ||
+    !selectedQuote
+  ) {
+    return { outcome: "rejected", reason: "selection_required" };
+  }
+  if (operation.confirmationCallId !== intent.callId) {
+    return { outcome: "rejected", reason: "confirmation_call_mismatch" };
+  }
+
+  const now = (dependencies.now ?? (() => new Date().toISOString()))();
+  if (!isBefore(now, operation.selection.expiresAt)) {
+    return failConfirmation(intent, dependencies, "selection_expired");
+  }
+  if (!hasMatchingSelectedTerms(intent, selectedQuote, operation.mandate)) {
+    return failConfirmation(intent, dependencies, "terms_mismatch");
+  }
+  if (
+    !operation.reviewedDeals.some(
+      (deal) =>
+        deal.quoteId === selectedQuote.id && deal.mandateDecision === "APPROVED"
+    )
+  ) {
+    return failConfirmation(intent, dependencies, "mandate_not_approved");
+  }
+
+  const mandateDecision = evaluateMandate(operation.mandate, {
+    price: intent.finalPrice,
+    pickupTime: intent.pickupTime
+  });
+  if (mandateDecision.status !== "APPROVED") {
+    return failConfirmation(intent, dependencies, mandateDecision.reason);
+  }
+
+  try {
+    await dependencies.finalizeConfirmation(intent);
+    return { outcome: "confirmation_requested" };
+  } catch {
+    return failConfirmation(intent, dependencies, "recap_failed");
+  }
+}
+
+function isToolAllowed(name: string, mode: CallMode): boolean {
+  return createModeConfiguration(mode).tools.some((tool) => tool.name === name);
+}
+
+function isBefore(left: string, right: string): boolean {
+  const leftInstant = Date.parse(left);
+  const rightInstant = Date.parse(right);
+  return (
+    Number.isFinite(leftInstant) &&
+    Number.isFinite(rightInstant) &&
+    leftInstant < rightInstant
+  );
+}
+
+function hasMatchingSelectedTerms(
+  intent: ConfirmSelectedDealInput,
+  quote: Quote,
+  mandate: ReturnType<OperationStore["getOperation"]>["mandate"]
+): boolean {
+  return (
+    intent.quoteId === quote.id &&
+    intent.carrierId === quote.carrierId &&
+    intent.finalPrice === quote.priceMxn &&
+    intent.pickupTime === quote.pickupTime &&
+    intent.destinationDatetime === mandate.destinationDatetime &&
+    intent.typeOfContent === mandate.typeOfContent &&
+    intent.weightKg === mandate.weightKg &&
+    intent.measures === mandate.measures
+  );
+}
+
+function failConfirmation(
+  intent: ConfirmSelectedDealInput,
+  dependencies: ToolDependencies,
+  reason: string
+): ToolCallResult {
+  const operation = dependencies.store.getOperation();
+  try {
+    dependencies.store.failConfirmation(reason, intent.callId);
+  } catch {
+    return { outcome: "rejected", reason: "confirmation_call_mismatch" };
+  }
+  dependencies.store.recordCallBrief(
+    createCallBrief({
+      id: `brief-${intent.callId}-${operation.callBriefs.length + 1}`,
+      callId: intent.callId,
+      carrierId: intent.carrierId,
+      summary: `Confirmation failed because ${reason.replaceAll("_", " ")}.`,
+      quotedPriceMxn: intent.finalPrice,
+      objections: [reason],
+      actions: ["Do not finalize the commitment", "Return to the dashboard"],
+      outcome: "failed",
+      createdAt: (dependencies.now ?? (() => new Date().toISOString()))()
+    })
+  );
+  return { outcome: "rejected", reason };
 }
 
 function mandateResult(decision: MandateDecision): ToolCallResult {
@@ -129,6 +249,13 @@ function mandateResult(decision: MandateDecision): ToolCallResult {
   return { outcome: "rejected", reason: decision.reason };
 }
 
+function rejectedStoreError(error: unknown, fallback: string): ToolCallResult {
+  return {
+    outcome: "rejected",
+    reason: error instanceof Error ? error.message : fallback
+  };
+}
+
 function createEscalation(
   store: OperationStore,
   reason: string,
@@ -137,8 +264,6 @@ function createEscalation(
     attemptedPickupTime?: string;
     current_price_offered?: number;
     callId?: string;
-    finalPrice?: number;
-    pickupTime?: string;
   },
   now: () => string
 ): Escalation {
@@ -148,11 +273,8 @@ function createEscalation(
     operationId: operation.id,
     callId: terms.callId,
     reason,
-    attemptedPriceMxn:
-      terms.attemptedPriceMxn ??
-      terms.current_price_offered ??
-      terms.finalPrice,
-    attemptedPickupTime: terms.attemptedPickupTime ?? terms.pickupTime,
+    attemptedPriceMxn: terms.attemptedPriceMxn ?? terms.current_price_offered,
+    attemptedPickupTime: terms.attemptedPickupTime,
     status: "requested",
     requestedAt: now()
   };

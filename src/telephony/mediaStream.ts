@@ -1,6 +1,6 @@
 import type { ToolCallRequest, ToolCallResult } from "../agent/interpreter";
-import { VOLTA_SYSTEM_PROMPT } from "../agent/prompt";
-import { agentToolDefinitions } from "../agent/tools";
+import type { ModeConfiguration } from "../agent/modes";
+import type { AgentToolDefinition } from "../agent/tools";
 
 export type RelaySocket = {
   send(message: string): void;
@@ -16,31 +16,35 @@ export type RealtimeSessionConfig = {
   };
   interrupt_response: true;
   instructions: string;
-  tools: typeof agentToolDefinitions;
+  tools: AgentToolDefinition[];
 };
 
 export type MediaStreamRelayDependencies = {
   twilio: RelaySocket;
   realtime: RelaySocket;
+  configuration: ModeConfiguration;
   executeToolCall: (request: ToolCallRequest) => Promise<ToolCallResult>;
 };
 
 export type RealtimeSocketFactory = () => RelaySocket;
 
-export function createRealtimeSessionConfig(): RealtimeSessionConfig {
+export function createRealtimeSessionConfig(
+  configuration: ModeConfiguration
+): RealtimeSessionConfig {
   return {
     input_audio_format: "audio/pcmu",
     output_audio_format: "audio/pcmu",
     turn_detection: { type: "server_vad", silence_duration_ms: 350 },
     interrupt_response: true,
-    instructions: VOLTA_SYSTEM_PROMPT,
-    tools: agentToolDefinitions
+    instructions: configuration.instructions,
+    tools: configuration.tools
   };
 }
 
 export function attachMediaStreamRelay({
   twilio,
   realtime,
+  configuration,
   executeToolCall: runToolCall
 }: MediaStreamRelayDependencies): void {
   let streamSid: string | undefined;
@@ -48,7 +52,7 @@ export function attachMediaStreamRelay({
   realtime.send(
     JSON.stringify({
       type: "session.update",
-      session: createRealtimeSessionConfig()
+      session: createRealtimeSessionConfig(configuration)
     })
   );
 
