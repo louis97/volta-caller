@@ -58,6 +58,36 @@ export type KapsoInboundMessage = {
   type?: string;
 };
 
+export type WhatsAppActionDecision = {
+  decision: "approve" | "decline";
+  reference?: string;
+};
+
+/**
+ * Accepts only explicit approval commands. A bare "sí" is intentionally not
+ * actionable because it can also answer an intake question.
+ */
+export function whatsappActionDecision(
+  content: string | undefined
+): WhatsAppActionDecision | undefined {
+  if (!content) return undefined;
+  const normalized = content
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  const match = normalized.match(
+    /^(aprobar|apruebo|confirmar|confirmo|approve|rechazar|rechazo|decline)(?:\s+([a-z0-9-]{6,64}))?[.!]?$/
+  );
+  if (!match) return undefined;
+  return {
+    decision: /^(rechazar|rechazo|decline)$/.test(match[1])
+      ? "decline"
+      : "approve",
+    ...(match[2] ? { reference: match[2] } : {})
+  };
+}
+
 /**
  * Normalizes the inbound formats that can be understood by the operational
  * agent. For voice notes, Kapso provides speech-to-text in `transcript.text`
@@ -77,8 +107,8 @@ export function inboundKapsoMessage(
     content:
       message.type === "text"
         ? message.text?.body?.trim()
-        : message.kapso?.transcript?.text?.trim() ??
-          message.kapso?.content?.trim()
+        : (message.kapso?.transcript?.text?.trim() ??
+          message.kapso?.content?.trim())
   };
 }
 

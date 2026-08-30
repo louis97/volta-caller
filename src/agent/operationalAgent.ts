@@ -309,6 +309,25 @@ export function createOperationalAgent({
       return repository.renameConversation(context, conversationId, title);
     },
 
+    async recordChannelMessage(
+      context: OrganizationContext,
+      conversationId: string,
+      role: "assistant" | "user",
+      content: string
+    ) {
+      const message: AgentMessage = {
+        id: randomUUID(),
+        conversationId,
+        role,
+        content,
+        citations: [],
+        proposedActions: [],
+        createdAt: now()
+      };
+      await repository.appendMessage(context, message);
+      return message;
+    },
+
     async ask(
       context: OrganizationContext,
       conversationId: string,

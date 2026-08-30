@@ -6,10 +6,12 @@ import { afterEach, expect, it, vi } from "vitest";
 
 import {
   DeterministicAgentAnswerer,
+  type AnswerRequest,
   type AgentAnswerer,
   type GroundedAnswer
 } from "../../src/agent/operationalAgent";
 import { MemoryAgentRepository } from "../../src/agent/repository";
+import { createMemoryMandatesRepository } from "../../src/core/mandates/memory-repository";
 import { createApp } from "../../src/server";
 
 const servers: ReturnType<ReturnType<typeof createApp>["listen"]>[] = [];
@@ -100,6 +102,93 @@ it("sends a Kapso voice-note transcript to the operational agent", async () => {
   expect(sendText).toHaveBeenCalledWith({
     to: "+573001112233",
     text: expect.any(String)
+  });
+});
+
+it("approves a mandate from the same WhatsApp thread without calling the model again", async () => {
+  const sendText = vi.fn().mockResolvedValue(undefined);
+  const answerer: AgentAnswerer = {
+    answer: vi.fn(async (request: AnswerRequest) => {
+      const createTool = request.tools.find(
+        (tool) => tool.name === "propose_create_mandate"
+      );
+      if (!createTool) throw new Error("missing_create_mandate_tool");
+      const proposal = await createTool.execute({
+        budget_cap: 40000000,
+        destination_datetime: "2026-09-01T17:00:00-05:00",
+        destination_place: "Calle 87B #6-10, Medellín",
+        type_of_content: "Carga general no frágil",
+        weight: 20000,
+        measures: "Contenedor de 20 pies",
+        pickup_address: "Sociedad Portuaria de Santa Marta",
+        pickup_datetime: "2026-08-31T08:00:00-05:00"
+      });
+      return {
+        answer: "El mandato está listo y requiere tu aprobación.",
+        citationIds: [],
+        evidence: [],
+        proposedActions: proposal.proposedAction
+          ? [proposal.proposedAction]
+          : []
+      };
+    })
+  };
+  const app = createApp({
+    repository: new MemoryAgentRepository(),
+    mandatesRepository: createMemoryMandatesRepository(),
+    answerer,
+    kapsoMessenger: { sendText },
+    kapsoWebhookSecret: "kapso-test-secret"
+  });
+
+  const proposal = await signedWhatsAppRequest(app, {
+    id: "wamid.mandate-proposal",
+    from: "+573001112233",
+    type: "text",
+    content: "Crea el mandato con los datos completos"
+  });
+  expect(proposal.status).toBe(200);
+  expect(sendText).toHaveBeenLastCalledWith({
+    to: "+573001112233",
+    text: expect.stringContaining("*APROBAR*")
+  });
+  const proposalReply = sendText.mock.calls.at(-1)?.[0]?.text as string;
+  const actionCode = proposalReply.match(/Código: ([a-f0-9]{8})/)?.[1];
+  if (!actionCode) throw new Error("missing_whatsapp_action_code");
+
+  const unauthorized = await signedWhatsAppRequest(app, {
+    id: "wamid.mandate-unauthorized",
+    from: "+573009998888",
+    type: "text",
+    content: `APROBAR ${actionCode}`
+  });
+  expect(unauthorized.status).toBe(200);
+  expect(sendText).toHaveBeenLastCalledWith({
+    to: "+573009998888",
+    text: expect.stringContaining("No encontré una acción pendiente")
+  });
+  expect(answerer.answer).toHaveBeenCalledTimes(1);
+
+  const approval = await signedWhatsAppRequest(app, {
+    id: "wamid.mandate-approval",
+    from: "+573001112233",
+    type: "audio",
+    content: "Apruebo"
+  });
+  expect(approval.status).toBe(200);
+  expect(sendText).toHaveBeenLastCalledWith({
+    to: "+573001112233",
+    text: expect.stringContaining("Mandato aprobado y creado")
+  });
+  expect(answerer.answer).toHaveBeenCalledTimes(1);
+
+  const operationResponse = await request(app, "/api/operation");
+  await expect(operationResponse.json()).resolves.toMatchObject({
+    mandate: {
+      budgetCapMxn: 40000000,
+      pickupAddress: "Sociedad Portuaria de Santa Marta",
+      destinationPlace: "Calle 87B #6-10, Medellín"
+    }
   });
 });
 
@@ -233,4 +322,47 @@ async function request(
   await once(server, "listening");
   const { port } = server.address() as AddressInfo;
   return fetch(`http://127.0.0.1:${port}${path}`, init);
+}
+
+async function signedWhatsAppRequest(
+  app: ReturnType<typeof createApp>,
+  input: {
+    id: string;
+    from: string;
+    type: "audio" | "text";
+    content: string;
+  }
+) {
+  const message =
+    input.type === "audio"
+      ? {
+          id: input.id,
+          type: input.type,
+          from: input.from,
+          kapso: {
+            direction: "inbound",
+            transcript: { text: input.content }
+          }
+        }
+      : {
+          id: input.id,
+          type: input.type,
+          from: input.from,
+          text: { body: input.content },
+          kapso: { direction: "inbound" }
+        };
+  const payload = JSON.stringify({ message });
+  const signature = createHmac("sha256", "kapso-test-secret")
+    .update(payload)
+    .digest("hex");
+  return request(app, "/webhooks/kapso/whatsapp", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-idempotency-key": input.id,
+      "x-webhook-event": "whatsapp.message.received",
+      "x-webhook-signature": signature
+    },
+    body: payload
+  });
 }

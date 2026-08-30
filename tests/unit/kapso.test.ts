@@ -6,7 +6,8 @@ import {
   inboundKapsoMessage,
   inboundTextMessage,
   receivedKapsoMessages,
-  verifyKapsoSignature
+  verifyKapsoSignature,
+  whatsappActionDecision
 } from "../../src/whatsapp/kapso";
 
 describe("Kapso WhatsApp webhook helpers", () => {
@@ -64,5 +65,22 @@ describe("Kapso WhatsApp webhook helpers", () => {
       type: "audio",
       content: "Muéstrame la operación más urgente"
     });
+  });
+
+  it("recognizes explicit WhatsApp approvals but rejects an ambiguous yes", () => {
+    expect(whatsappActionDecision("APROBAR")).toEqual({
+      decision: "approve"
+    });
+    expect(whatsappActionDecision("Apruebo a1b2c3d4.")).toEqual({
+      decision: "approve",
+      reference: "a1b2c3d4"
+    });
+    expect(whatsappActionDecision("RECHAZAR")).toEqual({
+      decision: "decline"
+    });
+    expect(whatsappActionDecision("Sí")).toBeUndefined();
+    expect(
+      whatsappActionDecision("Sí, la dirección está correcta")
+    ).toBeUndefined();
   });
 });
