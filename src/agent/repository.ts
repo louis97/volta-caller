@@ -68,6 +68,7 @@ export type AgentRepository = {
     sourceId: string
   ): Promise<EvidenceCitation | undefined>;
   addShipmentEvent(event: ShipmentEvent): Promise<void>;
+  listShipmentEvents(context: OrganizationContext): Promise<ShipmentEvent[]>;
   addTranscriptSegments(segments: TranscriptSegment[]): Promise<void>;
   /**
    * Reads transcript back. Without this every instance can only show calls it
@@ -273,6 +274,13 @@ export class MemoryAgentRepository implements AgentRepository {
     const next = events.filter((item) => item.id !== event.id);
     next.push(structuredClone(event));
     this.events.set(event.organizationId, next);
+  }
+
+  async listShipmentEvents(context: OrganizationContext) {
+    return (this.events.get(context.organizationId) ?? [])
+      .slice()
+      .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
+      .map((event) => structuredClone(event));
   }
 
   async listTranscript(organizationId: string, callId?: string) {

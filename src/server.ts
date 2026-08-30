@@ -109,7 +109,11 @@ const shipmentEventSchema = z.object({
     "in_transit",
     "checkpoint",
     "delivered",
-    "exception"
+    "exception",
+    "quotes_ready_for_review",
+    "carrier_confirmation_received",
+    "incident_received",
+    "delay_assessed"
   ]),
   label: z.string().trim().min(1).max(240),
   location: z.string().trim().min(1).max(240).optional(),
@@ -296,10 +300,127 @@ export function createApp(options: CreateAppOptions = {}) {
       }
     }
   };
+  const publishShipmentEvent = async (event: ShipmentEvent) => {
+    await repository.addShipmentEvent(event);
+    for (const client of eventClients) {
+      if (client.organizationId === event.organizationId) {
+        writeAgentEvent(client.response, "shipment.event.created", event);
+      }
+    }
+  };
+  const quoteReadyOperations = new Set<string>();
+  const publishQuotesReady = async (input: {
+    operationId: string;
+    quoteIds: string[];
+    carrierCount: number;
+    occurredAt: string;
+  }) => {
+    if (quoteReadyOperations.has(input.operationId)) return;
+    quoteReadyOperations.add(input.operationId);
+    await publishShipmentEvent({
+      id: randomUUID(),
+      organizationId: activeOrganizationId,
+      operationId: input.operationId,
+      type: "quotes_ready_for_review",
+      label: "Carrier quotes are ready for review.",
+      source: "volta",
+      occurredAt: input.occurredAt,
+      receivedAt: input.occurredAt,
+      metadata: { quoteIds: input.quoteIds, carrierCount: input.carrierCount }
+    });
+  };
+  const notifyFromOperationEvent = (event: OperationEvent) => {
+    const operation = scenario.store.getOperation();
+    const now = new Date().toISOString();
+    if (event.type === "deal.reviewed") {
+      const quoteIds = operation.reviewedDeals.map((deal) => deal.quoteId);
+      if (
+        operation.candidates.length > 0 &&
+        quoteIds.length >= operation.candidates.length
+      ) {
+        void publishQuotesReady({
+          operationId: event.operationId,
+          quoteIds,
+          carrierCount: operation.candidates.length,
+          occurredAt: event.reviewedDeal.reviewedAt
+        });
+      }
+    } else if (event.type === "commitment.finalized") {
+      void publishShipmentEvent({
+        id: randomUUID(),
+        organizationId: activeOrganizationId,
+        operationId: event.operationId,
+        type: "carrier_confirmation_received",
+        label: "Carrier confirmed the selected quote.",
+        source: "volta",
+        occurredAt: now,
+        receivedAt: now,
+        metadata: {
+          quoteId: operation.selection?.quoteId,
+          carrierId: event.commitment.carrierId,
+          outcome: "confirmed"
+        }
+      });
+    } else if (event.type === "confirmation.failed") {
+      void publishShipmentEvent({
+        id: randomUUID(),
+        organizationId: activeOrganizationId,
+        operationId: event.operationId,
+        type: "carrier_confirmation_received",
+        label: "Carrier denied or could not confirm the selected quote.",
+        source: "volta",
+        occurredAt: now,
+        receivedAt: now,
+        metadata: { outcome: "denied", reason: event.reason }
+      });
+    } else if (event.type === "incident.updated") {
+      const incident = event.incident;
+      void publishShipmentEvent({
+        id: randomUUID(),
+        organizationId: activeOrganizationId,
+        operationId: event.operationId,
+        type: "incident_received",
+        label: `Incident reported: ${incident.issue}`,
+        source: "volta",
+        occurredAt: incident.createdAt,
+        receivedAt: now,
+        metadata: {
+          incidentId: incident.id,
+          callerName: incident.callerName,
+          revisedEta: incident.revisedEta,
+          delayMinutes: incident.delayMinutes
+        }
+      });
+    } else if (event.type === "dashboard.notification.created") {
+      const incident = operation.incidents.find(
+        (item) => item.id === event.notification.incidentId
+      );
+      void publishShipmentEvent({
+        id: randomUUID(),
+        organizationId: activeOrganizationId,
+        operationId: event.operationId,
+        type: "delay_assessed",
+        label: event.notification.message,
+        source: "volta",
+        occurredAt: event.notification.createdAt,
+        receivedAt: now,
+        metadata: {
+          incidentId: event.notification.incidentId,
+          revisedEta: incident?.revisedEta,
+          destinationDeadline: operation.mandate.destinationDatetime,
+          escalationRequired: true
+        }
+      });
+    }
+  };
   // Already built above (possibly injected); wire its event stream now that
   // `publish` exists.
-  scenario.store.subscribe(publish);
+  scenario.store.subscribe((event) => {
+    publish(event);
+    notifyFromOperationEvent(event);
+  });
   app.locals.operationStore = scenario.store;
+  app.locals.publishShipmentEvent = publishShipmentEvent;
   app.locals.telephonyDialled = dialled;
   app.locals.ensureCarrierDirectory = () =>
     ensureCarrierDirectory(repository, activeOrganizationId);
@@ -510,7 +631,8 @@ export function createApp(options: CreateAppOptions = {}) {
         onDialled: (callId, carrier) => {
           telephony.dialled.set(callId, carrier);
           telephony.auction.startCall(carrier.id, callId);
-        }
+        },
+        onRoundReviewed: publishQuotesReady
       });
       await persistCallSessions(context);
       await persistCurrentOperation(context);
@@ -813,6 +935,16 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
+  app.get("/api/shipment-events", async (request, response) => {
+    const context = contextFromRequest(request, response);
+    if (!context) return;
+    try {
+      response.status(200).json(await repository.listShipmentEvents(context));
+    } catch (error) {
+      storageFailure(response, error);
+    }
+  });
+
   app.post("/api/internal/shipment-events", async (request, response) => {
     if (!authorizeInternalRequest(request, response)) return;
     const context = contextFromRequest(request, response);
@@ -828,7 +960,7 @@ export function createApp(options: CreateAppOptions = {}) {
       organizationId: context.organizationId,
       receivedAt: new Date().toISOString()
     };
-    await repository.addShipmentEvent(event);
+    await publishShipmentEvent(event);
     response.status(201).json(event);
   });
 

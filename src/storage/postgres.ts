@@ -444,6 +444,19 @@ export class PostgresAgentRepository implements AgentRepository {
     );
   }
 
+  async listShipmentEvents(context: OrganizationContext) {
+    await this.initialize();
+    const result = await this.pool.query<ShipmentEventRow>(
+      `SELECT organization_id, id, operation_id, type, label, location, source,
+              occurred_at, received_at, metadata
+       FROM shipment_events
+       WHERE organization_id = $1
+       ORDER BY occurred_at DESC`,
+      [context.organizationId]
+    );
+    return result.rows.map(eventFromRow);
+  }
+
   async listTranscript(
     organizationId: string,
     callId?: string

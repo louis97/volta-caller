@@ -1,8 +1,8 @@
 import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 
-import type { CreateMandateRequest } from "@volta/contracts";
 import { afterEach, expect, it, vi } from "vitest";
+import type { CreateMandateRequest, ShipmentEvent } from "@volta/contracts";
 
 import { createApp } from "../../src/server";
 import { DeterministicAgentAnswerer } from "../../src/agent/operationalAgent";
@@ -61,6 +61,30 @@ it("creates a real operation, then retains the mandate record", async () => {
   await expect(listResponse.json()).resolves.toEqual([created]);
 });
 
+it("lists shipment notifications for the dashboard organization", async () => {
+  const repository = new MemoryAgentRepository();
+  const event: ShipmentEvent = {
+    id: "notification-001",
+    organizationId: "textiles-pacifico",
+    operationId: "operation-001",
+    type: "quotes_ready_for_review",
+    label: "Carrier quotes are ready for review.",
+    source: "volta",
+    occurredAt: "2026-08-30T10:00:00.000Z",
+    receivedAt: "2026-08-30T10:00:00.000Z"
+  };
+  await repository.addShipmentEvent(event);
+  const app = createApp({
+    repository,
+    mandatesRepository: new MemoryRepository()
+  });
+
+  const response = await request(app, "/api/shipment-events");
+
+  expect(response.status).toBe(200);
+  await expect(response.json()).resolves.toEqual([event]);
+});
+
 it("runs the mock call round through quotes and stops for a client decision", async () => {
   const app = createApp({ mandatesRepository: new MemoryRepository() });
   for (const carrier of [
@@ -107,6 +131,16 @@ it("runs the mock call round through quotes and stops for a client decision", as
   // reviewing is what stops the round and hands the decision to a human.
   expect(operation.reviewedDeals.map((deal) => deal.quoteId)).toEqual(
     expect.arrayContaining(operation.quotes.map((quote) => quote.id))
+  );
+
+  const notifications = await request(app, "/api/shipment-events");
+  await expect(notifications.json()).resolves.toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        type: "quotes_ready_for_review",
+        operationId: "operation-mandate-1"
+      })
+    ])
   );
 
   const readResponse = await request(app, "/api/operation");

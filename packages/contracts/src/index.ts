@@ -365,7 +365,11 @@ export type ShipmentEvent = {
     | "in_transit"
     | "checkpoint"
     | "delivered"
-    | "exception";
+    | "exception"
+    | "quotes_ready_for_review"
+    | "carrier_confirmation_received"
+    | "incident_received"
+    | "delay_assessed";
   label: string;
   location?: string;
   source: string;
