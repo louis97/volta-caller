@@ -5,6 +5,7 @@ import twilio from "twilio";
 import { WebSocketServer } from "ws";
 
 import { executeToolCall } from "../agent/interpreter";
+import { buildCallInstructions } from "../agent/prompt";
 import { createCommitmentFinalizer } from "../audit/commitment";
 import { env } from "../config/env";
 import { seedOperation } from "../core/seed";
@@ -276,6 +277,8 @@ function openMediaStreamSession(twilioSocket: ClosableRelaySocket): void {
       );
       return runtime;
     },
+    instructionsFor: (call) =>
+      buildCallInstructions(store.getOperation(), call.carrierName),
     executeToolCall: (request) => {
       const current = runtime;
       console.log(

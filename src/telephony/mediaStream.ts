@@ -50,6 +50,12 @@ export type MediaStreamRelayDependencies = {
     streamSid: string;
     callSid?: string;
   }) => CallRuntime | undefined;
+  /**
+   * Briefing for this specific call, applied once the carrier is known. The
+   * initial session.update goes out before Twilio says who we reached, so the
+   * job details are sent as a second update rather than guessed at.
+   */
+  instructionsFor?: (runtime: CallRuntime) => string;
 };
 
 export type RealtimeSocketFactory = () => RelaySocket;
@@ -128,7 +134,8 @@ export function attachMediaStreamRelay({
   twilio,
   realtime,
   executeToolCall: runToolCall,
-  onStart
+  onStart,
+  instructionsFor
 }: MediaStreamRelayDependencies): void {
   let streamSid: string | undefined;
   let runtime: CallRuntime | undefined;
@@ -155,6 +162,20 @@ export function attachMediaStreamRelay({
           streamSid,
           callSid: stringValue(start?.callSid)
         });
+      }
+
+      // Now that the carrier is known, replace the generic instructions with
+      // the briefing for this job before the agent says anything.
+      if (runtime && instructionsFor) {
+        realtime.send(
+          JSON.stringify({
+            type: "session.update",
+            session: {
+              type: "realtime",
+              instructions: instructionsFor(runtime)
+            }
+          })
+        );
       }
 
       // Volta places the call, so Volta opens the conversation. Server VAD only
