@@ -18,9 +18,11 @@ and on first use the API applies every SQL file listed by its storage migrator. 
 use the matching ordered files in `supabase/migrations`. Without a database the API uses the
 in-memory repository, which is intended only for tests and mock development.
 
-Set a newly generated `OPENAI_API_KEY` and optionally `VOLTA_COPILOT_MODEL`. When the key is absent,
-mock mode uses the deterministic grounded answerer so the retrieval and evidence path remains
-testable. Do not reuse credentials shared in chat, logs, or source control.
+Set a newly generated `OPENAI_API_KEY` and optionally `VOLTA_COPILOT_MODEL`. The default is
+`gpt-5.4-mini`, selected for the lower-latency conversational path while retaining Responses API,
+function calling, and Structured Outputs. When the key is absent, mock mode uses the deterministic
+grounded answerer so the retrieval and evidence path remains testable. Do not reuse credentials
+shared in chat, logs, or source control.
 
 Live requests to the agent require `x-volta-org-id` and `x-volta-user-id`, normally injected by the
 authentication gateway. The deployed Next.js frontend uses its server-only catch-all API route to

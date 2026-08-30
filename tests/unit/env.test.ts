@@ -3,6 +3,10 @@ import { describe, expect, it } from "vitest";
 import { loadEnv } from "../../src/config/env";
 
 describe("loadEnv", () => {
+  it("defaults the operational chat to the low-latency mini model", () => {
+    expect(loadEnv({}).VOLTA_COPILOT_MODEL).toBe("gpt-5.4-mini");
+  });
+
   it("accepts a Supabase publishable key for live development", () => {
     expect(
       loadEnv({
