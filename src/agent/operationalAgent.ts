@@ -44,6 +44,16 @@ export type AgentAnswerer = {
   answer(request: AnswerRequest): Promise<GroundedAnswer>;
 };
 
+export function createResponsesToolDefinitions(tools: CentralBrainTool[]) {
+  return tools.map((tool) =>
+    zodResponsesFunction({
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters
+    })
+  );
+}
+
 export class OpenAIAgentAnswerer implements AgentAnswerer {
   private readonly client: OpenAI;
 
@@ -55,13 +65,7 @@ export class OpenAIAgentAnswerer implements AgentAnswerer {
   }
 
   async answer(request: AnswerRequest): Promise<GroundedAnswer> {
-    const definitions = request.tools.map((tool) =>
-      zodResponsesFunction({
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.parameters
-      })
-    );
+    const definitions = createResponsesToolDefinitions(request.tools);
     let input: ResponseInput = request.history.slice(-8).map((message) => ({
       role: message.role,
       content: message.content
@@ -157,13 +161,17 @@ export class DeterministicAgentAnswerer implements AgentAnswerer {
       return result.output;
     };
 
-    await execute("search_operational_records", { query: request.question });
+    await execute("search_operational_records", {
+      query: request.question,
+      operationId: null,
+      sourceTypes: null
+    });
     if (
       /(pendiente|atenci[oó]n|attention|bloque|triage|prioridad|qu[eé] pasa|needs me)/i.test(
         request.question
       )
     ) {
-      await execute("list_attention_items", {});
+      await execute("list_attention_items", { operationId: null });
     }
     if (
       /(cotiz|quote|carrier|transportista|oferta|compar)/i.test(

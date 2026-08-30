@@ -29,19 +29,19 @@ const evidenceTypes = z.enum([
 
 const searchSchema = z.object({
   query: z.string().trim().min(1).max(500),
-  operationId: z.string().trim().min(1).optional(),
-  sourceTypes: z.array(evidenceTypes).max(8).optional()
+  operationId: z.string().trim().min(1).nullable(),
+  sourceTypes: z.array(evidenceTypes).max(8).nullable()
 });
 const operationSchema = z.object({
   operationId: z.string().trim().min(1)
 });
 const attentionSchema = z.object({
-  operationId: z.string().trim().min(1).optional()
+  operationId: z.string().trim().min(1).nullable()
 });
 const selectionSchema = z.object({
   approvalId: z.string().trim().min(1),
   selectedQuoteId: z.string().trim().min(1),
-  rationale: z.string().trim().min(1).max(500).optional()
+  rationale: z.string().trim().min(1).max(500).nullable()
 });
 const noArgumentsSchema = z.object({});
 
@@ -97,12 +97,12 @@ export function createCentralBrainTools({
           context,
           parsed.data.query
         );
-        if (parsed.data.operationId) {
+        if (parsed.data.operationId !== null) {
           citations = citations.filter(
             (item) => item.operationId === parsed.data.operationId
           );
         }
-        if (parsed.data.sourceTypes) {
+        if (parsed.data.sourceTypes !== null) {
           citations = citations.filter((item) =>
             parsed.data.sourceTypes?.includes(item.sourceType)
           );
@@ -150,7 +150,7 @@ export function createCentralBrainTools({
         const parsed = attentionSchema.safeParse(argumentsValue);
         if (!parsed.success) return invalidArguments();
         let operations = await repository.listOperations(context);
-        if (parsed.data.operationId) {
+        if (parsed.data.operationId !== null) {
           operations = operations.filter(
             (item) => item.id === parsed.data.operationId
           );
@@ -264,7 +264,9 @@ export function createCentralBrainTools({
           payload: {
             approvalId: approval.id,
             selectedQuoteId: quote.id,
-            rationale: parsed.data.rationale
+            ...(parsed.data.rationale
+              ? { rationale: parsed.data.rationale }
+              : {})
           },
           status: "pending",
           summary: `Seleccionar ${quote.carrierName} por MXN ${quote.priceMxn} para la llamada de cierre.`,

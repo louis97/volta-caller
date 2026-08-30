@@ -26,6 +26,27 @@ const QUICK_PROMPTS = [
   "Which offer best fits the mandate?"
 ];
 
+const AGENT_ERROR_MESSAGES: Record<string, string> = {
+  agent_configuration_invalid:
+    "Volta's operational tools are temporarily unavailable. No action was taken.",
+  agent_conversation_missing:
+    "This conversation is no longer available. Start a new chat and try again.",
+  agent_model_unavailable:
+    "Volta's language model is not configured. No action was taken.",
+  agent_rate_limited:
+    "Volta is receiving too many requests. No action was taken; try again shortly.",
+  agent_request_failed:
+    "Volta could not answer right now. No action was taken; try again shortly.",
+  agent_request_rejected:
+    "Volta rejected the request before it could run. No action was taken."
+};
+
+class AgentStreamError extends Error {
+  constructor(readonly publicMessage: string) {
+    super("agent_stream_failed");
+  }
+}
+
 type VoltaChatProps = {
   onOperationChange?: (operation: OperationReadModel) => void;
 };
@@ -81,6 +102,26 @@ export function VoltaChat({ onOperationChange }: VoltaChatProps) {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadOperation() {
+      try {
+        const response = await fetch("/api/operation");
+        if (!response.ok || cancelled) return;
+        const operation: unknown = await response.json();
+        if (!cancelled && isOperationReadModel(operation)) {
+          onOperationChange?.(operation);
+        }
+      } catch {
+        // Chat history remains usable even when the operation snapshot is stale.
+      }
+    }
+    void loadOperation();
+    return () => {
+      cancelled = true;
+    };
+  }, [onOperationChange]);
 
   useEffect(() => {
     const thread = threadRef.current;
@@ -204,14 +245,16 @@ export function VoltaChat({ onOperationChange }: VoltaChatProps) {
           right.updatedAt.localeCompare(left.updatedAt)
         );
       });
-    } catch {
+    } catch (error) {
       setMessages((current) => [
         ...current,
         localMessage(
           "assistant-" + Date.now(),
           activeConversationId ?? "failed",
           "assistant",
-          "I could not reach the operational brain. No action was taken; try again shortly."
+          error instanceof AgentStreamError
+            ? error.publicMessage
+            : "I could not reach the operational brain. No action was taken; try again shortly."
         )
       ]);
       if (createdConversation) {
@@ -542,7 +585,27 @@ async function readAgentMessage(
       .split("\n")
       .find((line) => line.startsWith("data: "))
       ?.slice(6);
-    if (eventName === "error") throw new Error("agent_stream_failed");
+    if (eventName === "error") {
+      let code = "agent_request_failed";
+      if (data) {
+        try {
+          const parsed: unknown = JSON.parse(data);
+          if (
+            typeof parsed === "object" &&
+            parsed !== null &&
+            "error" in parsed &&
+            typeof parsed.error === "string"
+          ) {
+            code = parsed.error;
+          }
+        } catch {
+          code = "agent_request_failed";
+        }
+      }
+      throw new AgentStreamError(
+        AGENT_ERROR_MESSAGES[code] ?? AGENT_ERROR_MESSAGES.agent_request_failed
+      );
+    }
     if (eventName === "activity" && data) {
       onActivity(JSON.parse(data) as AgentActivity);
     }
@@ -562,6 +625,19 @@ async function readAgentMessage(
   if (buffer.trim()) consume(buffer);
   if (!finalMessage) throw new Error("agent_answer_missing");
   return finalMessage;
+}
+
+function isOperationReadModel(value: unknown): value is OperationReadModel {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "id" in value &&
+    typeof value.id === "string" &&
+    "callSessions" in value &&
+    Array.isArray(value.callSessions) &&
+    "approvals" in value &&
+    Array.isArray(value.approvals)
+  );
 }
 
 function localMessage(
