@@ -9,7 +9,12 @@ export type KapsoWebhookMessage = {
   type?: string;
   from?: string;
   text?: { body?: string };
-  kapso?: { direction?: string };
+  kapso?: {
+    direction?: string;
+    /** LLM-ready message content supplied by Kapso, including audio transcripts. */
+    content?: string;
+    transcript?: { text?: string };
+  };
 };
 
 export type KapsoWebhookData = {
@@ -46,7 +51,21 @@ export function receivedKapsoMessages(
     : [payload];
 }
 
-export function inboundTextMessage(data: KapsoWebhookData) {
+export type KapsoInboundMessage = {
+  id?: string;
+  from: string;
+  content?: string;
+  type?: string;
+};
+
+/**
+ * Normalizes the inbound formats that can be understood by the operational
+ * agent. For voice notes, Kapso provides speech-to-text in `transcript.text`
+ * (and, for newer payloads, its LLM-ready `content` field).
+ */
+export function inboundKapsoMessage(
+  data: KapsoWebhookData
+): KapsoInboundMessage | undefined {
   const message = data.message;
   if (!message || message.kapso?.direction !== "inbound") return undefined;
   const from = message.from ?? data.conversation?.phone_number;
@@ -54,7 +73,23 @@ export function inboundTextMessage(data: KapsoWebhookData) {
   return {
     id: message.id,
     from,
-    content: message.type === "text" ? message.text?.body?.trim() : undefined
+    type: message.type,
+    content:
+      message.type === "text"
+        ? message.text?.body?.trim()
+        : message.kapso?.transcript?.text?.trim() ??
+          message.kapso?.content?.trim()
+  };
+}
+
+/** @deprecated Use inboundKapsoMessage to handle both text and audio. */
+export function inboundTextMessage(data: KapsoWebhookData) {
+  const inbound = inboundKapsoMessage(data);
+  if (!inbound) return undefined;
+  return {
+    id: inbound.id,
+    from: inbound.from,
+    content: inbound.content
   };
 }
 
