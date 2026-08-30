@@ -696,9 +696,140 @@ function NewMandateView({ onCreated }: { onCreated: () => void }) {
               </m.button>
             )}
           </div>
+
+          <TestingCarriers />
         </aside>
       </form>
     </>
+  );
+}
+
+/**
+ * Which numbers a mandate will actually ring, editable right where the
+ * mandate is launched. Rehearsals change the pool constantly, and walking to
+ * another screen to check who is about to be phoned is how a round surprises
+ * the room.
+ */
+function TestingCarriers() {
+  const [carriers, setCarriers] = useState<CarrierRow[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = async () => {
+    try {
+      const response = await fetchOperationalRead("/api/carriers");
+      if (response.ok) setCarriers((await response.json()) as CarrierRow[]);
+    } catch {
+      setError("The carrier directory is unavailable.");
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  const toggle = async (carrier: CarrierRow) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fetch(`/api/carriers/${encodeURIComponent(carrier.id)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ active: !carrier.active })
+      });
+      await refresh();
+    } catch {
+      setError("Could not update that carrier.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const add = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const phone = String(data.get("phone") ?? "").trim();
+    if (!phone) return;
+
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/carriers", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          id: `carrier-${phone.replace(/\D/g, "")}`,
+          name: String(data.get("name") ?? "").trim() || phone,
+          phone,
+          lanes: [],
+          active: true
+        })
+      });
+      if (!response.ok) throw new Error("create_failed");
+      form.reset();
+      await refresh();
+    } catch {
+      setError("Could not add that number.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const active = carriers.filter((carrier) => carrier.active);
+
+  return (
+    <details className="testing">
+      <summary>
+        <span>Testing · numbers this mandate will call</span>
+        <Tag tone={active.length > 0 ? "commit" : "halt"}>
+          {active.length} active
+        </Tag>
+      </summary>
+
+      <div className="testing__body">
+        <p className="testing__hint">
+          Launching a mandate dials every active number below, at once and for
+          real. Uncheck a carrier to leave it out of the round.
+        </p>
+
+        <ul className="testing__list">
+          {carriers.map((carrier) => (
+            <li key={carrier.id}>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={carrier.active}
+                  disabled={busy}
+                  onChange={() => void toggle(carrier)}
+                />
+                <span className="testing__phone">{carrier.phone}</span>
+                <span className="testing__name">{carrier.name}</span>
+              </label>
+            </li>
+          ))}
+          {carriers.length === 0 && (
+            <li className="testing__empty">
+              No carriers registered yet. Add a number below.
+            </li>
+          )}
+        </ul>
+
+        <form className="testing__add" onSubmit={(event) => void add(event)}>
+          <input name="phone" placeholder="+573001112233" required />
+          <input name="name" placeholder="Carrier name (optional)" />
+          <button className="btn btn--secondary" type="submit" disabled={busy}>
+            Add
+          </button>
+        </form>
+
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+    </details>
   );
 }
 

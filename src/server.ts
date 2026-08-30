@@ -221,6 +221,8 @@ export function createApp(options: CreateAppOptions = {}) {
   scenario.store.subscribe(publish);
   app.locals.operationStore = scenario.store;
   app.locals.telephonyDialled = dialled;
+  app.locals.ensureCarrierDirectory = () =>
+    ensureCarrierDirectory(repository, activeOrganizationId);
   app.locals.listTranscript = (callId?: string) =>
     repository.listTranscript(activeOrganizationId, callId);
   app.locals.listActiveCarriers = async () => {
@@ -842,6 +844,48 @@ export function createApp(options: CreateAppOptions = {}) {
   return app;
 }
 
+/**
+ * Makes sure the demo pool is present in the directory, so the testing panel
+ * has something to show and a round has someone to dial without anyone
+ * retyping three numbers. Additive only.
+ */
+async function ensureCarrierDirectory(
+  repository: AgentRepository,
+  organizationId: string
+): Promise<void> {
+  try {
+    const existing = await repository.listCarriers(organizationId);
+    const known = new Set(existing.map((carrier) => carrier.phone));
+
+    // Adds only what is missing, by number. Anything the team added or
+    // deactivated through the console is left exactly as they left it.
+    const missing = seedOperation().candidates.filter(
+      (candidate) => !known.has(candidate.phone)
+    );
+    if (missing.length === 0) return;
+
+    for (const candidate of missing) {
+      await repository.createCarrier({
+        id: candidate.id,
+        organizationId,
+        name: candidate.name,
+        phone: candidate.phone,
+        lanes: [],
+        active: true,
+        createdAt: new Date().toISOString()
+      });
+    }
+    console.log(
+      `[carriers] added ${missing.length} missing to the directory: ${missing
+        .map((candidate) => candidate.phone)
+        .join(", ")}`
+    );
+  } catch (error) {
+    // A directory that cannot be seeded still falls back to the seeded pool.
+    console.error("[carriers] could not seed the directory:", error);
+  }
+}
+
 function createDefaultMandatesRepository(): MandatesRepository {
   if (env.VOLTA_MODE !== "live") return createMemoryMandatesRepository();
 
@@ -961,6 +1005,8 @@ if (isMainModule(import.meta.url, process.argv[1])) {
     listActiveCarriers: () => app.locals.listActiveCarriers(),
     listTranscript: (callId?: string) => app.locals.listTranscript(callId)
   });
+
+  void app.locals.ensureCarrierDirectory?.();
 
   const missing = missingTelephonyConfig();
   if (missing.length > 0) {
