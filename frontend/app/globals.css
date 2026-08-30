@@ -1,18 +1,140 @@
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Sans:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
 
 /* ==========================================================================
    Volta Dispatch Console — design tokens
 
+   Shares one system with the public surface in app/landing/landing.css: same
+   hues, same typeface, same radii. A visitor who signs up meets the same
+   vocabulary on the inside.
+
    Hue encodes who is acting:
-     signal (teal)  → Volta. Live lines, the agent's voice, agent surfaces.
-     brass          → you. Anything blocked on a human decision.
-     commit (green) → money moved, on the record.
-     halt (red)     → declined, failed, unreachable.
+     signal (teal)  -> Volta. Live lines, the agent's voice, agent surfaces.
+     brass          -> you. Anything blocked on a human decision.
+     commit (green) -> money moved, on the record.
+     halt (red)     -> declined, failed, unreachable.
    Neutral graphite carries structure. Figures are set in mono and do the
    display work, because in a dispatch console the number is the headline.
+
+   The dark ground is the base, matching the public surface. Light is the
+   opt-in, kept intact for daylight floors and for operators who need it.
    ========================================================================== */
 
 :root {
+  color-scheme: dark;
+
+  --paper: #0d0f14;
+  --surface: #13161d;
+  --surface-2: #191d26;
+  --surface-3: #1e232c;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.15);
+  --ink: #f2f4f7;
+  --ink-2: #a8b0bd;
+  --ink-3: #6e7683;
+
+  --rail: #08090c;
+  --rail-2: #191d26;
+  --rail-ink: #f2f4f7;
+  --rail-muted: #6e7683;
+  --rail-line: rgba(255, 255, 255, 0.08);
+
+  --signal: #2ab9c1;
+  --signal-strong: #47cdd4;
+  --signal-soft: #0d2f32;
+  --signal-line: #1c4e52;
+  /* ink laid on a filled signal ground — 8.9:1 on #2ab9c1 */
+  --on-signal: #062226;
+  /* ink laid on a filled brass ground — 7.0:1 on #d9a03c */
+  --on-brass: #2a1f08;
+
+  --brass: #d9a03c;
+  --brass-strong: #eab863;
+  --brass-soft: #2c2313;
+  --brass-line: #4c3d1e;
+
+  --commit: #41bd80;
+  --commit-strong: #63d29a;
+  --commit-soft: #102d1f;
+  --commit-line: #1d4c35;
+
+  --halt: #ee7669;
+  --halt-strong: #f5988d;
+  --halt-soft: #2f1815;
+  --halt-line: #532722;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2:
+    0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 30px -16px rgba(0, 0, 0, 0.8);
+  --shadow-3:
+    0 2px 8px rgba(0, 0, 0, 0.5), 0 30px 70px -24px rgba(0, 0, 0, 0.9);
+
+  --r-xs: 5px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 18px;
+  --r-pill: 999px;
+
+  --ui:
+    "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --rail-w: 248px;
+  --gutter: 32px;
+}
+
+/* Light tokens are declared twice on purpose: once for the system preference
+   and once for an explicit choice, so the toggle wins in both directions. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+
+    --paper: #f4f4f2;
+    --surface: #ffffff;
+    --surface-2: #fafaf9;
+    --surface-3: #efefec;
+    --line: #e3e3de;
+    --line-strong: #cececa;
+    --ink: #14161c;
+    --ink-2: #444a56;
+    --ink-3: #6f7583;
+
+    --rail: #12151c;
+    --rail-2: #1e232d;
+    --rail-ink: #f3f4f6;
+    --rail-muted: #878e9d;
+    --rail-line: rgba(255, 255, 255, 0.08);
+
+    --signal: #0d8f96;
+    --signal-strong: #0a7076;
+    --signal-soft: #e3f1f2;
+    --signal-line: #b6dde0;
+    --on-signal: #ffffff;
+    --on-brass: #ffffff;
+
+    --brass: #a3670f;
+    --brass-strong: #855408;
+    --brass-soft: #faf0dc;
+    --brass-line: #ead4a6;
+
+    --commit: #16794c;
+    --commit-strong: #11603c;
+    --commit-soft: #e3f1e9;
+    --commit-line: #b3dbc5;
+
+    --halt: #b23a2f;
+    --halt-strong: #942e25;
+    --halt-soft: #fbe9e6;
+    --halt-line: #f0c5be;
+
+    --shadow-1: 0 1px 2px rgba(16, 18, 24, 0.05);
+    --shadow-2:
+      0 1px 2px rgba(16, 18, 24, 0.05), 0 10px 26px -14px rgba(16, 18, 24, 0.22);
+    --shadow-3:
+      0 2px 6px rgba(16, 18, 24, 0.08), 0 28px 64px -22px rgba(16, 18, 24, 0.38);
+  }
+}
+
+:root[data-theme="light"] {
   color-scheme: light;
 
   --paper: #f4f4f2;
@@ -35,6 +157,8 @@
   --signal-strong: #0a7076;
   --signal-soft: #e3f1f2;
   --signal-line: #b6dde0;
+  --on-signal: #ffffff;
+  --on-brass: #ffffff;
 
   --brass: #a3670f;
   --brass-strong: #855408;
@@ -56,118 +180,7 @@
     0 1px 2px rgba(16, 18, 24, 0.05), 0 10px 26px -14px rgba(16, 18, 24, 0.22);
   --shadow-3:
     0 2px 6px rgba(16, 18, 24, 0.08), 0 28px 64px -22px rgba(16, 18, 24, 0.38);
-
-  --r-xs: 4px;
-  --r-sm: 7px;
-  --r-md: 10px;
-  --r-lg: 14px;
-  --r-pill: 999px;
-
-  --ui:
-    "Instrument Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
-    sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
-
-  --rail-w: 248px;
-  --gutter: 32px;
 }
-
-/* Dark tokens are declared twice on purpose: once for the system default and
-   once for an explicit choice, so the toggle wins in both directions. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-
-    --paper: #0b0d11;
-    --surface: #12151b;
-    --surface-2: #171b22;
-    --surface-3: #1e232c;
-    --line: #242a34;
-    --line-strong: #343c49;
-    --ink: #e8eaee;
-    --ink-2: #b4bac6;
-    --ink-3: #848c9a;
-
-    --rail: #0e1116;
-    --rail-2: #1b202a;
-    --rail-ink: #edeff3;
-    --rail-muted: #7d8593;
-    --rail-line: rgba(255, 255, 255, 0.07);
-
-    --signal: #2ab9c1;
-    --signal-strong: #4ed2d9;
-    --signal-soft: #0d2f32;
-    --signal-line: #1c4e52;
-
-    --brass: #d9a03c;
-    --brass-strong: #eab863;
-    --brass-soft: #2c2313;
-    --brass-line: #4c3d1e;
-
-    --commit: #41bd80;
-    --commit-strong: #63d29a;
-    --commit-soft: #102d1f;
-    --commit-line: #1d4c35;
-
-    --halt: #ee7669;
-    --halt-strong: #f5988d;
-    --halt-soft: #2f1815;
-    --halt-line: #532722;
-
-    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
-    --shadow-2:
-      0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 30px -16px rgba(0, 0, 0, 0.8);
-    --shadow-3:
-      0 2px 8px rgba(0, 0, 0, 0.5), 0 30px 70px -24px rgba(0, 0, 0, 0.9);
-  }
-}
-
-:root[data-theme="dark"] {
-  color-scheme: dark;
-
-  --paper: #0b0d11;
-  --surface: #12151b;
-  --surface-2: #171b22;
-  --surface-3: #1e232c;
-  --line: #242a34;
-  --line-strong: #343c49;
-  --ink: #e8eaee;
-  --ink-2: #b4bac6;
-  --ink-3: #848c9a;
-
-  --rail: #0e1116;
-  --rail-2: #1b202a;
-  --rail-ink: #edeff3;
-  --rail-muted: #7d8593;
-  --rail-line: rgba(255, 255, 255, 0.07);
-
-  --signal: #2ab9c1;
-  --signal-strong: #4ed2d9;
-  --signal-soft: #0d2f32;
-  --signal-line: #1c4e52;
-
-  --brass: #d9a03c;
-  --brass-strong: #eab863;
-  --brass-soft: #2c2313;
-  --brass-line: #4c3d1e;
-
-  --commit: #41bd80;
-  --commit-strong: #63d29a;
-  --commit-soft: #102d1f;
-  --commit-line: #1d4c35;
-
-  --halt: #ee7669;
-  --halt-strong: #f5988d;
-  --halt-soft: #2f1815;
-  --halt-line: #532722;
-
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-2:
-    0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 30px -16px rgba(0, 0, 0, 0.8);
-  --shadow-3:
-    0 2px 8px rgba(0, 0, 0, 0.5), 0 30px 70px -24px rgba(0, 0, 0, 0.9);
-}
-
 /* --------------------------------------------------------------- base ---- */
 
 * {
@@ -273,7 +286,7 @@ h3 {
   min-height: 38px;
   padding: 0 15px;
   border: 1px solid transparent;
-  border-radius: var(--r-sm);
+  border-radius: var(--r-pill);
   font-size: 13px;
   font-weight: 600;
   letter-spacing: -0.005em;
@@ -283,7 +296,13 @@ h3 {
     border-color 150ms ease,
     color 150ms ease,
     box-shadow 150ms ease,
+    transform 300ms cubic-bezier(0.2, 0.8, 0.3, 1),
     opacity 150ms ease;
+}
+
+/* the lift the public surface uses — kept small here, the console is dense */
+.btn:not(:disabled):hover {
+  transform: translateY(-1px);
 }
 
 .btn svg {
@@ -320,7 +339,7 @@ h3 {
 .btn--signal {
   background: var(--signal);
   border-color: var(--signal);
-  color: #fff;
+  color: var(--on-signal);
 }
 .btn--signal:not(:disabled):hover {
   background: var(--signal-strong);
@@ -404,11 +423,22 @@ h3 {
   animation: volta-ring 1.9s ease-out infinite;
 }
 
+/* Surfaces lift toward the reader on hover, as they do on the public page.
+   The console is dense, so the move is a border and ground change only —
+   no translate, which would make a wall of cards twitch. */
 .card {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-1);
+  transition:
+    border-color 300ms ease,
+    background-color 300ms ease;
+}
+
+.card:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-2);
 }
 
 .card__head {
@@ -744,7 +774,7 @@ button.ledger__row:hover {
   height: 34px;
   border-radius: var(--r-sm);
   background: var(--signal);
-  color: #fff;
+  color: var(--on-signal);
   font: 600 13px/1 var(--mono);
 }
 .rail__brand div {
@@ -828,7 +858,7 @@ button.ledger__row:hover {
 }
 .rail__count--signal {
   background: var(--signal);
-  color: #fff;
+  color: var(--on-signal);
 }
 .rail__count--brass {
   background: var(--brass);
@@ -1438,7 +1468,7 @@ button.ledger__row:hover {
   height: 34px;
   border-radius: var(--r-sm);
   background: var(--brass);
-  color: #fff;
+  color: var(--on-brass);
 }
 .alert__mark svg {
   width: 18px;
@@ -1917,7 +1947,7 @@ button.ledger__row:hover {
   place-items: center;
   border-radius: var(--r-sm);
   background: var(--signal);
-  color: #fff;
+  color: var(--on-signal);
   box-shadow: 0 8px 24px -14px var(--signal);
   font: 600 12px/1 var(--mono);
 }
@@ -2288,7 +2318,7 @@ button.ledger__row:hover {
   border: 1px solid var(--signal);
   border-radius: var(--r-sm);
   background: var(--signal);
-  color: #fff;
+  color: var(--on-signal);
   transition:
     background-color 140ms ease,
     border-color 140ms ease,
