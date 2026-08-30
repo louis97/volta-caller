@@ -9,6 +9,7 @@ import type {
   OperationReadModel,
   PipelineStage,
   Quote,
+  ShipmentEvent,
   TranscriptSegment
 } from "@volta/contracts";
 import {
@@ -43,7 +44,8 @@ type View =
   | "call-floor"
   | "pipeline"
   | "carriers"
-  | "approvals";
+  | "approvals"
+  | "notifications";
 
 type Tone = "signal" | "brass" | "commit" | "halt" | "idle";
 
@@ -65,7 +67,8 @@ const navItems: Array<{
   { id: "call-floor", label: "Call floor", icon: PhoneIcon },
   { id: "pipeline", label: "Pipeline", icon: OperationsIcon },
   { id: "carriers", label: "Carriers", icon: RouteIcon },
-  { id: "approvals", label: "Approvals", icon: ApprovalIcon }
+  { id: "approvals", label: "Approvals", icon: ApprovalIcon },
+  { id: "notifications", label: "Notifications", icon: AlertIcon }
 ];
 
 /* -------------------------------------------------------------- store ---- */
@@ -159,6 +162,104 @@ function useLiveOperation() {
   }, []);
 
   return operation;
+}
+
+function NotificationsView() {
+  const [events, setEvents] = useState<ShipmentEvent[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const response = await fetch("/api/shipment-events");
+        if (!response.ok) throw new Error("notifications_unavailable");
+        const next = (await response.json()) as ShipmentEvent[];
+        if (!cancelled) {
+          setEvents(next);
+          setError(null);
+        }
+      } catch {
+        if (!cancelled)
+          setError("Notifications are unavailable. Retry in a moment.");
+      }
+    };
+    void refresh();
+    if (typeof EventSource === "undefined")
+      return () => {
+        cancelled = true;
+      };
+    const source = new EventSource("/api/events");
+    source.addEventListener("shipment.event.created", () => void refresh());
+    return () => {
+      cancelled = true;
+      source.close();
+    };
+  }, []);
+
+  return (
+    <>
+      <PageHead
+        title="Notifications"
+        eyebrow="Operational feed"
+        description="Live Volta updates across every shipment in your organization."
+        action={<Tag tone="signal">{events.length} events</Tag>}
+      />
+      <section className="card">
+        <div className="card__head">
+          <h2>Latest activity</h2>
+        </div>
+        {error ? (
+          <div className="card__body">
+            <p className="form-error" role="alert">
+              {error}
+            </p>
+          </div>
+        ) : null}
+        {!error && events.length === 0 ? (
+          <div className="card__body">
+            <p className="stat__note">No operational notifications yet.</p>
+          </div>
+        ) : null}
+        {events.length > 0 ? (
+          <div className="ledger">
+            {events.map((event) => (
+              <details className="ledger__row" key={event.id}>
+                <summary>
+                  <span className="ledger__cell">
+                    <span className="section-head__mark">
+                      <AlertIcon />
+                    </span>
+                    <b>{event.label}</b>
+                  </span>
+                  <span className="ledger__cell">
+                    <span className="ml">Operation</span>
+                    <span className="ledger__value">{event.operationId}</span>
+                  </span>
+                  <span className="ledger__figure">
+                    {formatDraftStamp(event.occurredAt)}
+                  </span>
+                  <ChevronIcon className="ledger__chev" />
+                </summary>
+                {event.metadata && Object.keys(event.metadata).length > 0 ? (
+                  <div className="card__body notification__details">
+                    {Object.entries(event.metadata).map(([key, value]) => (
+                      <p key={key}>
+                        <span className="ml">{titleCase(key)}</span>{" "}
+                        {Array.isArray(value)
+                          ? value.join(", ")
+                          : String(value)}
+                      </p>
+                    ))}
+                  </div>
+                ) : null}
+              </details>
+            ))}
+          </div>
+        ) : null}
+      </section>
+    </>
+  );
 }
 
 /** Re-render once a second, but only while something is actually running. */
@@ -2032,6 +2133,7 @@ export function DashboardConsole() {
                   {view === "pipeline" && <PipelineView onNavigate={setView} />}
                   {view === "carriers" && <CarriersView />}
                   {view === "approvals" && <ApprovalsView />}
+                  {view === "notifications" && <NotificationsView />}
                 </m.div>
               </AnimatePresence>
             </div>

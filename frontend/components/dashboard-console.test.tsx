@@ -38,6 +38,41 @@ describe("DashboardConsole", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows persisted organization notifications from the drawer", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => ({
+        ok: true,
+        json: async () =>
+          url === "/api/shipment-events"
+            ? [
+                {
+                  id: "notification-001",
+                  organizationId: "textiles-pacifico",
+                  operationId: "operation-001",
+                  type: "quotes_ready_for_review",
+                  label: "Carrier quotes are ready for review.",
+                  source: "volta",
+                  occurredAt: "2026-08-30T10:00:00.000Z",
+                  receivedAt: "2026-08-30T10:00:00.000Z",
+                  metadata: { carrierCount: 3 }
+                }
+              ]
+            : seedOperation()
+      }))
+    );
+    render(<DashboardConsole />);
+
+    openNavigationItem("Notifications");
+
+    expect(
+      await screen.findByRole("heading", { name: "Notifications", level: 1 })
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText("Carrier quotes are ready for review.")
+    ).toBeVisible();
+  });
+
   it("opens Volta as a primary workspace instead of a drawer", async () => {
     const operation = { ...seedOperation(), pipelineStage: "open" };
     const fetchMock = vi.fn().mockImplementation(async (input: string) => {

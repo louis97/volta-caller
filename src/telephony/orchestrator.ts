@@ -15,6 +15,12 @@ export type FanoutDependencies = {
   concurrency?: number;
   now?: () => string;
   onDialled?: (callId: string, carrier: { id: string; name: string }) => void;
+  onRoundReviewed?: (input: {
+    operationId: string;
+    quoteIds: string[];
+    carrierCount: number;
+    occurredAt: string;
+  }) => Promise<void> | void;
   /**
    * Who to dial this round. Defaults to the operation's seeded candidates;
    * the carrier directory overrides it so the pool can be edited from the
@@ -144,6 +150,12 @@ export async function fanOutCalls(
           }
         );
       }
+      await dependencies.onRoundReviewed?.({
+        operationId: operation.id,
+        quoteIds,
+        carrierCount: candidates.length,
+        occurredAt: now()
+      });
     }
   }
 }
