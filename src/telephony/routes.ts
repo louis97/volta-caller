@@ -232,7 +232,7 @@ export function mountTelephonyRoutes(
       .type("text/xml")
       .send(
         `<?xml version="1.0" encoding="UTF-8"?><Response>` +
-          `<Say voice="Polly.Mia" language="es-MX">${escapeXmlText(brief)}</Say>` +
+          `<Say voice="Polly.Joanna" language="en-US">${escapeXmlText(brief)}</Say>` +
           `<Connect><Stream url="${escapeXmlText(wsUrl)}" /></Connect>` +
           `</Response>`
       );
@@ -245,7 +245,7 @@ export function mountTelephonyRoutes(
     response
       .type("text/xml")
       .send(
-        '<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Mia" language="es-MX">Prueba de Volta. Si escuchas esto, el camino de voz funciona.</Say><Pause length="2"/></Response>'
+        '<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna" language="en-US">Volta test call. If you can hear this, the voice path works.</Say><Pause length="2"/></Response>'
       );
   });
 
@@ -593,7 +593,7 @@ async function dialSupervisor(callSid: string): Promise<void> {
   }
   const base = (env.PUBLIC_BASE_URL ?? "").replace(/\/$/, "");
   const brief =
-    "Entras a una llamada en curso de Volta. Escuchas al transportista y ya puedes hablar.";
+    "You are joining a Volta call in progress. You can hear the carrier and you are live.";
 
   await createLiveTelephonyGateway().createOutboundCall({
     operationId: callSid,
@@ -645,7 +645,7 @@ function openTakeoverWindow(input: {
         type: "response.create",
         response: {
           instructions:
-            "Cierra la llamada ahora, en una sola frase breve y cordial: dile que necesitas confirmarlo internamente y que le devuelves la llamada. No negocies más, no hagas preguntas."
+            "Close the call now, in a single short and courteous sentence: tell them you need to confirm this internally and that you will call them back. Do not negotiate further and do not ask questions."
         }
       })
     );

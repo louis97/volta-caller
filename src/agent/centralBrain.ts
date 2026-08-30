@@ -291,10 +291,7 @@ export function createCentralBrainTools({
           !conversation.messages.some(
             (message) =>
               message.role === "user" &&
-              confirmsNumericMxnBudget(
-                message.content,
-                parsed.data.budget_cap
-              )
+              confirmsNumericMxnBudget(message.content, parsed.data.budget_cap)
           )
         ) {
           return {
