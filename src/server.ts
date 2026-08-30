@@ -59,6 +59,7 @@ import {
   type OutboundCallReference
 } from "./telephony/orchestrator";
 import { PostgresAgentRepository } from "./storage/postgres";
+import { OpenAIQuoteExtractor } from "./agent/quoteExtractor";
 import {
   createKapsoMessenger,
   inboundKapsoMessage,
@@ -318,6 +319,12 @@ export function createApp(options: CreateAppOptions = {}) {
       : env.VOLTA_MODE === "mock"
         ? new DeterministicAgentAnswerer()
         : new UnavailableAgentAnswerer());
+  const quoteExtractor = env.OPENAI_API_KEY
+    ? new OpenAIQuoteExtractor(
+        env.OPENAI_API_KEY,
+        env.VOLTA_QUOTE_EXTRACTION_MODEL
+      )
+    : undefined;
   const kapsoMessenger =
     options.kapsoMessenger ??
     (env.KAPSO_API_KEY && env.KAPSO_PHONE_NUMBER_ID
@@ -943,6 +950,15 @@ export function createApp(options: CreateAppOptions = {}) {
       storageFailure(response, error);
     }
   });
+  app.get("/api/quote-extractions", async (request, response) => {
+    const context = contextFromRequest(request, response);
+    if (!context) return;
+    try {
+      response.status(200).json(await repository.listQuoteExtractions(context));
+    } catch (error) {
+      storageFailure(response, error);
+    }
+  });
   app.get("/api/approvals", (_request, response) => {
     const operation = scenario.store.getOperation();
     response
@@ -1473,7 +1489,39 @@ export function createApp(options: CreateAppOptions = {}) {
     listTranscript: (callId?: string) =>
       repository.listTranscript(activeOrganizationId, callId),
     createCallReference: createTelephonyCallReference,
-    resolveCallContext: resolveTelephonyCallContext
+    resolveCallContext: resolveTelephonyCallContext,
+    onCallCompleted: (callId, operationId) => {
+      if (!quoteExtractor) return;
+      void (async () => {
+        const segments = await repository.listTranscript(
+          activeOrganizationId,
+          callId
+        );
+        const now = new Date().toISOString();
+        const result = await quoteExtractor.extract(
+          segments
+            .map(
+              (segment) =>
+                `${segment.createdAt}: ${segment.speaker}: ${segment.text}`
+            )
+            .join("\n")
+        );
+        await repository.saveQuoteExtraction({
+          id: `quote-extraction-${callId}`,
+          organizationId: activeOrganizationId,
+          operationId,
+          callId,
+          finalPriceMxn: result.finalPriceMxn,
+          currency: result.currency,
+          agreedAt: result.agreedAt,
+          summary: result.summary,
+          status: result.finalPriceMxn === null ? "unavailable" : "completed",
+          model: env.VOLTA_QUOTE_EXTRACTION_MODEL,
+          createdAt: now,
+          completedAt: now
+        });
+      })().catch((error) => console.error("[quote-extraction] failed", error));
+    }
   });
 
   return app;

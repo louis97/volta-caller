@@ -101,6 +101,7 @@ export type TelephonyDependencies = {
   callContext?: OutboundCallContext & {
     carrier?: { id: string; name: string };
   };
+  onCallCompleted?: (callId: string, operationId: string) => void;
 };
 
 export type ResolvedTelephonyCallContext = {
@@ -1109,6 +1110,7 @@ function openMediaStreamSession(
           status: "completed",
           endedAt: new Date().toISOString()
         });
+      dependencies.onCallCompleted?.(runtime.callSid, runtime.operationId);
     }
     realtime.close();
   });

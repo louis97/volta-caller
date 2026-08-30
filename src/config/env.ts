@@ -63,6 +63,7 @@ const envSchema = z
     SUPABASE_PUBLISHABLE_KEY: z.string().min(1).optional(),
     SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
     VOLTA_COPILOT_MODEL: z.string().min(1).default("gpt-5.4-mini"),
+    VOLTA_QUOTE_EXTRACTION_MODEL: z.string().min(1).default("gpt-5-mini"),
     DATABASE_URL: z.string().url().optional(),
     VOLTA_DEFAULT_ORGANIZATION_ID: z
       .string()

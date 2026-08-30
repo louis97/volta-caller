@@ -179,6 +179,41 @@ it("lists shipment notifications for the dashboard organization", async () => {
   await expect(response.json()).resolves.toEqual([event]);
 });
 
+it("lists persisted quote extractions for the dashboard operation", async () => {
+  const repository = new MemoryAgentRepository();
+  await repository.saveQuoteExtraction({
+    id: "quote-extraction-call-001",
+    organizationId: "textiles-pacifico",
+    operationId: "operation-001",
+    callId: "call-001",
+    finalPriceMxn: 8400,
+    currency: "MXN",
+    agreedAt: "2026-08-30T10:15:00.000Z",
+    summary: "Carrier agreed to MXN 8,400.",
+    status: "completed",
+    model: "gpt-5-mini",
+    createdAt: "2026-08-30T10:15:02.000Z",
+    completedAt: "2026-08-30T10:15:02.000Z"
+  });
+  const app = createApp({
+    repository,
+    mandatesRepository: new MemoryRepository()
+  });
+
+  const response = await request(app, "/api/quote-extractions");
+
+  expect(response.status).toBe(200);
+  await expect(response.json()).resolves.toEqual([
+    expect.objectContaining({
+      callId: "call-001",
+      finalPriceMxn: 8400,
+      currency: "MXN",
+      agreedAt: "2026-08-30T10:15:00.000Z",
+      summary: "Carrier agreed to MXN 8,400."
+    })
+  ]);
+});
+
 it("lists durable mandate operations and opens one by id", async () => {
   const repository = new MemoryAgentRepository();
   const first = seedOperation();

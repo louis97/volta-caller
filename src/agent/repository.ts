@@ -8,6 +8,7 @@ import type {
   Operation,
   ProposedAction,
   ShipmentEvent,
+  QuoteExtraction,
   TranscriptSegment
 } from "@volta/contracts";
 import { derivePipelineStage } from "../core/pipeline";
@@ -75,6 +76,10 @@ export type AgentRepository = {
     sourceId: string
   ): Promise<EvidenceCitation | undefined>;
   addShipmentEvent(event: ShipmentEvent): Promise<void>;
+  saveQuoteExtraction(extraction: QuoteExtraction): Promise<void>;
+  listQuoteExtractions(
+    context: OrganizationContext
+  ): Promise<QuoteExtraction[]>;
   listShipmentEvents(context: OrganizationContext): Promise<ShipmentEvent[]>;
   addTranscriptSegments(segments: TranscriptSegment[]): Promise<void>;
   /**
@@ -121,6 +126,7 @@ export class MemoryAgentRepository implements AgentRepository {
   private readonly operations = new Map<string, Map<string, Operation>>();
   private readonly conversations = new Map<string, AgentConversation>();
   private readonly events = new Map<string, ShipmentEvent[]>();
+  private readonly quoteExtractions = new Map<string, QuoteExtraction>();
   private readonly transcripts = new Map<string, TranscriptSegment[]>();
   private readonly actions = new Map<string, ProposedAction>();
   private readonly carriers = new Map<string, Map<string, Carrier>>();
@@ -306,6 +312,16 @@ export class MemoryAgentRepository implements AgentRepository {
     const next = events.filter((item) => item.id !== event.id);
     next.push(structuredClone(event));
     this.events.set(event.organizationId, next);
+  }
+
+  async saveQuoteExtraction(extraction: QuoteExtraction) {
+    this.quoteExtractions.set(extraction.id, structuredClone(extraction));
+  }
+
+  async listQuoteExtractions(context: OrganizationContext) {
+    return [...this.quoteExtractions.values()]
+      .filter((item) => item.organizationId === context.organizationId)
+      .map((item) => structuredClone(item));
   }
 
   async listShipmentEvents(context: OrganizationContext) {

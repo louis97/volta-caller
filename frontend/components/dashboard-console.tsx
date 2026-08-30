@@ -9,6 +9,7 @@ import type {
   OperationReadModel,
   PipelineStage,
   Quote,
+  QuoteExtraction,
   ShipmentEvent,
   TranscriptSegment
 } from "@volta/contracts";
@@ -1638,6 +1639,13 @@ function PipelineView({
   directory: OperationDirectory;
 }) {
   const operation = useLiveOperation(directory.selectedOperationId);
+  const [extractions, setExtractions] = useState<QuoteExtraction[]>([]);
+  useEffect(() => {
+    void fetch("/api/quote-extractions")
+      .then((response) => (response.ok ? response.json() : []))
+      .then((items: QuoteExtraction[]) => setExtractions(items))
+      .catch(() => setExtractions([]));
+  }, []);
   const sessions = operation?.callSessions ?? [];
   useTicker(sessions.some(isLiveCall));
 
@@ -1781,6 +1789,10 @@ function PipelineView({
                 (item) =>
                   item.id === session.quoteId || item.callId === session.id
               );
+              const extraction = extractions.find(
+                (item) =>
+                  item.callId === session.id || item.callId === session.callSid
+              );
               return (
                 <div className="ledger__row" key={session.id}>
                   <span className="ledger__cell">
@@ -1807,8 +1819,16 @@ function PipelineView({
                     {session.status.replace(/_/g, " ")}
                   </Tag>
                   <span className="ledger__figure">
-                    {quote ? formatMxn(quote.priceMxn) : "—"}
+                    {extraction?.finalPriceMxn !== null &&
+                    extraction?.finalPriceMxn !== undefined
+                      ? `${formatMxn(extraction.finalPriceMxn)} · ${formatDraftStamp(extraction.agreedAt ?? undefined)}`
+                      : quote
+                        ? formatMxn(quote.priceMxn)
+                        : "—"}
                   </span>
+                  {extraction?.summary ? (
+                    <span className="ml">{extraction.summary}</span>
+                  ) : null}
                   <ChevronIcon className="ledger__chev" />
                 </div>
               );

@@ -400,6 +400,22 @@ export type TranscriptSegment = {
   createdAt: string;
 };
 
+export type QuoteExtraction = {
+  id: string;
+  organizationId: string;
+  operationId: string;
+  callId: string;
+  quoteId?: string;
+  finalPriceMxn: number | null;
+  currency: "MXN" | null;
+  agreedAt: string | null;
+  summary: string | null;
+  status: "pending" | "completed" | "unavailable" | "failed";
+  model: string;
+  createdAt: string;
+  completedAt?: string;
+};
+
 type ProposedActionBase = {
   id: string;
   organizationId: string;

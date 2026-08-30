@@ -9,6 +9,7 @@ import type {
   Operation,
   ProposedAction,
   ShipmentEvent,
+  QuoteExtraction,
   TranscriptSegment
 } from "@volta/contracts";
 import { Pool } from "pg";
@@ -483,6 +484,39 @@ export class PostgresAgentRepository implements AgentRepository {
         JSON.stringify(event.metadata ?? {})
       ]
     );
+  }
+
+  async saveQuoteExtraction(extraction: QuoteExtraction) {
+    await this.initialize();
+    await this.pool.query(
+      `INSERT INTO quote_extractions (organization_id, id, operation_id, call_id, quote_id, final_price_mxn, currency, agreed_at, summary, status, model, created_at, completed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       ON CONFLICT (organization_id, id) DO UPDATE SET final_price_mxn=EXCLUDED.final_price_mxn, currency=EXCLUDED.currency, agreed_at=EXCLUDED.agreed_at, summary=EXCLUDED.summary, status=EXCLUDED.status, completed_at=EXCLUDED.completed_at`,
+      [
+        extraction.organizationId,
+        extraction.id,
+        extraction.operationId,
+        extraction.callId,
+        extraction.quoteId ?? null,
+        extraction.finalPriceMxn,
+        extraction.currency,
+        extraction.agreedAt,
+        extraction.summary,
+        extraction.status,
+        extraction.model,
+        extraction.createdAt,
+        extraction.completedAt ?? null
+      ]
+    );
+  }
+
+  async listQuoteExtractions(context: OrganizationContext) {
+    await this.initialize();
+    const result = await this.pool.query<QuoteExtraction>(
+      `SELECT id, organization_id AS "organizationId", operation_id AS "operationId", call_id AS "callId", quote_id AS "quoteId", final_price_mxn AS "finalPriceMxn", currency, agreed_at AS "agreedAt", summary, status, model, created_at AS "createdAt", completed_at AS "completedAt" FROM quote_extractions WHERE organization_id=$1 ORDER BY created_at DESC`,
+      [context.organizationId]
+    );
+    return result.rows;
   }
 
   async listShipmentEvents(context: OrganizationContext) {
