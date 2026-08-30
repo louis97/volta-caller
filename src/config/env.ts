@@ -9,6 +9,30 @@ const envSchema = z
     TWILIO_FROM_NUMBER: z.string().min(1).optional(),
     OPENAI_API_KEY: z.string().min(1).optional(),
     OPENAI_REALTIME_MODEL: z.string().min(1).default("gpt-realtime"),
+    OPENAI_REALTIME_VOICE: z.string().min(1).default("marin"),
+    /**
+     * Turn taking. These exist as configuration because the right values are a
+     * property of the room, not of the code: a quiet booth and a hackathon
+     * floor need very different sensitivity, and it has to be tunable between
+     * two calls rather than between two deploys.
+     */
+    REALTIME_TURN_DETECTION: z
+      .enum(["server_vad", "semantic_vad"])
+      .default("server_vad"),
+    /** Higher = needs louder, clearer speech to count as an interruption. */
+    REALTIME_VAD_THRESHOLD: z.coerce.number().min(0).max(1).default(0.7),
+    /** How long a pause must last before the caller is considered finished. */
+    REALTIME_VAD_SILENCE_MS: z.coerce.number().int().positive().default(600),
+    REALTIME_VAD_PREFIX_MS: z.coerce.number().int().nonnegative().default(300),
+    /** semantic_vad only: how readily the model decides a turn ended. */
+    REALTIME_VAD_EAGERNESS: z.enum(["low", "medium", "high"]).default("low"),
+    /**
+     * near_field: handset held to the ear. far_field: speakerphone or a mic
+     * across a room, which is what a demo on a table actually is.
+     */
+    REALTIME_NOISE_REDUCTION: z
+      .enum(["near_field", "far_field", "none"])
+      .default("near_field"),
     /** Public https origin exposed by ngrok, e.g. https://abc123.ngrok.app */
     PUBLIC_BASE_URL: z.string().url().optional(),
     /** Public wss origin exposed by ngrok, e.g. wss://abc123.ngrok.app */

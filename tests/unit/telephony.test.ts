@@ -47,9 +47,14 @@ describe("telephony adapters", () => {
       audio: {
         input: {
           format: { type: "audio/pcmu" },
+          // Noise reduction and a raised threshold: on a hackathon floor the
+          // default sensitivity treats room chatter as an interruption and the
+          // agent never finishes a sentence.
+          noise_reduction: { type: "near_field" },
           turn_detection: {
             type: "server_vad",
-            silence_duration_ms: 350,
+            threshold: 0.7,
+            silence_duration_ms: 600,
             interrupt_response: true
           }
         },

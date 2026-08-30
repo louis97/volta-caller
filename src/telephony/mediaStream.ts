@@ -1,6 +1,7 @@
 import type { ToolCallRequest, ToolCallResult } from "../agent/interpreter";
 import { VOLTA_SYSTEM_PROMPT } from "../agent/prompt";
 import { agentToolDefinitions } from "../agent/tools";
+import { env } from "../config/env";
 import type { CallRuntime } from "./registry";
 
 export type RelaySocket = {
@@ -8,17 +9,24 @@ export type RelaySocket = {
   on(event: "message" | "close", listener: (message: string) => void): void;
 };
 
+export type TurnDetectionConfig =
+  | {
+      type: "server_vad";
+      threshold: number;
+      silence_duration_ms: number;
+      prefix_padding_ms: number;
+      interrupt_response: true;
+    }
+  | { type: "semantic_vad"; eagerness: string; interrupt_response: true };
+
 export type RealtimeSessionConfig = {
   type: "realtime";
   audio: {
     input: {
       format: { type: "audio/pcmu" };
       transcription: { model: string };
-      turn_detection: {
-        type: "server_vad";
-        silence_duration_ms: number;
-        interrupt_response: true;
-      };
+      noise_reduction?: { type: "near_field" | "far_field" };
+      turn_detection: TurnDetectionConfig;
     };
     output: {
       format: { type: "audio/pcmu" };
@@ -55,9 +63,45 @@ export type RealtimeSocketFactory = () => RelaySocket;
  * `audio/pcmu` on both ends matches what Twilio streams, so no transcoding
  * happens anywhere in the path.
  */
+/**
+ * GA session shape. The Realtime Beta API is switched off server-side: sending
+ * the old flat `input_audio_format` payload (or the `OpenAI-Beta` header) is
+ * rejected with `beta_api_shape_disabled` and the socket closes, which on a
+ * live call reads as "Volta never speaks".
+ *
+ * `audio/pcmu` on both ends matches what Twilio streams, so no transcoding
+ * happens anywhere in the path.
+ *
+ * Turn taking is read from configuration: in a noisy room the default
+ * sensitivity treats background chatter as an interruption and the agent
+ * cannot finish a sentence, and that has to be fixable between two calls.
+ */
 export function createRealtimeSessionConfig(
-  voice = "marin"
+  overrides: Partial<{
+    voice: string;
+    turnDetection: TurnDetectionConfig;
+    noiseReduction: "near_field" | "far_field" | "none";
+  }> = {}
 ): RealtimeSessionConfig {
+  const turnDetection: TurnDetectionConfig =
+    overrides.turnDetection ??
+    (env.REALTIME_TURN_DETECTION === "semantic_vad"
+      ? {
+          type: "semantic_vad",
+          eagerness: env.REALTIME_VAD_EAGERNESS,
+          interrupt_response: true
+        }
+      : {
+          type: "server_vad",
+          threshold: env.REALTIME_VAD_THRESHOLD,
+          silence_duration_ms: env.REALTIME_VAD_SILENCE_MS,
+          prefix_padding_ms: env.REALTIME_VAD_PREFIX_MS,
+          interrupt_response: true
+        });
+
+  const noiseReduction =
+    overrides.noiseReduction ?? env.REALTIME_NOISE_REDUCTION;
+
   return {
     type: "realtime",
     audio: {
@@ -65,13 +109,15 @@ export function createRealtimeSessionConfig(
         format: { type: "audio/pcmu" },
         // Needed for the call brief and the audit transcript.
         transcription: { model: "whisper-1" },
-        turn_detection: {
-          type: "server_vad",
-          silence_duration_ms: 350,
-          interrupt_response: true
-        }
+        ...(noiseReduction === "none"
+          ? {}
+          : { noise_reduction: { type: noiseReduction } }),
+        turn_detection: turnDetection
       },
-      output: { format: { type: "audio/pcmu" }, voice }
+      output: {
+        format: { type: "audio/pcmu" },
+        voice: overrides.voice ?? env.OPENAI_REALTIME_VOICE
+      }
     },
     instructions: VOLTA_SYSTEM_PROMPT,
     tools: agentToolDefinitions
