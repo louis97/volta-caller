@@ -85,4 +85,31 @@ describe("toRelaySocket", () => {
 
     expect(socket.closed).toEqual([true]);
   });
+
+  it("drops stale audio instead of queueing it, but keeps control messages", () => {
+    const socket = new FakeWebSocket();
+    const relay = toRelaySocket(asWebSocket(socket), {
+      label: "test",
+      shouldQueue: (message) => !message.includes('"input_audio_buffer.append"')
+    });
+
+    relay.send(JSON.stringify({ type: "session.update" }));
+    relay.send(
+      JSON.stringify({ type: "input_audio_buffer.append", audio: "x" })
+    );
+    relay.send(
+      JSON.stringify({ type: "input_audio_buffer.append", audio: "y" })
+    );
+    relay.send(JSON.stringify({ type: "response.create" }));
+
+    socket.readyState = OPEN;
+    socket.emit("open");
+
+    // Audio from before the session existed would flush as a burst of speech
+    // and interrupt the agent's own greeting.
+    expect(socket.sent.map((message) => JSON.parse(message).type)).toEqual([
+      "session.update",
+      "response.create"
+    ]);
+  });
 });

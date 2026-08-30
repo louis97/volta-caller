@@ -8,6 +8,11 @@ export type RelaySocketOptions = {
   /** Identifies the leg in logs, e.g. "twilio" or "realtime". */
   label: string;
   onClose?: (code: number, reason: string) => void;
+  /**
+   * Messages worth holding until the socket opens. Anything else sent while
+   * connecting is dropped rather than buffered.
+   */
+  shouldQueue?: (message: string) => boolean;
 };
 
 /**
@@ -23,12 +28,15 @@ export type RelaySocketOptions = {
  */
 export function toRelaySocket(
   socket: WebSocket,
-  { label, onClose }: RelaySocketOptions
+  { label, onClose, shouldQueue = () => true }: RelaySocketOptions
 ): ClosableRelaySocket {
   const pending: string[] = [];
+  let dropped = 0;
 
   socket.on("open", () => {
-    console.log(`[${label}] open (${pending.length} queued)`);
+    console.log(
+      `[${label}] open (${pending.length} queued, ${dropped} stale dropped)`
+    );
     while (pending.length > 0) {
       const message = pending.shift();
       if (message !== undefined) socket.send(message);
@@ -51,6 +59,13 @@ export function toRelaySocket(
     send(message: string): void {
       if (socket.readyState === WebSocket.OPEN) {
         socket.send(message);
+        return;
+      }
+      // Audio captured before the session existed is stale by the time the
+      // socket opens: flushing it makes the model hear a burst of speech and
+      // interrupt its own greeting. Silence is the better failure.
+      if (!shouldQueue(message)) {
+        dropped += 1;
         return;
       }
       pending.push(message);
@@ -107,5 +122,11 @@ export function createRealtimeSocket({
     });
   });
 
-  return toRelaySocket(socket, { label: "realtime", onClose });
+  return toRelaySocket(socket, {
+    label: "realtime",
+    onClose,
+    // Session setup and turn control must survive the connect window; audio
+    // frames from before it must not.
+    shouldQueue: (message) => !message.includes('"input_audio_buffer.append"')
+  });
 }
