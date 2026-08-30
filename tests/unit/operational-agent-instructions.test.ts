@@ -23,6 +23,11 @@ describe("central brain mandate intake", () => {
       "pregunta solo por campos faltantes o ambiguos"
     );
     expect(CENTRAL_BRAIN_INSTRUCTIONS).toContain("no exijas BL, booking, DO");
+    expect(CENTRAL_BRAIN_INSTRUCTIONS).toContain("propose_create_mandate");
+    expect(CENTRAL_BRAIN_INSTRUCTIONS).toContain(
+      "No conviertas monedas silenciosamente"
+    );
+    expect(CENTRAL_BRAIN_INSTRUCTIONS).toContain("America/Bogota (-05:00)");
   });
 
   it("retains enough conversation turns to finish a voice intake", () => {

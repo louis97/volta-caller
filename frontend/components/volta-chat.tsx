@@ -445,7 +445,9 @@ export function VoltaChat({ onOperationChange }: VoltaChatProps) {
                         <h3>
                           {action.type === "resolve_carrier_selection"
                             ? "Carrier selection"
-                            : "Approved closing call"}
+                            : action.type === "create_mandate"
+                              ? "Create mandate"
+                              : "Approved closing call"}
                         </h3>
                         <p>{action.summary}</p>
                         {action.status === "pending" ? (
