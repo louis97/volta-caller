@@ -5,22 +5,35 @@ export const checkMandateSchema = z.object({
   pickupTime: z.string().datetime({ offset: true })
 });
 
+/**
+ * `id`, `callId` and `createdAt` stay optional here so existing callers can
+ * supply them, but they are stripped from what the model sees and always
+ * overwritten by the server. A model asked which call it is on will invent a
+ * plausible id, and with several calls running that silently misattributes
+ * quotes.
+ */
 export const registerQuoteSchema = z.object({
-  id: z.string().min(1),
+  id: z.string().min(1).optional(),
   carrierId: z.string().min(1),
   carrierName: z.string().min(1),
   priceMxn: z.number().nonnegative(),
   etaMinutes: z.number().int().nonnegative(),
   pickupTime: z.string().datetime({ offset: true }),
-  callId: z.string().min(1),
-  createdAt: z.string().datetime({ offset: true })
+  callId: z.string().min(1).optional(),
+  createdAt: z.string().datetime({ offset: true }).optional()
 });
 
+/**
+ * `timestampMs` is the audio offset a commitment is anchored to. It comes from
+ * counting Twilio media frames, never from the model: an invented offset makes
+ * a hallucinated commitment indistinguishable from a real one in the audit
+ * trail.
+ */
 export const commitDealSchema = z.object({
   carrierId: z.string().min(1),
   finalPrice: z.number().nonnegative(),
   pickupTime: z.string().datetime({ offset: true }),
-  timestampMs: z.number().int().nonnegative(),
+  timestampMs: z.number().int().nonnegative().optional(),
   driverName: z.string().optional(),
   plate: z.string().optional()
 });
@@ -52,6 +65,15 @@ function defineTool(
   };
 }
 
+// What the model is allowed to fill in. Server-owned identity and timing
+// fields are omitted so the model cannot assert them at all.
+const registerQuoteModelSchema = registerQuoteSchema.omit({
+  id: true,
+  callId: true,
+  createdAt: true
+});
+const commitDealModelSchema = commitDealSchema.omit({ timestampMs: true });
+
 export const agentToolDefinitions: AgentToolDefinition[] = [
   defineTool(
     "check_mandate",
@@ -61,12 +83,12 @@ export const agentToolDefinitions: AgentToolDefinition[] = [
   defineTool(
     "register_quote",
     "Registra una cotización completa de un transportista.",
-    registerQuoteSchema
+    registerQuoteModelSchema
   ),
   defineTool(
     "commit_deal",
     "Solicita reservar un acuerdo con términos ya confirmados.",
-    commitDealSchema
+    commitDealModelSchema
   ),
   defineTool(
     "trigger_escalation",

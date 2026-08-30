@@ -1,6 +1,7 @@
 import type { ToolCallRequest, ToolCallResult } from "../agent/interpreter";
 import { VOLTA_SYSTEM_PROMPT } from "../agent/prompt";
 import { agentToolDefinitions } from "../agent/tools";
+import type { CallRuntime } from "./registry";
 
 export type RelaySocket = {
   send(message: string): void;
@@ -32,6 +33,15 @@ export type MediaStreamRelayDependencies = {
   twilio: RelaySocket;
   realtime: RelaySocket;
   executeToolCall: (request: ToolCallRequest) => Promise<ToolCallResult>;
+  /**
+   * Called once when Twilio announces the stream. Returning a runtime lets the
+   * relay keep the call clock ticking: every media frame is 20 ms of audio, and
+   * counting them is what anchors a commitment to the moment it was agreed.
+   */
+  onStart?: (info: {
+    streamSid: string;
+    callSid?: string;
+  }) => CallRuntime | undefined;
 };
 
 export type RealtimeSocketFactory = () => RelaySocket;
@@ -71,9 +81,11 @@ export function createRealtimeSessionConfig(
 export function attachMediaStreamRelay({
   twilio,
   realtime,
-  executeToolCall: runToolCall
+  executeToolCall: runToolCall,
+  onStart
 }: MediaStreamRelayDependencies): void {
   let streamSid: string | undefined;
+  let runtime: CallRuntime | undefined;
 
   realtime.send(
     JSON.stringify({
@@ -91,6 +103,14 @@ export function attachMediaStreamRelay({
         stringValue(objectValue(event.start)?.streamSid) ??
         stringValue(event.streamSid);
 
+      const start = objectValue(event.start);
+      if (streamSid) {
+        runtime = onStart?.({
+          streamSid,
+          callSid: stringValue(start?.callSid)
+        });
+      }
+
       // Volta places the call, so Volta opens the conversation. Server VAD only
       // produces a response after it hears speech, so without this the agent
       // waits in silence for a carrier who is waiting for it to say something.
@@ -101,6 +121,8 @@ export function attachMediaStreamRelay({
 
     const payload = stringValue(objectValue(event.media)?.payload);
     streamSid = stringValue(event.streamSid) ?? streamSid;
+    // One inbound frame is 20 ms of call audio; this is the call clock.
+    if (runtime) runtime.frameCount += 1;
     if (payload)
       realtime.send(
         JSON.stringify({ type: "input_audio_buffer.append", audio: payload })

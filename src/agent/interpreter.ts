@@ -12,6 +12,23 @@ import {
 
 type CommitDealInput = z.infer<typeof commitDealSchema>;
 
+/** Booking intent as the finalizer receives it: the audio anchor is resolved. */
+export type BookingIntent = Omit<CommitDealInput, "timestampMs"> & {
+  timestampMs: number;
+};
+
+/**
+ * Server-owned facts about the call a tool call arrived on. Injected by the
+ * telephony layer so identity and audio timing never depend on the model.
+ */
+export type CallContext = {
+  callId: string;
+  carrierId?: string;
+  carrierName?: string;
+  /** Audio offset now, derived from counted Twilio media frames. */
+  callClockMs: () => number;
+};
+
 export type ToolCallRequest = {
   name: string;
   arguments: unknown;
@@ -19,8 +36,9 @@ export type ToolCallRequest = {
 
 export type ToolDependencies = {
   store: OperationStore;
-  finalizeBooking: (intent: CommitDealInput) => Promise<void> | void;
+  finalizeBooking: (intent: BookingIntent) => Promise<void> | void;
   now?: () => string;
+  callContext?: CallContext;
 };
 
 export type ToolCallResult =
@@ -59,7 +77,27 @@ export async function executeToolCall(
         dependencies.store.getOperation().mandate,
         { price: parsed.data.priceMxn, pickupTime: parsed.data.pickupTime }
       );
-      dependencies.store.registerQuote(parsed.data as Quote);
+
+      const now = dependencies.now ?? (() => new Date().toISOString());
+      const context = dependencies.callContext;
+      const callId = context?.callId ?? parsed.data.callId;
+      const quoteCount = dependencies.store.getOperation().quotes.length + 1;
+
+      if (callId === undefined) return invalidArguments();
+
+      const quote: Quote = {
+        ...parsed.data,
+        // Server-owned: identity and timing are never taken from the model.
+        id: context
+          ? `quote-${callId}-${quoteCount}`
+          : (parsed.data.id ?? `quote-${callId}-${quoteCount}`),
+        callId,
+        carrierId: context?.carrierId ?? parsed.data.carrierId,
+        carrierName: context?.carrierName ?? parsed.data.carrierName,
+        createdAt: context ? now() : (parsed.data.createdAt ?? now())
+      };
+
+      dependencies.store.registerQuote(quote);
       return { outcome: "registered", mandateDecision };
     }
     case "commit_deal": {
@@ -88,8 +126,12 @@ export async function executeToolCall(
         return { outcome: "rejected", reason: decision.reason };
       }
 
+      // The audio anchor comes from the call clock, never from the model.
+      const timestampMs =
+        dependencies.callContext?.callClockMs() ?? parsed.data.timestampMs ?? 0;
+
       try {
-        await dependencies.finalizeBooking(parsed.data);
+        await dependencies.finalizeBooking({ ...parsed.data, timestampMs });
         return { outcome: "booking_requested" };
       } catch {
         return { outcome: "booking_failed" };
@@ -105,10 +147,15 @@ export async function executeToolCall(
         pickupTime: operation.mandate.pickupTime
       });
       dependencies.store.requestEscalation(
-        createEscalation(dependencies.store, parsed.data.reason, {
-          ...parsed.data,
-          attemptedPickupTime: operation.mandate.pickupTime
-        }, dependencies.now ?? (() => new Date().toISOString()))
+        createEscalation(
+          dependencies.store,
+          parsed.data.reason,
+          {
+            ...parsed.data,
+            attemptedPickupTime: operation.mandate.pickupTime
+          },
+          dependencies.now ?? (() => new Date().toISOString())
+        )
       );
       return {
         outcome: "escalated",

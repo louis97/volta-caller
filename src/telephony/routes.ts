@@ -11,6 +11,7 @@ import { seedOperation } from "../core/seed";
 import { createOperationStore, type OperationStore } from "../core/state";
 import { MockSmsGateway } from "../mocks/sms";
 import { attachMediaStreamRelay } from "./mediaStream";
+import { callClockMs, createCallRegistry, type CallRuntime } from "./registry";
 import {
   createRealtimeSocket,
   toRelaySocket,
@@ -24,18 +25,11 @@ import {
 
 export const MEDIA_STREAM_PATH = "/media-stream";
 
-/**
- * Phase 0 wiring: one live operation shared by every call. The per-call
- * registry that Phase 1 introduces replaces this singleton.
- */
+/** One operation, many concurrent calls negotiating against it. */
 const store: OperationStore = createOperationStore(seedOperation());
 
-const finalizeBooking = createCommitmentFinalizer({
-  store,
-  sms: new MockSmsGateway(),
-  callId: "live-call",
-  recipient: store.getOperation().mandate.escalationPhone
-});
+/** Live calls, keyed by stream. Owns identity and the audio clock. */
+export const registry = createCallRegistry();
 
 function getTwilioClient(): TwilioCallClient {
   if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN) {
@@ -171,6 +165,10 @@ function openMediaStreamSession(twilioSocket: ClosableRelaySocket): void {
     return;
   }
 
+  // Bound when Twilio announces the stream; every tool call on this socket is
+  // attributed to it, so quotes from concurrent calls cannot be confused.
+  let runtime: CallRuntime | undefined;
+
   const realtime = createRealtimeSocket({
     apiKey: env.OPENAI_API_KEY,
     model: env.OPENAI_REALTIME_MODEL
@@ -196,14 +194,49 @@ function openMediaStreamSession(twilioSocket: ClosableRelaySocket): void {
   attachMediaStreamRelay({
     twilio: twilioSocket,
     realtime,
+    onStart: ({ streamSid, callSid }) => {
+      runtime = registry.open({
+        callSid: callSid ?? streamSid,
+        streamSid,
+        operationId: store.getOperation().id,
+        direction: "outbound",
+        startedAt: new Date().toISOString()
+      });
+      console.log(`[call] started stream=${streamSid} call=${callSid ?? "?"}`);
+      return runtime;
+    },
     executeToolCall: (request) => {
-      console.log("[tool]", request.name);
-      return executeToolCall(request, { store, finalizeBooking });
+      const current = runtime;
+      console.log(
+        `[tool] ${request.name} call=${current?.callSid ?? "?"} t=${current ? callClockMs(current) : 0}ms`
+      );
+
+      return executeToolCall(request, {
+        store,
+        callContext: current
+          ? {
+              callId: current.callSid,
+              carrierId: current.carrierId,
+              carrierName: current.carrierName,
+              callClockMs: () => callClockMs(current)
+            }
+          : undefined,
+        // Built per call so the recap and the audio anchor belong to this leg.
+        finalizeBooking: createCommitmentFinalizer({
+          store,
+          sms: new MockSmsGateway(),
+          callId: current?.callSid ?? "unknown-call",
+          recipient: store.getOperation().mandate.escalationPhone
+        })
+      });
     }
   });
 
   // Neither side owns the other: closing one must tear down the other, or the
   // Realtime session keeps billing after the caller hangs up.
-  twilioSocket.on("close", () => realtime.close());
+  twilioSocket.on("close", () => {
+    if (runtime) registry.close(runtime.streamSid);
+    realtime.close();
+  });
   realtime.on("close", () => twilioSocket.close());
 }
